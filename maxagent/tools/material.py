@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""材质类工具。
+
+支持：创建标准/物理材质、赋予材质给对象、加贴图、查询材质库。
+注：PhysicalMaterial 在 Max 2017+ 才有；旧版本会自动降级到 StandardMaterial。
+"""
+
+from __future__ import absolute_import
+from __future__ import print_function
+
+import os
+from typing import List
+from typing import Optional
+
+from ..runtime_helpers import has_runtime_attr
+from ..runtime_helpers import IN_MAX
+from ..runtime_helpers import rt
+from .registry import tool
+
+
+def _ensure_in_max():
+    if not IN_MAX:
+        raise RuntimeError('非 3ds Max 环境')
+
+
+def _get_node(name):
+    node = rt.getNodeByName(name, exact=True, all=False)
+    if node is None:
+        raise ValueError('对象不存在: {}'.format(name))
+    return node
+
+
+def _to_color(rgb):
+    """[r, g, b] (0~255 或 0~1) -> rt.Color。"""
+    if rgb is None or len(rgb) < 3:
+        return rt.color(255, 255, 255)
+    r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    # 自动判断是 0-1 还是 0-255
+    if max(r, g, b) <= 1.0:
+        r, g, b = r * 255.0, g * 255.0, b * 255.0
+    return rt.color(r, g, b)
+
+
+@tool(
+    description=(
+        '创建一个标准材质（Standard Material）。返回材质名供后续 assign_material 使用。'
+    ),
+    category='material',
+)
+def create_standard_material(
+    name='AgentStandard',
+    diffuse=None,
+    specular=None,
+    glossiness=40.0,
+    opacity=100.0,
+    self_illumination=0.0,
+):
+    """创建标准材质。
+
+    :param name: 材质名
+    :param diffuse: 漫反射颜色 [r, g, b]，分量可以是 0-255 或 0-1
+    :param specular: 高光颜色 [r, g, b]
+    :param glossiness: 光泽度（0-100）
+    :param opacity: 不透明度（0-100，100 完全不透明）
+    :param self_illumination: 自发光（0-100）
+    :returns: dict {"name": 材质名, "type": "Standardmaterial"}
+    """
+    _ensure_in_max()
+    mat = rt.Standardmaterial()
+    mat.name = name
+    mat.diffuse = _to_color(diffuse) if diffuse else _to_color([200, 200, 200])
+    if specular is not None:
+        mat.specular = _to_color(specular)
+    try:
+        mat.glossiness = float(glossiness)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        mat.opacity = float(opacity)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        mat.selfIllumAmount = float(self_illumination)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return {'name': str(mat.name), 'type': str(rt.classOf(mat))}
+
+
+@tool(
+    description=(
+        '创建一个物理材质（PhysicalMaterial）。Max 2017+ 推荐使用。'
+        '若当前版本不支持，会自动降级为 Standardmaterial。'
+    ),
+    category='material',
+)
+def create_physical_material(
+    name='AgentPhysical',
+    base_color=None,
+    roughness=0.4,
+    metalness=0.0,
+    transparency=0.0,
+    ior=1.5,
+):
+    """创建物理材质。
+
+    :param name: 材质名
+    :param base_color: 基础色 [r, g, b]
+    :param roughness: 粗糙度（0-1）
+    :param metalness: 金属度（0-1）
+    :param transparency: 透明度（0-1）
+    :param ior: 折射率（典型 1.0~2.5，玻璃 1.5）
+    :returns: dict {"name": ..., "type": ..., "downgraded": bool}
+    """
+    _ensure_in_max()
+    if has_runtime_attr('PhysicalMaterial'):
+        mat = rt.PhysicalMaterial()
+        mat.name = name
+        try:
+            mat.base_color = _to_color(base_color or [200, 200, 200])
+            mat.roughness = float(roughness)
+            mat.metalness = float(metalness)
+            mat.transparency = float(transparency)
+            mat.trans_ior = float(ior)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {
+            'name': str(mat.name),
+            'type': 'PhysicalMaterial',
+            'downgraded': False,
+        }
+    # 降级
+    mat = rt.Standardmaterial()
+    mat.name = name
+    mat.diffuse = _to_color(base_color or [200, 200, 200])
+    return {
+        'name': str(mat.name),
+        'type': 'Standardmaterial',
+        'downgraded': True,
+    }
+
+
+@tool(
+    description=(
+        '把已存在的材质赋给对象。材质需先通过 create_standard_material / '
+        'create_physical_material 创建，或者从场景中已有材质里查找。'
+    ),
+    category='material',
+)
+def assign_material(object_name, material_name):
+    """把材质赋给对象。
+
+    :param object_name: 对象名
+    :param material_name: 材质名
+    :returns: dict {"object": ..., "material": ..., "ok": True}
+    """
+    _ensure_in_max()
+    node = _get_node(object_name)
+    # 在 sceneMaterials 中查找
+    mat = None
+    try:
+        for i in range(int(rt.sceneMaterials.count)):
+            m = rt.sceneMaterials[i]
+            if str(m.name) == material_name:
+                mat = m
+                break
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # 也尝试通过 getMeditMaterial 查 material editor 槽
+    if mat is None:
+        for i in range(1, 25):
+            try:
+                m = rt.getMeditMaterial(i)
+                if str(m.name) == material_name:
+                    mat = m
+                    break
+            except Exception:  # pylint: disable=broad-except
+                continue
+    if mat is None:
+        raise ValueError('材质未找到: {}'.format(material_name))
+    node.material = mat
+    return {
+        'object': str(node.name),
+        'material': str(mat.name),
+        'ok': True,
+    }
+
+
+@tool(
+    description=(
+        '给材质添加漫反射贴图（Bitmap Texture）。'
+        '会按文件路径加载图片并连接到材质的 diffuse 通道。'
+    ),
+    category='material',
+)
+def add_diffuse_map(material_name, image_path):
+    """加漫反射贴图。
+
+    :param material_name: 材质名
+    :param image_path: 图片绝对路径（jpg/png/exr/tx 等 Max 支持的格式）
+    :returns: dict {"material": ..., "image": ..., "ok": True}
+    """
+    _ensure_in_max()
+    if not os.path.isfile(image_path):
+        raise ValueError('图片文件不存在: {}'.format(image_path))
+    # 查材质
+    mat = None
+    for i in range(int(rt.sceneMaterials.count)):
+        m = rt.sceneMaterials[i]
+        if str(m.name) == material_name:
+            mat = m
+            break
+    if mat is None:
+        raise ValueError('材质未找到: {}'.format(material_name))
+    bmap = rt.Bitmaptexture(filename=image_path)
+    # PhysicalMaterial 用 base_color_map，Standardmaterial 用 diffuseMap
+    cls = str(rt.classOf(mat))
+    try:
+        if cls == 'PhysicalMaterial':
+            mat.base_color_map = bmap
+        else:
+            mat.diffuseMap = bmap
+    except Exception as exc:  # pylint: disable=broad-except
+        raise RuntimeError('无法连接贴图: {}'.format(exc))
+    return {
+        'material': str(mat.name),
+        'image': image_path,
+        'ok': True,
+    }
+
+
+@tool(
+    description='列出场景中所有已使用的材质（含名字与类型）。',
+    category='material',
+    wrap_undo=False,
+)
+def list_scene_materials(limit=50):
+    """列出场景材质。
+
+    :param limit: 最多返回数
+    :returns: dict {"count": N, "items": [{"name": ..., "type": ...}, ...]}
+    """
+    _ensure_in_max()
+    items = []
+    count = int(rt.sceneMaterials.count)
+    for i in range(count):
+        m = rt.sceneMaterials[i]
+        items.append({
+            'name': str(m.name),
+            'type': str(rt.classOf(m)),
+        })
+        if 0 < limit <= len(items):
+            break
+    return {'count': len(items), 'items': items}
