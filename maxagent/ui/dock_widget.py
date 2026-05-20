@@ -15,7 +15,8 @@ UI 布局 (v0.3: 基于 widget 的消息列表 + 流式增量 + Markdown 渲染)
 | │ ▶ 工具 create_teapot ✓ 展开/折叠     │ |
 | └───────────────────────────────────────┘ |
 +============== 拖拽调节 ===================+  ← QSplitter
-|  [输入框 (Enter发送, Shift+Enter换行)] [发送][停止] |
+|  [输入框 (Enter 发送, Shift+Enter 换行)]  |
+|                            [🚀 发送 / ■ 停止] |
 +-------------------------------------------+
 
 设计要点:
@@ -92,9 +93,9 @@ QPushButton {
 }
 QPushButton:hover { background-color: #5a5a5a; }
 QPushButton:disabled { background-color: #333; color: #777; }
-QPushButton#sendBtn { background-color: #2d7d46; }
+QPushButton#sendBtn { background-color: #2d7d46; font-weight: bold; }
 QPushButton#sendBtn:hover { background-color: #3a9c5a; }
-QPushButton#stopBtn { background-color: #a93232; }
+QPushButton#stopBtn { background-color: #a93232; font-weight: bold; }
 QPushButton#stopBtn:hover { background-color: #c44040; }
 QPushButton.miniBtn {
     background-color: transparent;
@@ -367,22 +368,25 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         sess_row.addWidget(self.session_combo, 1)
 
-        self.rename_session_btn = QtWidgets.QPushButton('✏')
-        self.rename_session_btn.setFixedWidth(28)
-        self.rename_session_btn.setToolTip('重命名当前会话')
-        self.rename_session_btn.clicked.connect(self._on_rename_session)
-        sess_row.addWidget(self.rename_session_btn)
-
-        self.delete_session_btn = QtWidgets.QPushButton('🗑')
-        self.delete_session_btn.setFixedWidth(28)
-        self.delete_session_btn.setToolTip('删除当前会话')
-        self.delete_session_btn.clicked.connect(self._on_delete_session)
-        sess_row.addWidget(self.delete_session_btn)
-
-        self.clear_btn = QtWidgets.QPushButton('清空')
-        self.clear_btn.setToolTip('清空当前会话的消息（保留会话本身）')
-        self.clear_btn.clicked.connect(self._clear_history)
-        sess_row.addWidget(self.clear_btn)
+        # 会话操作菜单（重命名 / 删除 / 清空）合并到一个 ⋯ 按钮
+        # 之前 ✏/🗑/清空 三个独立按钮在窄面板下会把会话下拉框挤掉
+        self.session_menu_btn = QtWidgets.QToolButton()
+        self.session_menu_btn.setText('⋯')
+        self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
+        self.session_menu_btn.setFixedWidth(28)
+        self.session_menu_btn.setPopupMode(
+            QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
+        )
+        sess_menu = QtWidgets.QMenu(self.session_menu_btn)
+        act_rename = sess_menu.addAction('✏  重命名当前会话')
+        act_rename.triggered.connect(self._on_rename_session)
+        act_delete = sess_menu.addAction('🗑  删除当前会话')
+        act_delete.triggered.connect(self._on_delete_session)
+        sess_menu.addSeparator()
+        act_clear = sess_menu.addAction('🧹  清空当前会话消息')
+        act_clear.triggered.connect(self._clear_history)
+        self.session_menu_btn.setMenu(sess_menu)
+        sess_row.addWidget(self.session_menu_btn)
         outer.addLayout(sess_row)
 
         # === 顶部条第 3 行：上下文 token 监控 + 用量统计 + 压缩按钮 ===
@@ -451,9 +455,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self._renderer.example_picked.connect(self._on_example_picked)
 
-        # 输入区
+        # 输入区：垂直布局（输入框 / 底部操作行）
+        # 按钮放底部而不是右侧，节省横向宽度，窄面板也能完整显示
         input_container = QtWidgets.QWidget()
-        input_layout = QtWidgets.QHBoxLayout(input_container)
+        input_layout = QtWidgets.QVBoxLayout(input_container)
         input_layout.setContentsMargins(0, 0, 0, 0)
         input_layout.setSpacing(4)
 
@@ -466,19 +471,24 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit.send_requested.connect(self._on_send)
         input_layout.addWidget(self.input_edit, 1)
 
-        btn_col = QtWidgets.QVBoxLayout()
-        btn_col.setSpacing(2)
-        self.send_btn = QtWidgets.QPushButton('发送')
+        # 底部操作行：左侧留白（未来可放输入辅助按钮），右侧 发送/停止 合一按钮
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addStretch(1)
+
+        # 发送/停止 合一：未运行时为发送（绿色），运行时切换为停止（红色）
+        # 通过 _is_running 状态分发到 _on_send 或 _on_stop
+        self.send_btn = QtWidgets.QPushButton('🚀  发送')
         self.send_btn.setObjectName('sendBtn')
-        self.send_btn.clicked.connect(self._on_send)
-        btn_col.addWidget(self.send_btn)
-        self.stop_btn = QtWidgets.QPushButton('停止')
-        self.stop_btn.setObjectName('stopBtn')
-        self.stop_btn.clicked.connect(self._on_stop)
-        self.stop_btn.setEnabled(False)
-        btn_col.addWidget(self.stop_btn)
-        btn_col.addStretch(1)
-        input_layout.addLayout(btn_col)
+        self.send_btn.setMinimumWidth(110)
+        self.send_btn.setMinimumHeight(30)
+        self.send_btn.setToolTip('发送消息（Enter 或 Ctrl+Enter）')
+        self.send_btn.clicked.connect(self._on_send_or_stop)
+        # 兼容代码：保留 stop_btn 字段指向同一按钮，避免外部引用炸掉
+        self.stop_btn = self.send_btn
+        action_row.addWidget(self.send_btn)
+        input_layout.addLayout(action_row)
 
         input_container.setMinimumHeight(self._MIN_INPUT_HEIGHT + 8)
         self.splitter.addWidget(input_container)
@@ -1138,10 +1148,29 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._worker.cancel()
             self.status_label.setText('正在停止...')
 
+    def _on_send_or_stop(self):
+        """合一按钮的入口：根据当前运行状态分发到 _on_send 或 _on_stop。"""
+        if self._is_running:
+            self._on_stop()
+        else:
+            self._on_send()
+
     def _set_running(self, running):
         self._is_running = bool(running)
-        self.send_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
+        # 发送/停止 合一按钮：切换文字 + 样式 + 启用状态
+        if running:
+            self.send_btn.setText('■  停止')
+            self.send_btn.setObjectName('stopBtn')
+            self.send_btn.setToolTip('停止当前对话')
+            self.send_btn.setEnabled(True)
+        else:
+            self.send_btn.setText('🚀  发送')
+            self.send_btn.setObjectName('sendBtn')
+            self.send_btn.setToolTip('发送消息（Enter 或 Ctrl+Enter）')
+            self.send_btn.setEnabled(True)
+        # objectName 改了之后必须重刷样式，否则 QSS 不会重新匹配
+        self.send_btn.style().unpolish(self.send_btn)
+        self.send_btn.style().polish(self.send_btn)
         self.profile_combo.setEnabled(not running)
         self.settings_btn.setEnabled(not running)
 
