@@ -49,6 +49,15 @@ from ..ui_state import UIStateManager
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
 from .markdown_render import render_markdown
+from .bubbles import AssistantBubble as _AssistantBubble
+from .bubbles import BubbleFrame as _BubbleFrame  # noqa: F401
+from .bubbles import ChatLabel as _ChatLabel  # noqa: F401
+from .bubbles import ErrorBubble as _ErrorBubble
+from .bubbles import StatusLine as _StatusLine
+from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
+from .bubbles import UserBubble as _UserBubble
+from .bubbles import WelcomeBlock as _WelcomeBlock
+from .tool_block import ToolCallBlock as _ToolCallBlock
 
 QApplication = QtWidgets.QApplication
 
@@ -141,481 +150,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
 
 
-# ---------------------------------------------------------------------- #
-# 消息气泡基类
-# ---------------------------------------------------------------------- #
-class _BubbleFrame(QtWidgets.QFrame):
-    """单条消息的气泡容器（一个 QFrame，内含 layout）。
-
-    通过外部 hbox 控制左右对齐：layout 里加 stretch 推到一边。
-    """
-
-    def __init__(self, align='left', bg='#2d3d2d', fg='#d4ead4',
-                 parent=None):
-        super(_BubbleFrame, self).__init__(parent)
-        self._align = align
-        self._bg = bg
-        self._fg = fg
-        self.setStyleSheet(
-            'QFrame {{ background:{bg}; color:{fg};'
-            'border-radius:10px; padding:0; }}'.format(bg=bg, fg=fg)
-        )
-        # 让气泡宽度按内容自适应，但不要把整个父容器撑满
-        self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        self._inner = QtWidgets.QVBoxLayout(self)
-        self._inner.setContentsMargins(10, 6, 10, 8)
-        self._inner.setSpacing(2)
-
-    def add_widget(self, w):
-        self._inner.addWidget(w)
-
-    def add_layout(self, layout):
-        self._inner.addLayout(layout)
-
-    @property
-    def align(self):
-        return self._align
-
-
-class _ChatLabel(QtWidgets.QLabel):
-    """气泡内的富文本标签，自动换行 + 可选中复制。"""
-
-    def __init__(self, text='', parent=None):
-        super(_ChatLabel, self).__init__(parent)
-        self.setWordWrap(True)
-        self.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction
-        )
-        self.setOpenExternalLinks(True)
-        self.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self.setStyleSheet('background:transparent;')
-        if text:
-            self.setText(text)
-
-
-# ---------------------------------------------------------------------- #
-# 流式助手气泡：chunk 增量 append，结束后 markdown 重渲染
-# ---------------------------------------------------------------------- #
-class _StreamingAssistantBubble(QtWidgets.QWidget):
-    """正在流式接收的助手气泡。
-
-    流式过程中显示 plain text（避免 markdown 半截解析的闪烁），
-    end_streaming() 时一次性切换到 markdown 渲染的 HTML。
-    """
-
-    def __init__(self, parent=None):
-        super(_StreamingAssistantBubble, self).__init__(parent)
-        outer = QtWidgets.QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        self._bubble = _BubbleFrame(
-            align='left', bg='#2d3d2d', fg='#d4ead4',
-        )
-        # 标题
-        head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">🤖 助手</span>'
-        )
-        head.setStyleSheet('background:transparent;')
-        self._bubble.add_widget(head)
-        # 流式正文
-        self._label = _ChatLabel('')
-        self._bubble.add_widget(self._label)
-        outer.addWidget(self._bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
-        outer.addStretch(1)
-        self._buffer = ''
-        self._closed = False
-
-    def append_chunk(self, chunk):
-        # type: (str) -> None
-        if not chunk or self._closed:
-            return
-        self._buffer += chunk
-        # 流式过程：转义 + 简单 br 替换，先不解析 markdown，避免闪烁
-        # 等 end_streaming 时再做完整 markdown 渲染
-        body = html_escape(self._buffer).replace('\n', '<br>')
-        self._label.setText(body)
-
-    def end_streaming(self):
-        # type: () -> str
-        """流式结束，返回最终 buffer。调用方负责把这个 bubble
-        替换为最终的 markdown 渲染版本。"""
-        self._closed = True
-        return self._buffer
-
-    def is_empty(self):
-        return not self._buffer.strip()
-
-
-# ---------------------------------------------------------------------- #
-# 最终助手气泡（markdown 渲染 + 复制按钮）
-# ---------------------------------------------------------------------- #
-class _AssistantBubble(QtWidgets.QWidget):
-    """已完成的助手回复气泡，渲染 markdown，并附带复制按钮。"""
-
-    def __init__(self, text, parent=None):
-        super(_AssistantBubble, self).__init__(parent)
-        outer = QtWidgets.QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        bubble = _BubbleFrame(align='left', bg='#2d3d2d', fg='#d4ead4')
-
-        # 标题行：[🤖 助手]  [复制] [复制代码]
-        title_row = QtWidgets.QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(6)
-        head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">🤖 助手</span>'
-        )
-        head.setStyleSheet('background:transparent;')
-        title_row.addWidget(head)
-        title_row.addStretch(1)
-
-        copy_btn = QtWidgets.QPushButton('复制')
-        copy_btn.setProperty('class', 'miniBtn')
-        copy_btn.setStyleSheet(self._mini_btn_style())
-        copy_btn.clicked.connect(lambda: self._copy_to_clipboard(text))
-        title_row.addWidget(copy_btn)
-
-        # 如果包含代码块，加"复制代码"按钮
-        code_blocks = extract_code_blocks(text)
-        if len(code_blocks) == 1:
-            code_btn = QtWidgets.QPushButton('复制代码')
-            code_btn.setStyleSheet(self._mini_btn_style())
-            code_btn.clicked.connect(
-                lambda: self._copy_to_clipboard(code_blocks[0][1])
-            )
-            title_row.addWidget(code_btn)
-        elif len(code_blocks) > 1:
-            for idx, (_lang, _code) in enumerate(code_blocks):
-                btn = QtWidgets.QPushButton('代码{}'.format(idx + 1))
-                btn.setStyleSheet(self._mini_btn_style())
-                # 闭包变量绑定
-                btn.clicked.connect(
-                    lambda _checked=False, c=_code:
-                    self._copy_to_clipboard(c)
-                )
-                title_row.addWidget(btn)
-
-        bubble.add_layout(title_row)
-
-        # 正文：markdown 渲染
-        body = render_markdown(text)
-        label = _ChatLabel(body)
-        bubble.add_widget(label)
-
-        outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
-        outer.addStretch(1)
-
-    @staticmethod
-    def _mini_btn_style():
-        return (
-            'QPushButton { background:transparent; color:#888;'
-            'border:1px solid #444; border-radius:3px;'
-            'padding:1px 6px; min-height:18px; font-size:9pt; }'
-            'QPushButton:hover { background:#333; color:#ddd; }'
-        )
-
-    @staticmethod
-    def _copy_to_clipboard(text):
-        cb = QApplication.clipboard()
-        cb.setText(text)
-
-
-# ---------------------------------------------------------------------- #
-# 用户气泡（靠右）
-# ---------------------------------------------------------------------- #
-class _UserBubble(QtWidgets.QWidget):
-    def __init__(self, text, parent=None):
-        super(_UserBubble, self).__init__(parent)
-        outer = QtWidgets.QHBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addStretch(1)
-
-        bubble = _BubbleFrame(align='right', bg='#2c5d8f', fg='#ffffff')
-        head = QtWidgets.QLabel(
-            '<span style="color:#bbd9f5;font-size:9pt;">👤 你</span>'
-        )
-        head.setStyleSheet('background:transparent; color:#bbd9f5;')
-        bubble.add_widget(head)
-
-        body = html_escape(text).replace('\n', '<br>')
-        label = _ChatLabel(
-            '<span style="color:#ffffff;line-height:1.5;">'
-            + body + '</span>'
-        )
-        bubble.add_widget(label)
-        outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignRight)
-
-
-# ---------------------------------------------------------------------- #
-# 工具调用块（可折叠）
-# ---------------------------------------------------------------------- #
-class _ToolCallBlock(QtWidgets.QWidget):
-    """可折叠的工具调用展示。
-
-    布局：
-    ▶ 🔧 create_box  ✓ <耗时灰色>     ← 头部按钮（点击折叠/展开）
-    └ args / result（默认折叠）
-    """
-
-    def __init__(self, name, args_str, dangerous=False, parent=None):
-        super(_ToolCallBlock, self).__init__(parent)
-        self._name = name
-        self._args_str = args_str
-        self._dangerous = dangerous
-        self._result_text = ''
-        self._result_ok = None  # type: Optional[bool]
-
-        outer = QtWidgets.QHBoxLayout(self)
-        outer.setContentsMargins(28, 2, 0, 2)  # 左缩进
-        outer.setSpacing(0)
-
-        container = QtWidgets.QFrame()
-        container.setStyleSheet(
-            'QFrame { background:#252525; border-left:3px solid '
-            + ('#ffaa66' if dangerous else '#7fb3d5') + ';'
-            'border-radius:3px; }'
-        )
-        cv = QtWidgets.QVBoxLayout(container)
-        cv.setContentsMargins(8, 4, 8, 4)
-        cv.setSpacing(2)
-
-        # 头部行：[▶箭头按钮] [🔧 name 状态符]  ← 整行可点击折叠
-        head_row = QtWidgets.QHBoxLayout()
-        head_row.setContentsMargins(0, 0, 0, 0)
-        head_row.setSpacing(4)
-
-        self._head_btn = QtWidgets.QToolButton()
-        self._head_btn.setCheckable(True)
-        self._head_btn.setChecked(False)
-        self._head_btn.setText('▶')
-        self._head_btn.setFixedWidth(18)
-        self._head_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self._head_btn.setStyleSheet(
-            'QToolButton { background:transparent; color:#aaa;'
-            'border:none; padding:0; font-size:10pt; }'
-            'QToolButton:hover { color:#fff; }'
-        )
-        self._head_btn.clicked.connect(self._toggle)
-        head_row.addWidget(self._head_btn)
-
-        # 工具名 QLabel（支持富文本），可点击同步折叠
-        self._head_label = QtWidgets.QLabel()
-        self._head_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self._head_label.setStyleSheet(
-            'background:transparent; color:#d0d0d0;'
-            'font-family:Consolas,\'Courier New\',monospace;'
-            'font-size:10pt;'
-        )
-        self._head_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        # 让 label 也接受点击折叠
-        self._head_label.mousePressEvent = self._on_label_clicked
-        head_row.addWidget(self._head_label, 1)
-        cv.addLayout(head_row)
-
-        self._refresh_head_label(running=True)
-
-        # 详情区（默认折叠）
-        self._detail = QtWidgets.QWidget()
-        dv = QtWidgets.QVBoxLayout(self._detail)
-        dv.setContentsMargins(16, 4, 0, 4)
-        dv.setSpacing(3)
-
-        # args
-        self._args_label = _ChatLabel(self._format_args_html(args_str))
-        self._args_label.setStyleSheet(
-            'background:#1a1a1a; color:#bbb;'
-            'font-family:Consolas,monospace; font-size:10pt;'
-            'padding:4px 8px; border-radius:3px;'
-        )
-        dv.addWidget(QtWidgets.QLabel(
-            '<span style="color:#7fb3d5;font-size:9pt;">参数:</span>'
-        ))
-        dv.addWidget(self._args_label)
-
-        # result（待填）
-        self._result_title = QtWidgets.QLabel(
-            '<span style="color:#7fb3d5;font-size:9pt;">'
-            '结果: <i>等待执行...</i></span>'
-        )
-        self._result_label = _ChatLabel('')
-        self._result_label.setStyleSheet(
-            'background:#1a1a1a; color:#bbb;'
-            'font-family:Consolas,monospace; font-size:10pt;'
-            'padding:4px 8px; border-radius:3px;'
-        )
-        dv.addWidget(self._result_title)
-        dv.addWidget(self._result_label)
-        self._result_label.hide()
-
-        self._detail.hide()
-        cv.addWidget(self._detail)
-
-        outer.addWidget(container, 1)
-
-    def _refresh_head_label(self, running=False):
-        """刷新工具名行的富文本 + 箭头按钮文本。
-
-        头部由两个 widget 拼成：
-        - self._head_btn：纯文本的 ▶ / ▼，QToolButton 直接显示符号
-        - self._head_label：富文本的图标 + 工具名 + 状态对勾
-        """
-        icon = '⚠️' if self._dangerous else '🔧'
-        if running:
-            sym = '⋯'
-            color = '#888'
-        elif self._result_ok is True:
-            sym = '✓'
-            color = '#8fce8f'
-        else:
-            sym = '✗'
-            color = '#e57373'
-        expanded = bool(self._head_btn and self._head_btn.isChecked())
-        # 箭头由 QToolButton 单独承载，避免 setText 吃 HTML 的问题
-        self._head_btn.setText('▼' if expanded else '▶')
-        # 工具名 + 状态符放进 QLabel（支持 RichText）
-        label_html = (
-            '{icon} <b>{name}</b>  '
-            '<span style="color:{color};">{sym}</span>'
-        ).format(
-            icon=icon, name=html_escape(self._name),
-            color=color, sym=sym,
-        )
-        self._head_label.setText(label_html)
-
-    def _on_label_clicked(self, _event):
-        """点击工具名 label 时也触发折叠/展开。"""
-        self._head_btn.setChecked(not self._head_btn.isChecked())
-        self._toggle()
-
-    def _toggle(self):
-        expanded = self._head_btn.isChecked()
-        self._detail.setVisible(expanded)
-        self._refresh_head_label(running=(self._result_ok is None))
-
-    def set_result(self, ok, result_str):
-        # type: (bool, str) -> None
-        self._result_ok = bool(ok)
-        self._result_text = result_str or ''
-        # 刷新头部
-        self._refresh_head_label(running=False)
-        # 刷新结果区
-        self._result_title.setText(
-            '<span style="color:#7fb3d5;font-size:9pt;">结果:</span>'
-        )
-        body = self._format_result_html(result_str, ok)
-        self._result_label.setText(body)
-        self._result_label.show()
-
-    @staticmethod
-    def _format_args_html(args_str):
-        try:
-            obj = json.loads(args_str)
-            pretty = json.dumps(obj, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            pretty = args_str or '{}'
-        return '<pre style="margin:0;white-space:pre-wrap;">{}</pre>'.format(
-            html_escape(pretty)
-        )
-
-    @staticmethod
-    def _format_result_html(result_str, ok):
-        try:
-            obj = json.loads(result_str)
-            pretty = json.dumps(obj, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
-            pretty = result_str or ''
-        if len(pretty) > 1200:
-            pretty = pretty[:1200] + '\n... (截断)'
-        color = '#a8e6a8' if ok else '#e57373'
-        return (
-            '<pre style="margin:0;white-space:pre-wrap;color:{c};">'
-            '{body}</pre>'
-        ).format(c=color, body=html_escape(pretty))
-
-
-# ---------------------------------------------------------------------- #
-# 状态/错误气泡
-# ---------------------------------------------------------------------- #
-class _StatusLine(QtWidgets.QWidget):
-    def __init__(self, text, parent=None):
-        super(_StatusLine, self).__init__(parent)
-        h = QtWidgets.QHBoxLayout(self)
-        h.setContentsMargins(0, 2, 0, 2)
-        lbl = QtWidgets.QLabel(
-            '<span style="color:#888;font-style:italic;font-size:10pt;">'
-            '⋯ {}</span>'.format(html_escape(text))
-        )
-        lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet('background:transparent;')
-        h.addWidget(lbl, 1)
-
-
-class _ErrorBubble(QtWidgets.QWidget):
-    def __init__(self, text, parent=None):
-        super(_ErrorBubble, self).__init__(parent)
-        outer = QtWidgets.QHBoxLayout(self)
-        outer.setContentsMargins(0, 2, 0, 2)
-        bubble = _BubbleFrame(align='left', bg='#4a2a2a', fg='#ffaaaa')
-        head = QtWidgets.QLabel(
-            '<b style="color:#ffaaaa;">⚠ 错误</b>'
-        )
-        head.setStyleSheet('background:transparent;')
-        bubble.add_widget(head)
-        body = html_escape(text).replace('\n', '<br>')
-        label = _ChatLabel(
-            '<span style="color:#ffaaaa;font-size:10pt;">'
-            + body + '</span>'
-        )
-        bubble.add_widget(label)
-        outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
-        outer.addStretch(1)
-
-
-class _WelcomeBlock(QtWidgets.QWidget):
-    """欢迎块。可点击的示例按钮会触发 example_picked 信号。"""
-
-    example_picked = QtCore.Signal(str)
-
-    _EXAMPLES = (
-        '创建一个红色的茶壶并加上 TurboSmooth 修改器',
-        '列出场景里所有的灯光，按强度排序',
-        '把所有 Box001 重命名为 wall_xx 序列',
-    )
-
-    def __init__(self, html_body, parent=None):
-        super(_WelcomeBlock, self).__init__(parent)
-        v = QtWidgets.QVBoxLayout(self)
-        v.setContentsMargins(0, 8, 0, 8)
-        v.setSpacing(6)
-        head = QtWidgets.QLabel(
-            '<div align="center" style="color:#888;font-size:10pt;">'
-            + html_body + '</div>'
-        )
-        head.setWordWrap(True)
-        head.setStyleSheet('background:transparent;')
-        v.addWidget(head)
-
-        for ex in self._EXAMPLES:
-            btn = QtWidgets.QPushButton('💡 ' + ex)
-            btn.setStyleSheet(
-                'QPushButton { background:#252525; color:#a0a0a0;'
-                'border:1px dashed #444; border-radius:4px;'
-                'padding:6px 10px; font-size:10pt; text-align:left; }'
-                'QPushButton:hover { background:#2d3d2d; color:#ddd;'
-                'border-color:#5a8a5a; }'
-            )
-            # 闭包绑定
-            btn.clicked.connect(
-                lambda _checked=False, t=ex: self.example_picked.emit(t)
-            )
-            v.addWidget(btn)
-
-
-# ---------------------------------------------------------------------- #
-# 聊天列表渲染器：管理 messages_layout 里的 widget
 # ---------------------------------------------------------------------- #
 class _ChatRenderer(QtCore.QObject):
     """管理消息列表区的所有气泡 widget。
@@ -767,12 +301,20 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._skill_mgr = SkillManager()
         self._current_session = None  # type: Optional[SessionMeta]
         self._conv = Conversation()
-        self._dispatcher = ToolDispatcher()
+        self._dispatcher = self._build_dispatcher()
         # type: Optional[AgentWorker]
         self._worker = None
         self._is_running = False
         # 当前正在执行的工具块映射: call_id -> _ToolCallBlock
         self._pending_tool_blocks = {}
+        # 累计用量统计：跨多轮、跨多个会话累加（重启后归零）
+        self._usage_session = {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'cost_usd': 0.0,
+            'count': 0,  # 总调用次数
+        }
 
         self._build_ui()
         self._refresh_profiles()
@@ -843,7 +385,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         sess_row.addWidget(self.clear_btn)
         outer.addLayout(sess_row)
 
-        # === 顶部条第 3 行：上下文 token 监控 + 压缩按钮 ===
+        # === 顶部条第 3 行：上下文 token 监控 + 用量统计 + 压缩按钮 ===
         ctx_row = QtWidgets.QHBoxLayout()
         ctx_row.setSpacing(4)
         self.context_label = QtWidgets.QLabel('📊 上下文: -')
@@ -856,6 +398,22 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             'color:#aaa;font-size:9pt;padding:0 4px;',
         )
         ctx_row.addWidget(self.context_label)
+
+        # 累计用量（实际 LLM usage 反馈）
+        self.usage_label = QtWidgets.QLabel('💰 用量: -')
+        self.usage_label.setToolTip(
+            '本次启动以来的累计 LLM token 用量与成本估算。\n'
+            '数据来自 LLM 后端返回的 usage 字段（OpenAI / DeepSeek 等支持）。\n'
+            '价格可在「设置」→ Profile 中按 USD/1M tokens 配置。\n'
+            '点击复位累计值。',
+        )
+        self.usage_label.setStyleSheet(
+            'color:#aaa;font-size:9pt;padding:0 8px;',
+        )
+        self.usage_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.usage_label.mousePressEvent = self._on_usage_label_clicked
+        ctx_row.addWidget(self.usage_label)
+
         ctx_row.addStretch(1)
 
         self.compress_btn = QtWidgets.QPushButton('🗜 压缩对话')
@@ -955,6 +513,31 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _build_llm_client(self):
         prof = self._config.get_active_profile()
         return build_client_from_profile(prof)
+
+    def _build_dispatcher(self):
+        """根据当前 profile 构造 dispatcher（含工具结果裁剪上限）。"""
+        prof = self._config.get_active_profile()
+        try:
+            cap = int(getattr(prof, 'tool_result_max_bytes', 0) or 0)
+        except (TypeError, ValueError):
+            cap = 0
+        if cap <= 0:
+            from ..tools.dispatcher import DEFAULT_RESULT_MAX_BYTES
+            cap = DEFAULT_RESULT_MAX_BYTES
+        return ToolDispatcher(result_max_bytes=cap)
+
+    def _get_active_prices(self):
+        """读当前 profile 的 (input, output) 计费单价（USD per 1M tokens）。"""
+        prof = self._config.get_active_profile()
+        try:
+            pin = float(getattr(prof, 'price_input_per_1m', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pin = 0.0
+        try:
+            pout = float(getattr(prof, 'price_output_per_1m', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pout = 0.0
+        return pin, pout
 
     # ------------------------------------------------------------------ #
     # UI 状态：恢复 / 保存
@@ -1101,6 +684,62 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self._refresh_context_label()
 
+    def _on_usage_received(self, prompt_tokens, completion_tokens,
+                           total_tokens, cost_usd):
+        """worker 收到 LLM usage 数据后回调。"""
+        u = self._usage_session
+        u['prompt_tokens'] += int(prompt_tokens)
+        u['completion_tokens'] += int(completion_tokens)
+        u['total_tokens'] += int(total_tokens)
+        if cost_usd >= 0:
+            u['cost_usd'] += float(cost_usd)
+        u['count'] += 1
+        self._refresh_usage_label()
+
+    def _on_usage_label_clicked(self, _event):
+        """点击用量 label：复位累计值。"""
+        self._usage_session = {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'cost_usd': 0.0,
+            'count': 0,
+        }
+        self._refresh_usage_label()
+        try:
+            self._renderer.add_status('💰 用量统计已复位')
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    @staticmethod
+    def _fmt_token(n):
+        if n >= 1_000_000:
+            return '{:.2f}M'.format(n / 1_000_000.0)
+        if n >= 1000:
+            return '{:.1f}K'.format(n / 1000.0)
+        return str(n)
+
+    def _refresh_usage_label(self):
+        u = self._usage_session
+        if u['count'] == 0:
+            self.usage_label.setText('💰 用量: -')
+            return
+        in_s = self._fmt_token(u['prompt_tokens'])
+        out_s = self._fmt_token(u['completion_tokens'])
+        cost = u['cost_usd']
+        if cost > 0:
+            self.usage_label.setText(
+                '💰 in {} / out {}  ${:.4f}  ({}次)'.format(
+                    in_s, out_s, cost, u['count'],
+                ),
+            )
+        else:
+            self.usage_label.setText(
+                '💰 in {} / out {}  ({}次)'.format(
+                    in_s, out_s, u['count'],
+                ),
+            )
+
     def _on_compress_history(self):
         """方案 B：手动触发"压缩对话"——让 LLM 总结后替换早期消息。"""
         if self._is_running:
@@ -1197,6 +836,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         try:
             self._config.set_active_profile(name)
             self._llm = self._build_llm_client()
+            self._dispatcher = self._build_dispatcher()
             self._renderer.add_status('已切换到 Profile: {}'.format(name))
             self._refresh_context_label()
         except Exception as exc:  # pylint: disable=broad-except
@@ -1207,6 +847,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         dlg = SettingsDialog(self._config, parent=self)
         if dlg.exec_():
             self._llm = self._build_llm_client()
+            self._dispatcher = self._build_dispatcher()
             self._refresh_profiles()
             self._renderer.add_status('设置已保存')
             self._refresh_context_label()
@@ -1474,6 +1115,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             dispatcher=self._dispatcher,
             max_tool_loops=self._get_active_max_loops(),
             max_history_tokens=self._get_active_max_history_tokens(),
+            price_input_per_1m=self._get_active_prices()[0],
+            price_output_per_1m=self._get_active_prices()[1],
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
         self._worker.set_system_prompt_addon_provider(
@@ -1485,6 +1128,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.text_message_complete.connect(self._on_text_complete)
         self._worker.status_changed.connect(self._on_status)
         self._worker.history_trimmed.connect(self._on_history_trimmed)
+        self._worker.usage_received.connect(self._on_usage_received)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.run_in_thread(text)

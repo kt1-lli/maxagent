@@ -57,6 +57,8 @@ BUILTIN_PROFILES = [
         "supports_tools": True,
         "stream": True,
         "timeout": 120,
+        "price_input_per_1m": 5.0,
+        "price_output_per_1m": 15.0,
     },
     {
         "name": "DeepSeek",
@@ -67,6 +69,8 @@ BUILTIN_PROFILES = [
         "supports_tools": True,
         "stream": True,
         "timeout": 120,
+        "price_input_per_1m": 0.27,
+        "price_output_per_1m": 1.1,
     },
 ]
 
@@ -104,6 +108,16 @@ class LLMProfile:
     # 长会话自动摘要触发阈值（token）。超过该阈值时，系统会在下一轮
     # LLM 调用前后台请求模型生成摘要替换早期消息。0 表示禁用自动摘要。
     auto_summarize_threshold: int = 0
+    # 单次工具结果的最大字节数。超出时 dispatcher 会自动截断后再回灌
+    # 给 LLM，避免 list_scene_objects 这类大返回直接打爆上下文窗口。
+    # 0 或负数 = 不截断（不推荐）。
+    tool_result_max_bytes: int = 16384
+    # 计费单价（USD per 1M tokens），仅用于 UI 估算成本展示。
+    # 默认 0 表示不显示成本（本地模型/未知服务）。
+    # 常见参考值：DeepSeek-Chat (in 0.27 / out 1.1)；
+    # GPT-4o (in 5 / out 15)；GPT-4o-mini (in 0.15 / out 0.6)。
+    price_input_per_1m: float = 0.0
+    price_output_per_1m: float = 0.0
 
     def to_dict(self) -> Dict:
         data = asdict(self)

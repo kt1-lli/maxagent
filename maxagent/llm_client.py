@@ -169,6 +169,10 @@ class LLMClient(object):
         self._model = model
         self._timeout = timeout
         self._extra_headers = dict(extra_headers or {})
+        # 最近一次响应里携带的 usage 统计（OpenAI 兼容协议会返回
+        # ``{"prompt_tokens", "completion_tokens", "total_tokens"}``）。
+        # 流式模式下大多数后端会在最后一个 chunk 的 ``usage`` 字段返回。
+        self._last_usage = {}  # type: Dict[str, int]
 
     # ------------------------------------------------------------------ #
     # 公共方法
@@ -182,6 +186,7 @@ class LLMClient(object):
         max_tokens: int = 4096,
         stream: bool = False,
         on_delta: Optional[Callable[[str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """发起一次 chat completion 调用。
 
@@ -189,6 +194,8 @@ class LLMClient(object):
         :param tools:    OpenAI tools 列表（function calling）；为 None 表示不开 tools
         :param stream:   是否流式
         :param on_delta: 流式模式下每收到一个文本片段时的回调
+        :param cancel_check: 流式期间的取消检查回调，返回 True 时立刻关闭
+            连接并抛 ``LLMError('用户取消')``，让 worker 能快速跟手停下来。
         :returns: 一个标准化的 dict：
                   {
                       "content": "文本内容（可能为空）",
@@ -197,6 +204,7 @@ class LLMClient(object):
                           ...
                       ],
                       "finish_reason": "stop"|"tool_calls"|"length"|...,
+                      "usage": {"prompt_tokens": int, ...},  # 仅当后端返回时
                       "raw": <原始响应>,
                   }
         """
@@ -210,14 +218,22 @@ class LLMClient(object):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        # 流式模式下额外要 usage 字段（DeepSeek/OpenAI 都支持这个 option，
+        # 不支持的后端会忽略）
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
 
         url = self._base_url + "/chat/completions"
         headers = self._build_headers()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         if stream:
-            return self._chat_stream(url, headers, body, on_delta)
+            return self._chat_stream(url, headers, body, on_delta, cancel_check)
         return self._chat_blocking(url, headers, body)
+
+    def get_last_usage(self) -> Dict[str, int]:
+        """返回最近一次 chat() 收到的 usage 字典；若后端未返回则为空 dict。"""
+        return dict(self._last_usage)
 
     # ------------------------------------------------------------------ #
     # 内部实现
@@ -253,6 +269,14 @@ class LLMClient(object):
         except ValueError as exc:
             raise LLMError("响应解析失败: {}".format(exc))
 
+        # 记录 usage（非流式时直接在 body 里）
+        usage = data.get("usage") or {}
+        if isinstance(usage, dict):
+            self._last_usage = {
+                k: int(v) for k, v in usage.items()
+                if isinstance(v, (int, float))
+            }
+
         return self._normalize_response(data)
 
     def _chat_stream(
@@ -261,6 +285,7 @@ class LLMClient(object):
         headers: Dict[str, str],
         body: bytes,
         on_delta: Optional[Callable[[str], None]],
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """SSE 流式读取，按需回调文本片段，最终聚合成统一返回结构。"""
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
@@ -268,6 +293,7 @@ class LLMClient(object):
         # tool_calls 流式分片需要按 index 累积
         tool_buf: Dict[int, Dict[str, Any]] = {}
         finish_reason: Optional[str] = None
+        usage_buf: Dict[str, int] = {}
 
         try:
             resp = urllib.request.urlopen(req, timeout=self._timeout)
@@ -276,8 +302,17 @@ class LLMClient(object):
         except urllib.error.URLError as exc:
             raise LLMError("网络错误: {}".format(exc.reason))
 
+        cancelled = False
         try:
-            for line in self._iter_sse_lines(resp):
+            for line in self._iter_sse_lines(resp, cancel_check):
+                # 每行检查一次取消
+                if cancel_check is not None:
+                    try:
+                        if cancel_check():
+                            cancelled = True
+                            break
+                    except Exception:  # pylint: disable=broad-except
+                        pass
                 if not line or not line.startswith("data:"):
                     continue
                 data_str = line[5:].strip()
@@ -287,6 +322,13 @@ class LLMClient(object):
                     chunk = json.loads(data_str)
                 except ValueError:
                     continue
+
+                # 流式 usage（DeepSeek/OpenAI 在最后一个 chunk 给出）
+                u = chunk.get("usage")
+                if isinstance(u, dict):
+                    for k, v in u.items():
+                        if isinstance(v, (int, float)):
+                            usage_buf[k] = int(v)
 
                 choices = chunk.get("choices") or []
                 if not choices:
@@ -323,7 +365,13 @@ class LLMClient(object):
                 if fr:
                     finish_reason = fr
         finally:
-            resp.close()
+            try:
+                resp.close()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+        if cancelled:
+            raise LLMError("用户取消")
 
         # 把累积的 tool_calls.arguments 解析成 dict
         tool_calls: List[Dict[str, Any]] = []
@@ -339,18 +387,33 @@ class LLMClient(object):
                 "arguments": args,
             })
 
+        if usage_buf:
+            self._last_usage = usage_buf
+
         return {
             "content": "".join(content_chunks),
             "tool_calls": tool_calls,
             "finish_reason": finish_reason or "stop",
+            "usage": dict(usage_buf),
             "raw": None,
         }
 
     @staticmethod
-    def _iter_sse_lines(resp) -> Iterator[str]:
-        """逐行迭代 SSE 流。"""
+    def _iter_sse_lines(resp, cancel_check=None) -> Iterator[str]:
+        """逐行迭代 SSE 流。
+
+        ``cancel_check`` 每次读完一个 1KB chunk 后会被调用一次；返回
+        True 时立即中断并关闭流。这样在 LLM 非常啰嗦的长回复场景下，
+        用户点"停止"也能在 1KB 范围内跟手生效。
+        """
         buf = b""
         while True:
+            if cancel_check is not None:
+                try:
+                    if cancel_check():
+                        return
+                except Exception:  # pylint: disable=broad-except
+                    pass
             chunk = resp.read(1024)
             if not chunk:
                 if buf:
@@ -370,6 +433,7 @@ class LLMClient(object):
                 "content": "",
                 "tool_calls": [],
                 "finish_reason": "stop",
+                "usage": data.get("usage") or {},
                 "raw": data,
             }
         msg = choices[0].get("message") or {}
@@ -390,6 +454,7 @@ class LLMClient(object):
             "content": msg.get("content") or "",
             "tool_calls": tool_calls,
             "finish_reason": choices[0].get("finish_reason", "stop"),
+            "usage": data.get("usage") or {},
             "raw": data,
         }
 

@@ -83,18 +83,25 @@ class AgentWorker(QObject):
     status_changed = Signal(str)
     # 历史被裁剪: (removed_count, current_tokens, budget_tokens)
     history_trimmed = Signal(int, int, int)
+    # LLM 用量回报: (prompt_tokens, completion_tokens, total_tokens, cost_usd)
+    # cost_usd 为 -1 时表示 profile 未配价格 / 不可估算
+    usage_received = Signal(int, int, int, float)
 
     def __init__(self, llm_client, conversation, dispatcher,
                  max_tool_loops=MAX_TOOL_LOOPS,
                  max_history_tokens=32000,
+                 price_input_per_1m=0.0,
+                 price_output_per_1m=0.0,
                  parent=None):
-        # type: (LLMClient, Conversation, ToolDispatcher, int, int, Any) -> None
+        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, Any) -> None
         super(AgentWorker, self).__init__(parent)
         self._llm = llm_client
         self._conv = conversation
         self._dispatcher = dispatcher
         self._max_loops = int(max_tool_loops)
         self._max_history_tokens = int(max_history_tokens)
+        self._price_in = float(price_input_per_1m or 0.0)
+        self._price_out = float(price_output_per_1m or 0.0)
         # 在 worker 自身的线程上运行
         self._thread = None  # type: Optional[QThread]
         # 取消标志（跨线程共享）
@@ -256,8 +263,13 @@ class AgentWorker(QObject):
                     tools=tools_schema,
                     stream=True,
                     on_delta=self._on_text_chunk,
+                    cancel_check=self._cancel_event.is_set,
                 )
             except LLMError as exc:
+                # 用户主动取消用 LLMError("用户取消") 表达，区别于其他错误
+                if '用户取消' in str(exc):
+                    self.failed.emit('用户取消')
+                    return
                 self.failed.emit('LLM 调用失败: {}'.format(exc))
                 return
             except Exception as exc:  # pylint: disable=broad-except
@@ -269,6 +281,11 @@ class AgentWorker(QObject):
 
             # 解析返回
             content = resp.get('content') or ''
+
+            # 把 usage 信息派发给 UI（如果后端返回了）
+            usage = resp.get('usage') or {}
+            if usage:
+                self._emit_usage(usage)
             # LLMClient 返回的 tool_calls 是扁平格式 {id, name, arguments(dict)}
             # 需要还原为 OpenAI 原生 {id, type, function:{name, arguments(json_str)}}
             # 才能塞回 conversation 让下一轮 LLM 读懂
@@ -401,6 +418,28 @@ class AgentWorker(QObject):
         """LLM 流式返回 token 时由 LLMClient 调用（仍在子线程）。"""
         if chunk:
             self.chunk_received.emit(chunk)
+
+    def _emit_usage(self, usage):
+        """从后端返回的 usage dict 计算成本并发信号。
+
+        :param usage: 形如 ``{"prompt_tokens": int, "completion_tokens": int, ...}``
+        """
+        try:
+            pt = int(usage.get('prompt_tokens') or 0)
+            ct = int(usage.get('completion_tokens') or 0)
+            tt = int(usage.get('total_tokens') or (pt + ct))
+        except (TypeError, ValueError):
+            return
+        cost = -1.0
+        if self._price_in > 0 or self._price_out > 0:
+            cost = (
+                pt * self._price_in / 1_000_000.0
+                + ct * self._price_out / 1_000_000.0
+            )
+        try:
+            self.usage_received.emit(pt, ct, tt, cost)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     @staticmethod
     def _safe_json_dumps(obj):

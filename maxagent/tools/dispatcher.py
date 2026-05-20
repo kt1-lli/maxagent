@@ -30,6 +30,11 @@ class ToolExecutionError(Exception):
     """工具执行异常。"""
 
 
+# 工具结果序列化后超过这个字节数时，会自动截断后再回灌给 LLM，
+# 防止单次 scene_query 把上下文窗口直接打爆。可由 Profile 覆盖。
+DEFAULT_RESULT_MAX_BYTES = 16 * 1024
+
+
 class ToolDispatcher(object):
     """工具调度器。"""
 
@@ -38,16 +43,21 @@ class ToolDispatcher(object):
         wrap_undo=True,                 # type: bool
         confirm_callback=None,          # type: Optional[Callable[[str, Dict], bool]]
         timeout=120.0,                  # type: float
+        result_max_bytes=DEFAULT_RESULT_MAX_BYTES,  # type: int
     ):
         """
         :param wrap_undo: 全局 undo 开关
         :param confirm_callback: dangerous 工具执行前的确认回调，
             签名 (tool_name, arguments) -> bool；返回 False 则取消执行
         :param timeout: 单次工具执行的主线程超时（秒）
+        :param result_max_bytes: 结果 JSON 序列化后的字节上限。超过时会
+            把 ``result`` 字段替换为截断版本，并附加 ``__truncated__``
+            元信息让 LLM 知道有省略。0 或负数表示不截断。
         """
         self._wrap_undo = wrap_undo
         self._confirm_cb = confirm_callback
         self._timeout = timeout
+        self._result_max_bytes = int(result_max_bytes)
 
     # ------------------------------------------------------------------ #
     # 公共接口
@@ -97,7 +107,15 @@ class ToolDispatcher(object):
             )
 
         # 3. 序列化兜底：保证返回值可被 json.dumps
-        return {"ok": True, "result": _safe_serialize(result)}
+        safe = _safe_serialize(result)
+        out = {"ok": True, "result": safe}
+        # 4. 结果体积裁剪：避免 list_scene_objects 这类返回数千项的
+        #    工具一次性把上下文打爆。
+        if self._result_max_bytes > 0:
+            out = _maybe_truncate_result(
+                out, self._result_max_bytes, tool_name=tool_name,
+            )
+        return out
 
     # ------------------------------------------------------------------ #
     # 内部
@@ -158,3 +176,117 @@ def _safe_serialize(obj):
             return str(obj)
         except Exception:  # pylint: disable=broad-except
             return "<unserializable>"
+
+
+def _maybe_truncate_result(out, max_bytes, tool_name=""):
+    # type: (Dict[str, Any], int, str) -> Dict[str, Any]
+    """如果序列化后超出 max_bytes，把 result 字段替换为截断版本。
+
+    策略：
+    - 整体 dump 一次估算大小；不超就原样返回
+    - 超出时根据 result 的形状裁剪：
+        * list/tuple：保留前 N 项，N 自适应到不超 max_bytes
+        * dict：用前 N 个 key（按字典顺序，保证可重现）
+        * str：直接按字节截断
+        * 其他：转 str 后截断
+    - 在结果里加上 ``__truncated__`` 字段告诉 LLM 此处被裁剪了，
+      方便 LLM 决定要不要带 ``limit/offset/filter`` 重试。
+    """
+    try:
+        body = json.dumps(out, ensure_ascii=False)
+    except Exception:  # pylint: disable=broad-except
+        return out
+    raw_size = len(body.encode("utf-8", errors="replace"))
+    if raw_size <= max_bytes:
+        return out
+
+    result = out.get("result")
+    truncated_info = {
+        "tool": tool_name,
+        "original_bytes": raw_size,
+        "max_bytes": max_bytes,
+        "hint": (
+            "结果过大已被自动截断。如需完整数据，请用 limit/offset/filter "
+            "等参数缩小范围后重试。"
+        ),
+    }
+
+    if isinstance(result, list):
+        new_result, kept = _truncate_list(result, max_bytes)
+        truncated_info["original_count"] = len(result)
+        truncated_info["kept_count"] = kept
+        out["result"] = new_result
+    elif isinstance(result, dict):
+        new_result, kept = _truncate_dict(result, max_bytes)
+        truncated_info["original_keys"] = len(result)
+        truncated_info["kept_keys"] = kept
+        out["result"] = new_result
+    elif isinstance(result, str):
+        # 字符串直接按字符数估算
+        approx_chars = max(1, max_bytes // 2)
+        out["result"] = (
+            result[:approx_chars] + "...(truncated)"
+            if len(result) > approx_chars else result
+        )
+        truncated_info["original_chars"] = len(result)
+    else:
+        # 其他奇怪类型：转字符串截断
+        s = str(result)
+        approx_chars = max(1, max_bytes // 2)
+        out["result"] = s[:approx_chars] + "...(truncated)"
+
+    out["__truncated__"] = truncated_info
+    return out
+
+
+def _truncate_list(items, max_bytes):
+    # type: (list, int) -> "tuple[list, int]"
+    """按 max_bytes 二分式选保留多少项。"""
+    if not items:
+        return [], 0
+    n = len(items)
+    # 以"先尝试整体留一半，不行再减半"的方式，最多 6 轮逼近
+    keep = n
+    for _ in range(6):
+        candidate = items[:keep]
+        try:
+            size = len(
+                json.dumps(candidate, ensure_ascii=False).encode("utf-8"),
+            )
+        except Exception:  # pylint: disable=broad-except
+            size = max_bytes + 1
+        if size <= max_bytes:
+            break
+        keep = max(1, keep // 2)
+    if keep < n:
+        return items[:keep] + ["...(truncated, {} more items omitted)".format(
+            n - keep,
+        )], keep
+    return items, n
+
+
+def _truncate_dict(d, max_bytes):
+    # type: (dict, int) -> "tuple[dict, int]"
+    """字典按 key 顺序保留前若干项。"""
+    if not d:
+        return {}, 0
+    keys = list(d.keys())
+    keep = len(keys)
+    for _ in range(6):
+        candidate = {k: d[k] for k in keys[:keep]}
+        try:
+            size = len(
+                json.dumps(candidate, ensure_ascii=False).encode("utf-8"),
+            )
+        except Exception:  # pylint: disable=broad-except
+            size = max_bytes + 1
+        if size <= max_bytes:
+            break
+        keep = max(1, keep // 2)
+    if keep < len(keys):
+        out_dict = {k: d[k] for k in keys[:keep]}
+        out_dict["__omitted__"] = "{} more keys omitted".format(
+            len(keys) - keep,
+        )
+        return out_dict, keep
+    return d, len(keys)

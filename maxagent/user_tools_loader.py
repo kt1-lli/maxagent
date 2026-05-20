@@ -63,10 +63,26 @@ _NAME_RE = re.compile(r'^[a-z][a-z0-9_]{1,40}$')
 # 单个工具源码最大字节数（防止恶意 LLM 写出超长代码）
 MAX_CODE_BYTES = 32 * 1024
 
+# 测试期可以临时把 base 目录指过去；非空时 get_user_tools_dir() 会优先用它。
+_OVERRIDE_BASE_DIR = None  # type: Optional[str]
+
+
+def set_user_tools_dir_override(path):
+    # type: (Optional[str]) -> None
+    """把用户工具目录临时切换到指定路径（仅用于单元测试）。
+
+    传 None 表示恢复默认。
+    """
+    global _OVERRIDE_BASE_DIR  # pylint: disable=global-statement
+    _OVERRIDE_BASE_DIR = path
+
 
 def get_user_tools_dir():
-    base = get_config_dir()
-    path = os.path.join(base, USER_TOOLS_DIRNAME)
+    if _OVERRIDE_BASE_DIR:
+        path = _OVERRIDE_BASE_DIR
+    else:
+        base = get_config_dir()
+        path = os.path.join(base, USER_TOOLS_DIRNAME)
     if not os.path.isdir(path):
         os.makedirs(path)
     # 确保有 __init__.py，方便 import
@@ -292,5 +308,6 @@ __all__ = [
     'write_tool',
     'validate_name',
     'validate_code',
+    'set_user_tools_dir_override',
     'MAX_CODE_BYTES',
 ]
