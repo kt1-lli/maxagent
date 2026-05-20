@@ -24,6 +24,128 @@ class LLMError(Exception):
     """LLM 调用相关异常。"""
 
 
+def _format_http_error(exc: "urllib.error.HTTPError", url: str) -> str:
+    """把 HTTPError 格式化为人类可读的详细错误信息。
+
+    会尽力提取响应体中的 ``error.message`` / ``error.code`` / ``request_id`` /
+    关键 response headers（如 X-Request-Id / WWW-Authenticate / X-Ratelimit-*）
+    和回环网关相关的头（如 X-Tencent-* / X-Auth-* / Server），方便快速定位
+    "key 错"还是"网关拦截"还是"请求体被拒"。
+    """
+    try:
+        raw = exc.read().decode("utf-8", errors="replace")
+    except Exception:  # pylint: disable=broad-except
+        raw = "<unable to read body>"
+
+    # 尝试从 JSON body 提取 error.message
+    pretty_msg = ""
+    try:
+        body_json = json.loads(raw)
+        if isinstance(body_json, dict):
+            err_obj = body_json.get("error") or body_json
+            if isinstance(err_obj, dict):
+                pretty_msg = (
+                    err_obj.get("message")
+                    or err_obj.get("msg")
+                    or err_obj.get("detail")
+                    or ""
+                )
+            elif isinstance(err_obj, str):
+                pretty_msg = err_obj
+    except (ValueError, TypeError):
+        pretty_msg = ""
+
+    # 关键 header（用于辨认是否被中间网关拦截）
+    interesting_headers = []
+    try:
+        hdrs = exc.headers or {}
+        keys_of_interest = (
+            "Server",
+            "Via",
+            "X-Request-Id",
+            "X-Trace-Id",
+            "X-Tencent-Reqid",
+            "X-Tencent-Auth",
+            "X-Auth-Token",
+            "WWW-Authenticate",
+            "X-Ratelimit-Limit-Requests",
+            "X-Ratelimit-Remaining-Requests",
+            "Cf-Ray",
+        )
+        for k in keys_of_interest:
+            v = hdrs.get(k)
+            if v:
+                interesting_headers.append("{}={}".format(k, v))
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    parts = ["HTTP {}".format(exc.code)]
+    if pretty_msg:
+        parts.append(pretty_msg)
+    # 始终保留原始 body 的前 400 字符（截断防爆）
+    body_preview = raw.strip()
+    if len(body_preview) > 400:
+        body_preview = body_preview[:400] + "...(truncated)"
+    if body_preview and body_preview != pretty_msg:
+        parts.append("body=" + body_preview)
+    if interesting_headers:
+        parts.append("headers[{}]".format("; ".join(interesting_headers)))
+    parts.append("url=" + url)
+    return " | ".join(parts)
+
+
+# 已知路径误填模式 -> 自动剥除的尾部
+_KNOWN_PATH_TAILS = (
+    "/chat/completions",
+    "/completions",
+    "/v1/chat/completions",
+    "/v1/completions",
+)
+
+
+def _sanitize_base_url(url: str) -> str:
+    """规范化 base_url：去掉末尾斜杠 + 自动剥除常见的误填尾部。
+
+    用户经常把 base_url 填成完整的 endpoint
+    （如 ``https://api.deepseek.com/v1/chat/completions``），
+    导致拼接后变成 ``.../chat/completions/chat/completions`` 走不通。
+    这里做一次防呆处理。
+    """
+    if not url:
+        return url
+    cleaned = url.strip().rstrip("/")
+    lowered = cleaned.lower()
+    for tail in _KNOWN_PATH_TAILS:
+        if lowered.endswith(tail):
+            cleaned = cleaned[: -len(tail)]
+            break
+    return cleaned.rstrip("/")
+
+
+def diagnose_base_url(url: str) -> Optional[str]:
+    """对 base_url 做静态体检，返回提示文本（无问题返回 None）。
+
+    仅用于 UI 给用户提示，不会影响实际请求行为。
+    """
+    if not url:
+        return None
+    raw = url.strip()
+    if not raw:
+        return None
+    if not (raw.startswith("http://") or raw.startswith("https://")):
+        return "⚠ Base URL 必须以 http:// 或 https:// 开头"
+    lowered = raw.rstrip("/").lower()
+    for tail in _KNOWN_PATH_TAILS:
+        if lowered.endswith(tail):
+            return "⚠ Base URL 末尾不应包含 {}，会被自动忽略".format(tail)
+    if "/v1" not in lowered and "/v2" not in lowered and "/api" not in lowered:
+        return (
+            "💡 多数 OpenAI 兼容服务需要带版本路径（如 /v1）。"
+            "若遇 401/404 可尝试切换 /v1 后缀"
+        )
+    return None
+
+
 class LLMClient(object):
     """OpenAI 兼容的最小客户端。
 
@@ -42,7 +164,7 @@ class LLMClient(object):
         timeout: int = 120,
         extra_headers: Optional[Dict[str, str]] = None,
     ):
-        self._base_url = base_url.rstrip("/")
+        self._base_url = _sanitize_base_url(base_url)
         self._api_key = api_key or ""
         self._model = model
         self._timeout = timeout
@@ -122,8 +244,7 @@ class LLMClient(object):
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise LLMError("HTTP {}: {}".format(exc.code, detail))
+            raise LLMError(_format_http_error(exc, url))
         except urllib.error.URLError as exc:
             raise LLMError("网络错误: {}".format(exc.reason))
 
@@ -151,8 +272,7 @@ class LLMClient(object):
         try:
             resp = urllib.request.urlopen(req, timeout=self._timeout)
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise LLMError("HTTP {}: {}".format(exc.code, detail))
+            raise LLMError(_format_http_error(exc, url))
         except urllib.error.URLError as exc:
             raise LLMError("网络错误: {}".format(exc.reason))
 

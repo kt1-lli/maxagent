@@ -24,6 +24,7 @@ from typing import Optional
 from ..config import ConfigManager
 from ..config import LLMProfile
 from ..llm_client import build_client_from_profile
+from ..llm_client import diagnose_base_url
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
 from ..qt_compat import QtCore
@@ -86,6 +87,14 @@ class SettingsDialog(QtWidgets.QDialog):
             '如: https://api.deepseek.com/v1',
         )
         right.addRow('Base URL:', self.base_url_edit)
+
+        # base_url 静态体检提示（路径错填等常见问题）
+        self.base_url_hint = QtWidgets.QLabel('')
+        self.base_url_hint.setStyleSheet('color:#b8923a; font-size:11px;')
+        self.base_url_hint.setWordWrap(True)
+        self.base_url_hint.hide()
+        right.addRow('', self.base_url_hint)
+        self.base_url_edit.textChanged.connect(self._refresh_base_url_hint)
 
         # API Key + 显示/隐藏
         key_row = QtWidgets.QHBoxLayout()
@@ -154,8 +163,16 @@ class SettingsDialog(QtWidgets.QDialog):
         op_row = QtWidgets.QHBoxLayout()
         op_row.addStretch(1)
         self.test_btn = QtWidgets.QPushButton('🧪 测试连接')
+        self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
         op_row.addWidget(self.test_btn)
+        self.test_full_btn = QtWidgets.QPushButton('🔬 完整测试')
+        self.test_full_btn.setToolTip(
+            '复刻真实对话的请求：开启流式 + 携带全部工具 schema。\n'
+            '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
+        )
+        self.test_full_btn.clicked.connect(self._test_connection_full)
+        op_row.addWidget(self.test_full_btn)
         self.apply_btn = QtWidgets.QPushButton('💾 应用')
         self.apply_btn.clicked.connect(self._apply)
         op_row.addWidget(self.apply_btn)
@@ -378,3 +395,71 @@ class SettingsDialog(QtWidgets.QDialog):
         except Exception as exc:  # pylint: disable=broad-except
             self.test_label.setText('✗ 异常: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
+
+    def _test_connection_full(self):
+        """复刻真实对话的请求形式：流式 + tools schema。
+
+        用于诊断"测试连接通过但实际对话 401 / 400"这类网关/路由问题。
+        """
+        try:
+            prof = self._read_form()
+        except Exception as exc:  # pylint: disable=broad-except
+            self.test_label.setText('✗ 表单错误: {}'.format(exc))
+            self.test_label.setStyleSheet('color:#e57373;')
+            return
+        self.test_label.setText('⋯ 完整测试中（流式+tools）...')
+        self.test_label.setStyleSheet('color:#888;')
+        QtWidgets.QApplication.processEvents()
+
+        # 尽量复刻 worker 的真实 payload：带 tools schema + 流式
+        try:
+            from ..tools import build_openai_tools_schema
+            tools_schema = build_openai_tools_schema()
+        except Exception as exc:  # pylint: disable=broad-except
+            self.test_label.setText('✗ 加载工具 schema 失败: {}'.format(exc))
+            self.test_label.setStyleSheet('color:#e57373;')
+            return
+
+        chunks = []
+
+        def _on_delta(text):
+            chunks.append(text)
+
+        try:
+            client = build_client_from_profile(prof)
+            resp = client.chat(
+                messages=[
+                    {'role': 'system', 'content': 'You are a helpful assistant.'},
+                    {'role': 'user', 'content': '回复一个字: ok'},
+                ],
+                tools=tools_schema,
+                stream=True,
+                on_delta=_on_delta,
+            )
+            content = (resp.get('content') or ''.join(chunks)).strip()
+            if content:
+                self.test_label.setText(
+                    '✓ 完整测试通过，模型回复: "{}"'.format(content[:40]),
+                )
+                self.test_label.setStyleSheet('color:#8fce8f;')
+            else:
+                self.test_label.setText(
+                    '✓ 完整测试通过（响应为空，但握手成功）',
+                )
+                self.test_label.setStyleSheet('color:#8fce8f;')
+        except LLMError as exc:
+            self.test_label.setText('✗ 完整测试失败: {}'.format(exc))
+            self.test_label.setStyleSheet('color:#e57373;')
+        except Exception as exc:  # pylint: disable=broad-except
+            self.test_label.setText('✗ 异常: {}'.format(exc))
+            self.test_label.setStyleSheet('color:#e57373;')
+
+    def _refresh_base_url_hint(self, text):
+        """Base URL 输入框内容变化时刷新静态体检提示。"""
+        hint = diagnose_base_url(text)
+        if hint:
+            self.base_url_hint.setText(hint)
+            self.base_url_hint.show()
+        else:
+            self.base_url_hint.clear()
+            self.base_url_hint.hide()

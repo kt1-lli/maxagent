@@ -52,6 +52,141 @@ except ImportError:
 # pylint: enable=import-error,no-name-in-module,unused-import
 
 
+# ---------------------------------------------------------------------- #
+# PySide6 风格枚举命名空间补丁（PySide2 兼容）
+#
+# PySide6 将枚举提升到了独立 scope，例如：
+#     QtCore.Qt.AlignmentFlag.AlignLeft   (PySide6)
+#     QtCore.Qt.AlignLeft                  (PySide2)
+# 为了让上层代码统一用 PySide6 风格写，在 PySide2 下打补丁，
+# 把扁平枚举包装成带命名空间的 SimpleNamespace 形态。
+# ---------------------------------------------------------------------- #
+def _patch_pyside2_enums():
+    """在 PySide2 上补齐 PySide6 风格的枚举命名空间。"""
+    if not IS_PYSIDE2:
+        return
+
+    Qt = QtCore.Qt
+
+    # (枚举命名空间名, [枚举值名 ...])
+    qt_enum_groups = [
+        ("AlignmentFlag", [
+            "AlignLeft", "AlignRight", "AlignCenter",
+            "AlignTop", "AlignBottom", "AlignVCenter", "AlignHCenter",
+        ]),
+        ("Orientation", ["Horizontal", "Vertical"]),
+        ("CursorShape", [
+            "ArrowCursor", "PointingHandCursor", "IBeamCursor",
+            "SizeVerCursor", "SizeHorCursor",
+        ]),
+        ("TextInteractionFlag", [
+            "TextSelectableByMouse", "TextSelectableByKeyboard",
+            "TextBrowserInteraction", "TextEditorInteraction",
+            "NoTextInteraction", "LinksAccessibleByMouse",
+        ]),
+        ("TextFormat", [
+            "AutoText", "PlainText", "RichText", "MarkdownText",
+        ]),
+        ("Key", [
+            "Key_Return", "Key_Enter", "Key_Escape",
+            "Key_Up", "Key_Down", "Key_Left", "Key_Right",
+            "Key_Tab", "Key_Backtab", "Key_Space",
+        ]),
+        ("KeyboardModifier", [
+            "NoModifier", "ShiftModifier", "ControlModifier",
+            "AltModifier", "MetaModifier",
+        ]),
+        ("ScrollBarPolicy", [
+            "ScrollBarAsNeeded", "ScrollBarAlwaysOff", "ScrollBarAlwaysOn",
+        ]),
+        ("DockWidgetArea", [
+            "LeftDockWidgetArea", "RightDockWidgetArea",
+            "TopDockWidgetArea", "BottomDockWidgetArea",
+            "AllDockWidgetAreas", "NoDockWidgetArea",
+        ]),
+        ("MouseButton", [
+            "LeftButton", "RightButton", "MiddleButton", "NoButton",
+        ]),
+        ("FocusPolicy", [
+            "NoFocus", "TabFocus", "ClickFocus", "StrongFocus", "WheelFocus",
+        ]),
+        ("WindowType", [
+            "Window", "Dialog", "Popup", "Tool", "ToolTip",
+            "Widget", "FramelessWindowHint",
+        ]),
+    ]
+
+    for group_name, names in qt_enum_groups:
+        if hasattr(Qt, group_name):
+            continue
+        ns = type("_QtEnumNS_" + group_name, (), {})
+        for nm in names:
+            if hasattr(Qt, nm):
+                setattr(ns, nm, getattr(Qt, nm))
+        setattr(Qt, group_name, ns)
+
+    # QEvent.Type
+    QEvent = QtCore.QEvent
+    if not hasattr(QEvent, "Type") or not hasattr(QEvent.Type, "KeyPress"):
+        ns = type("_QEventTypeNS", (), {})
+        for nm in ("KeyPress", "KeyRelease", "MouseButtonPress",
+                   "MouseButtonRelease", "Resize", "Show", "Hide",
+                   "Close", "Wheel", "FocusIn", "FocusOut"):
+            if hasattr(QEvent, nm):
+                setattr(ns, nm, getattr(QEvent, nm))
+        # 不覆盖原 Type（如有）
+        if not hasattr(QEvent, "Type"):
+            QEvent.Type = ns
+
+    # QSizePolicy.Policy
+    QSizePolicy = QtWidgets.QSizePolicy
+    if not hasattr(QSizePolicy, "Policy"):
+        ns = type("_QSizePolicyNS", (), {})
+        for nm in ("Fixed", "Minimum", "Maximum", "Preferred",
+                   "Expanding", "MinimumExpanding", "Ignored"):
+            if hasattr(QSizePolicy, nm):
+                setattr(ns, nm, getattr(QSizePolicy, nm))
+        QSizePolicy.Policy = ns
+
+    # QTextCursor.MoveOperation / MoveMode（已有的代码用到了）
+    QTextCursor = QtGui.QTextCursor
+    if not hasattr(QTextCursor, "MoveOperation"):
+        ns = type("_QTCMoveOpNS", (), {})
+        for nm in ("Start", "End", "PreviousBlock", "NextBlock",
+                   "PreviousCharacter", "NextCharacter"):
+            if hasattr(QTextCursor, nm):
+                setattr(ns, nm, getattr(QTextCursor, nm))
+        QTextCursor.MoveOperation = ns
+    if not hasattr(QTextCursor, "MoveMode"):
+        ns = type("_QTCMoveModeNS", (), {})
+        for nm in ("MoveAnchor", "KeepAnchor"):
+            if hasattr(QTextCursor, nm):
+                setattr(ns, nm, getattr(QTextCursor, nm))
+        QTextCursor.MoveMode = ns
+
+    # QMessageBox.StandardButton
+    QMessageBox = QtWidgets.QMessageBox
+    if not hasattr(QMessageBox, "StandardButton"):
+        ns = type("_QMBNS", (), {})
+        for nm in ("Yes", "No", "Ok", "Cancel", "Save", "Close", "Apply"):
+            if hasattr(QMessageBox, nm):
+                setattr(ns, nm, getattr(QMessageBox, nm))
+        QMessageBox.StandardButton = ns
+
+    # QLineEdit.EchoMode
+    QLineEdit = QtWidgets.QLineEdit
+    if not hasattr(QLineEdit, "EchoMode") \
+            or not hasattr(QLineEdit.EchoMode, "Password"):
+        ns = type("_QLEEchoNS", (), {})
+        for nm in ("Normal", "NoEcho", "Password", "PasswordEchoOnEdit"):
+            if hasattr(QLineEdit, nm):
+                setattr(ns, nm, getattr(QLineEdit, nm))
+        QLineEdit.EchoMode = ns
+
+
+_patch_pyside2_enums()
+
+
 # 暴露统一的正则类（PySide2: QRegExp / PySide6: QRegularExpression）
 QRegex = _QRegularExpression
 
