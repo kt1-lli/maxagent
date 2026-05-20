@@ -6,7 +6,8 @@
 1. 维护一个完整的 messages 列表，符合 OpenAI Chat Completions 协议格式。
 2. 提供 add_user / add_assistant / add_tool_result 等便捷方法。
 3. 支持序列化到 JSON 以便保存/恢复历史。
-4. 支持 trim_to_token_limit 简单的窗口管理（按字符近似 token）。
+4. 支持 token 预算窗口管理（保护 tool_call/tool_result 配对，避免半截裁剪）。
+5. 提供"重启对齐"机制：从磁盘恢复后注入提醒，让 LLM 感知场景可能已变。
 
 消息角色:
 - system: 系统提示词
@@ -42,6 +43,26 @@ DEFAULT_SYSTEM_PROMPT = """\
    告知用户具体原因。
 6. 回答使用简体中文。涉及具体数值（位置 / 尺寸）时，注明单位（Max system unit）。
 """
+
+
+# 跨语言字符 → token 的粗略系数（OpenAI tiktoken 实测均值）：
+# - 中英文混合: 1 token ≈ 2.0 字符
+# - 纯英文/代码: 1 token ≈ 4.0 字符
+# 取中庸 2.5 作为通用估算系数（偏保守，实际可能更省）
+CHARS_PER_TOKEN = 2.5
+
+
+def estimate_tokens(text):
+    """粗略估算字符串的 token 数。
+
+    通用估算，不依赖任何第三方分词库，所有模型适用。
+
+    :param text: 任意字符串
+    :return: 估算 token 数（int）
+    """
+    if not text:
+        return 0
+    return int(len(text) / CHARS_PER_TOKEN) + 1
 
 
 class Message(object):
@@ -94,6 +115,17 @@ class Message(object):
             ts=data.get('ts'),
         )
 
+    def estimate_tokens(self):
+        """估算该消息序列化后的 token 数。"""
+        n = estimate_tokens(self.content)
+        if self.tool_calls:
+            n += estimate_tokens(
+                json.dumps(self.tool_calls, ensure_ascii=False),
+            )
+        # 协议固定字段（role/name/id 等）的固定开销
+        n += 4
+        return n
+
 
 class Conversation(object):
     """对话历史管理。"""
@@ -130,6 +162,18 @@ class Conversation(object):
             tool_call_id=tool_call_id,
             name=name,
         )
+        self.messages.append(msg)
+        return msg
+
+    def add_system_note(self, content):
+        # type: (str) -> Message
+        """注入一条中途的 system 角色提示。
+
+        用途：Agent 在循环过程中需要给 LLM 下达元指令（如"请收尾，
+        不要再调用工具"），通过 role=system 的额外消息在不污染主对话
+        历史的前提下传递。
+        """
+        msg = Message(role='system', content=content)
         self.messages.append(msg)
         return msg
 
@@ -177,34 +221,185 @@ class Conversation(object):
         """清空消息（保留 system_prompt）。"""
         self.messages = []
 
-    def trim_to_char_budget(self, max_chars=80000):
-        """简单的字符级窗口管理。
-
-        如果消息总长度超过 max_chars（约等于 20k tokens），从最早的非 system
-        消息开始裁掉，但会保留消息成对（一对 user + assistant 一起裁）。
-
-        :param max_chars: 字符预算上限
-        """
-        # 估算当前总长度
-        def _msg_chars(msg):
-            n = len(msg.content or '')
-            if msg.tool_calls:
-                n += len(json.dumps(msg.tool_calls, ensure_ascii=False))
-            return n
-
-        total = len(self.system_prompt or '')
+    def estimate_total_tokens(self):
+        """估算当前所有消息（含 system）的 token 总数。"""
+        total = estimate_tokens(self.system_prompt)
         for m in self.messages:
-            total += _msg_chars(m)
+            total += m.estimate_tokens()
+        return total
 
-        # 超出则从最早开始裁
+    def trim_to_token_budget(self, max_tokens=32000, keep_recent=4):
+        """按 token 预算裁剪历史消息，保护 tool_call/tool_result 配对。
+
+        裁剪规则：
+        1. 永远保留 system_prompt。
+        2. 永远保留最近 ``keep_recent`` 条消息（确保当前轮上下文）。
+        3. 从最早的非保护消息开始裁，但**绝不**把 ``assistant(tool_calls=...)``
+           和它对应的 ``tool`` 结果分开——要么一起留，要么一起删。
+        4. 如果裁完仍超预算（极端情况：单条消息就爆掉），不再继续。
+
+        :param max_tokens: token 预算上限
+        :param keep_recent: 保护的最近消息条数
+        :return: 实际裁掉的消息条数
+        """
+        total = self.estimate_total_tokens()
+        if total <= max_tokens:
+            return 0
+
+        # 计算每条消息的 token 数，便于复用
+        msg_tokens = [m.estimate_tokens() for m in self.messages]
+        n = len(self.messages)
+        if n <= keep_recent:
+            return 0
+
+        # 找出 tool_call 配对组：
+        # 一个 assistant(tool_calls) 后面紧跟若干 tool 消息组成一组
+        # group_end[i] 表示从 i 开始的组结尾索引（含），单条消息时等于 i
+        group_end = list(range(n))
+        i = 0
+        while i < n:
+            m = self.messages[i]
+            if m.role == 'assistant' and m.tool_calls:
+                j = i + 1
+                while j < n and self.messages[j].role == 'tool':
+                    j += 1
+                # i..j-1 是一个完整组
+                end = j - 1
+                for k in range(i, j):
+                    group_end[k] = end
+                i = j
+            else:
+                i += 1
+
+        # 从头开始按组裁，但保护最后 keep_recent 条
+        protect_from = max(0, n - keep_recent)
+        # 把 protect_from 也按组对齐：如果它落在某个组中间，整个组都要保护
+        if protect_from < n:
+            # 找包含 protect_from 的组的起点
+            head = protect_from
+            while head > 0:
+                prev = self.messages[head - 1]
+                if prev.role == 'assistant' and prev.tool_calls:
+                    head -= 1
+                    # 但还要看 prev 的前面是不是也有 tool 链 — 实际不会，
+                    # 因为 tool 链的发起一定是 assistant，所以 head 已是组首
+                    break
+                if prev.role == 'tool':
+                    head -= 1
+                    continue
+                break
+            protect_from = head
+
+        # 估算 system 开销固定
+        sys_tokens = estimate_tokens(self.system_prompt)
+        current = sys_tokens + sum(msg_tokens)
+        cut_until = 0  # 裁掉 [0, cut_until) 区间
+
         idx = 0
-        while total > max_chars and idx < len(self.messages) - 2:
-            # 跳过最近 2 条（保住当前轮的上下文）
-            removed = self.messages[idx]
-            total -= _msg_chars(removed)
-            idx += 1
-        if idx > 0:
-            self.messages = self.messages[idx:]
+        while idx < protect_from and current > max_tokens:
+            end = group_end[idx]
+            if end >= protect_from:
+                # 会和保护区交叉，停止裁剪
+                break
+            # 裁掉 [idx, end] 这一组
+            for k in range(idx, end + 1):
+                current -= msg_tokens[k]
+            cut_until = end + 1
+            idx = end + 1
+
+        if cut_until > 0:
+            self.messages = self.messages[cut_until:]
+        return cut_until
+
+    def trim_to_char_budget(self, max_chars=80000):
+        """字符级窗口管理（保留向后兼容，内部转调 token 接口）。
+
+        :param max_chars: 字符预算上限（粗略 ≈ tokens * CHARS_PER_TOKEN）
+        """
+        max_tokens = int(max_chars / CHARS_PER_TOKEN)
+        return self.trim_to_token_budget(max_tokens=max_tokens)
+
+    # ------------------------------------------------------------------ #
+    # 重启对齐 / 摘要相关
+    # ------------------------------------------------------------------ #
+    def has_restored_marker(self):
+        """检查首条消息是否已经是"会话恢复"标记。"""
+        if not self.messages:
+            return False
+        first = self.messages[0]
+        if first.role != 'system':
+            return False
+        return '__maxagent_restored__' in (first.content or '')
+
+    def inject_restored_notice(self):
+        """会话从磁盘加载后注入"重启对齐"提示。
+
+        让 LLM 感知：上次的对话历史虽然在，但 Max 场景状态可能已变。
+        重复调用是幂等的（带标记防止重复注入）。
+        """
+        if self.has_restored_marker():
+            return False
+        if not self.messages:
+            # 空会话不注入（首次新建场景）
+            return False
+        notice = (
+            '__maxagent_restored__\n'
+            '⚠️ 这是从历史会话恢复的对话。注意：\n'
+            '1. 你之前的对话内容（包括工具调用）都在历史里，但 3ds Max 场景'
+            '可能已被重启或人工修改过。\n'
+            '2. 当用户的新需求依赖之前创建的对象时，请先调用 '
+            'list_scene_objects 或 get_object_info 验证对象是否仍存在，'
+            '不要直接假设场景未变。\n'
+            '3. 历史里的 tool_call_id 是上次会话的引用，仅作上下文参考，'
+            '不要尝试"撤销"或"继续"那些已完成的操作。\n'
+        )
+        self.messages.insert(0, Message(role='system', content=notice))
+        return True
+
+    def replace_with_summary(self, summary_text, keep_recent=2):
+        """用一段摘要替换早期消息，仅保留最近 ``keep_recent`` 条。
+
+        典型用法：长会话超过阈值时，让 LLM 自己生成摘要后调用此方法
+        压缩历史。
+
+        :param summary_text: LLM 生成的摘要文本
+        :param keep_recent: 保留的最近消息条数
+        :return: (compressed: bool, removed_count: int)
+        """
+        if not summary_text:
+            return False, 0
+        # 不足 keep_recent + 2 条没必要压缩
+        if len(self.messages) <= keep_recent + 1:
+            return False, 0
+
+        # 同样要保护尾部 tool_call 组完整性
+        protect_from = max(0, len(self.messages) - keep_recent)
+        head = protect_from
+        while head > 0:
+            prev = self.messages[head - 1]
+            if prev.role == 'tool':
+                head -= 1
+                continue
+            if prev.role == 'assistant' and prev.tool_calls:
+                head -= 1
+                break
+            break
+        protect_from = head
+
+        if protect_from <= 0:
+            return False, 0
+
+        removed = protect_from
+        summary_msg = Message(
+            role='system',
+            content=(
+                '__maxagent_summary__\n'
+                '【历史摘要】以下是早前对话与工具调用的浓缩摘要：\n\n'
+                + summary_text.strip()
+            ),
+        )
+        self.messages = [summary_msg] + self.messages[protect_from:]
+        return True, removed
 
     def __len__(self):
         return len(self.messages)

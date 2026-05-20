@@ -90,6 +90,20 @@ class LLMProfile:
     max_tokens: int = 4096
     # 自定义 HTTP 头（如公司网关需要的鉴权头）
     extra_headers: Dict[str, str] = field(default_factory=dict)
+    # Agent 工具调用循环的最大轮数。批量任务（如"测试所有工具"）
+    # 可能产生大量连续工具调用，默认 40 轮；接近上限时会主动提示
+    # LLM 收尾，超限后保留已完成的工作而不是直接抛弃。
+    max_tool_loops: int = 40
+    # 历史消息 token 预算上限。每次发请求前自动裁剪超出部分的早期消息，
+    # 但严格保护 tool_call 配对、最近 4 条与 system 提示。
+    # 经验值：
+    #   - DeepSeek/GPT-4 (64K~128K context): 32000~48000
+    #   - 本地小模型 (Qwen 7B/14B 32K): 8000~16000
+    #   - 长上下文专家模型 (200K+): 64000
+    max_history_tokens: int = 32000
+    # 长会话自动摘要触发阈值（token）。超过该阈值时，系统会在下一轮
+    # LLM 调用前后台请求模型生成摘要替换早期消息。0 表示禁用自动摘要。
+    auto_summarize_threshold: int = 0
 
     def to_dict(self) -> Dict:
         data = asdict(self)
@@ -131,6 +145,9 @@ class AppConfig:
     wrap_undo: bool = True
     # 自动注入的场景上下文最大长度（字符）
     max_context_chars: int = 4000
+    # 启动 Max 时是否自动显示 MaxAgent 面板。False 时用户需手动调用
+    # ``maxagent.startup.show_panel()`` 或 MaxScript ``g_show_max_agent()``
+    auto_show_on_startup: bool = True
 
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
@@ -147,6 +164,7 @@ class AppConfig:
             "confirm_before_exec": self.confirm_before_exec,
             "wrap_undo": self.wrap_undo,
             "max_context_chars": self.max_context_chars,
+            "auto_show_on_startup": self.auto_show_on_startup,
         }
 
     @classmethod
@@ -161,6 +179,9 @@ class AppConfig:
         cfg.confirm_before_exec = bool(data.get("confirm_before_exec", True))
         cfg.wrap_undo = bool(data.get("wrap_undo", True))
         cfg.max_context_chars = int(data.get("max_context_chars", 4000))
+        cfg.auto_show_on_startup = bool(
+            data.get("auto_show_on_startup", True)
+        )
         return cfg
 
 

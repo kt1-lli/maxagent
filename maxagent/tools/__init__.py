@@ -22,10 +22,11 @@ from .registry import tool
 _LOADED = False
 
 
-def load_all_tools(include_escape_hatch=True):
+def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     """导入并注册所有内置工具模块。
 
     :param include_escape_hatch: 是否注册 run_maxscript / run_python 逃生舱
+    :param load_user_tools: 是否扫描并加载 ``user_tools/`` 下用户学习到的工具
     :returns: 已注册工具的总数
     """
     global _LOADED  # pylint: disable=global-statement
@@ -39,6 +40,8 @@ def load_all_tools(include_escape_hatch=True):
     from . import light_camera # noqa: F401
     from . import render       # noqa: F401
     from . import scene_io     # noqa: F401
+    from . import skills_tools # noqa: F401
+    from . import learn_tools  # noqa: F401
 
     if include_escape_hatch:
         from . import escape_hatch  # noqa: F401
@@ -46,6 +49,17 @@ def load_all_tools(include_escape_hatch=True):
         # 已加载过，再安全卸载一次
         from .escape_hatch import unregister_escape_hatch
         unregister_escape_hatch()
+
+    # 加载用户学习的工具（失败不影响主流程）
+    if load_user_tools:
+        try:
+            from ..user_tools_loader import load_user_tools as _lu
+            r = _lu()
+            if r.get('errors'):
+                for k, v in r['errors'].items():
+                    print('[maxagent] user tool {} 加载失败: {}'.format(k, v))
+        except Exception as exc:  # pylint: disable=broad-except
+            print('[maxagent] 用户工具扫描异常: {}'.format(exc))
 
     _LOADED = True
     return len(list_tools())

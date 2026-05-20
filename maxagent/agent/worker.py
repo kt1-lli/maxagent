@@ -46,8 +46,12 @@ QObject = QtCore.QObject
 QThread = QtCore.QThread
 
 
-# 工具调用循环的最大轮数，防止 LLM 死循环
-MAX_TOOL_LOOPS = 16
+# 工具调用循环的默认最大轮数。批量场景（如"测试所有工具"）可能调用
+# 几十次工具，所以放宽到 40。具体值可由 LLMProfile.max_tool_loops 覆盖。
+MAX_TOOL_LOOPS = 40
+
+# 接近上限时提前 N 轮注入"请收尾"软提示，让 LLM 优雅总结而不是被硬截断
+SOFT_LIMIT_REMAINING = 4
 
 
 class AgentWorker(QObject):
@@ -77,21 +81,32 @@ class AgentWorker(QObject):
     failed = Signal(str)
     # 状态文本: (status_text) - 用于 UI 显示"思考中..."等
     status_changed = Signal(str)
+    # 历史被裁剪: (removed_count, current_tokens, budget_tokens)
+    history_trimmed = Signal(int, int, int)
 
     def __init__(self, llm_client, conversation, dispatcher,
-                 max_tool_loops=MAX_TOOL_LOOPS, parent=None):
-        # type: (LLMClient, Conversation, ToolDispatcher, int, Any) -> None
+                 max_tool_loops=MAX_TOOL_LOOPS,
+                 max_history_tokens=32000,
+                 parent=None):
+        # type: (LLMClient, Conversation, ToolDispatcher, int, int, Any) -> None
         super(AgentWorker, self).__init__(parent)
         self._llm = llm_client
         self._conv = conversation
         self._dispatcher = dispatcher
         self._max_loops = int(max_tool_loops)
+        self._max_history_tokens = int(max_history_tokens)
         # 在 worker 自身的线程上运行
         self._thread = None  # type: Optional[QThread]
         # 取消标志（跨线程共享）
         self._cancel_event = threading.Event()
         # 工具同步执行回调（由 UI 主线程注入）
         self._sync_tool_runner = None  # type: Optional[Any]
+        # 可选：额外的 system prompt 提供者，签名 () -> str
+        # 每轮 LLM 调用前会拿一次，把返回的字符串拼到 system 消息末尾。
+        # 用于注入"已学技能摘要"这类需要最新状态的内容。
+        self._sys_addon_provider = None  # type: Optional[Any]
+        # 当前轮的用户输入（供 sys_addon_provider 用于触发词匹配）
+        self._current_user_input = ''
 
     # ------------------------------------------------------------------ #
     # 主线程辅助
@@ -103,6 +118,15 @@ class AgentWorker(QObject):
         runner 必须保证在 UI/Max 主线程执行（用 invokeMethod 或 QTimer）。
         """
         self._sync_tool_runner = runner
+
+    def set_system_prompt_addon_provider(self, provider):
+        """注入额外 system prompt 提供者。
+
+        :param provider: 可调用对象，签名 ``provider(user_input: str) -> str``
+            在每轮 LLM 调用前被调用，返回拼到 system 消息末尾的额外文本。
+            返回空字符串则不附加。
+        """
+        self._sys_addon_provider = provider
 
     def cancel(self):
         """请求取消当前对话轮（下一次工具结束/LLM 流式分块时生效）。"""
@@ -120,6 +144,7 @@ class AgentWorker(QObject):
         :param user_input: 用户输入文本
         """
         self.reset_cancel()
+        self._current_user_input = user_input or ''
         # 把用户输入立刻写入对话历史（在调用线程也安全，因为 _conv 修改时序明确）
         self._conv.add_user(user_input)
 
@@ -149,19 +174,82 @@ class AgentWorker(QObject):
     # 子线程：核心 LLM + 工具循环
     # ------------------------------------------------------------------ #
     def _run_loop(self):
-        """LLM <-> 工具循环，最多 max_tool_loops 轮。"""
+        """LLM <-> 工具循环，最多 max_tool_loops 轮。
+
+        策略：
+        - 正常情况：每轮 LLM 给 tool_calls → 执行 → 进下一轮，直到无 tool_calls
+        - 接近上限（剩 SOFT_LIMIT_REMAINING 轮）：注入软提示让 LLM 收尾
+        - 真超限：保留已经写入 conversation 的所有工具结果，仅发出告警
+          让用户看到部分成果，而不是丢失整轮上下文
+        """
         tools_schema = build_openai_tools_schema()
+        # 标记是否已注入软提示，避免重复
+        soft_warned = False
 
         for loop_idx in range(self._max_loops):
             if self._cancel_event.is_set():
                 self.failed.emit('用户取消')
                 return
 
+            remaining = self._max_loops - loop_idx
             self.status_changed.emit(
-                '思考中... (第 {} 轮)'.format(loop_idx + 1),
+                '思考中... (第 {}/{} 轮)'.format(
+                    loop_idx + 1, self._max_loops,
+                ),
             )
 
+            # 接近上限时主动提示 LLM 收尾
+            if (not soft_warned
+                    and remaining <= SOFT_LIMIT_REMAINING
+                    and self._max_loops > SOFT_LIMIT_REMAINING):
+                soft_warned = True
+                self._conv.add_system_note(
+                    '⚠️ 提示：你已使用了 {}/{} 轮工具调用，剩余 {} 轮。'
+                    '请尽快总结已完成的工作并给出最终回复，'
+                    '避免继续发起非必要的工具调用。'.format(
+                        loop_idx, self._max_loops, remaining,
+                    ),
+                )
+
             messages = self._conv.to_openai_messages()
+            # 每轮 LLM 调用前按 token 预算裁剪历史
+            # 通用策略：保护 system + 最近 4 条 + tool_call 配对
+            if self._max_history_tokens > 0:
+                try:
+                    cut = self._conv.trim_to_token_budget(
+                        max_tokens=self._max_history_tokens,
+                        keep_recent=4,
+                    )
+                    if cut > 0:
+                        # 裁完后重新生成 messages
+                        messages = self._conv.to_openai_messages()
+                        cur_tokens = self._conv.estimate_total_tokens()
+                        self.history_trimmed.emit(
+                            cut, cur_tokens, self._max_history_tokens,
+                        )
+                except Exception as exc:  # pylint: disable=broad-except
+                    print(
+                        '[maxagent] trim_to_token_budget 异常: {}'.format(exc),
+                    )
+            # 注入额外 system prompt（如已学技能摘要）
+            if self._sys_addon_provider is not None:
+                try:
+                    addon = self._sys_addon_provider(
+                        self._current_user_input,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    print('[maxagent] sys_addon_provider 异常: {}'.format(exc))
+                    addon = ''
+                if addon and messages and messages[0].get('role') == 'system':
+                    base = messages[0].get('content') or ''
+                    messages[0] = {
+                        'role': 'system',
+                        'content': base + '\n' + addon,
+                    }
+                elif addon:
+                    messages.insert(
+                        0, {'role': 'system', 'content': addon},
+                    )
             try:
                 resp = self._llm.chat(
                     messages=messages,
@@ -234,10 +322,12 @@ class AgentWorker(QObject):
                 # 非 tool_calls 但又含 tool_calls 是异常情况，强制再让模型回复一次
                 continue
 
-        # 超过最大轮数仍未结束
+        # 超过最大轮数仍未结束：发 failed 但保留对话，让用户能看到已完成的部分
         self.failed.emit(
-            '工具调用循环超过 {} 轮，已强制中止。请检查指令是否过于复杂或'
-            '存在 LLM 死循环。'.format(self._max_loops),
+            '⚠️ 工具调用已达到最大轮数 {} 轮，已暂停。\n\n'
+            '当前轮内已执行的工具结果已经保留在对话历史里，'
+            '你可以继续输入"继续"让模型基于这些结果给出总结，'
+            '或在「设置」中调高 max_tool_loops。'.format(self._max_loops),
         )
 
     # ------------------------------------------------------------------ #
@@ -329,3 +419,115 @@ class AgentWorker(QObject):
                 {'ok': False, 'error': 'tool result not serializable'},
                 ensure_ascii=False,
             )
+
+    # ------------------------------------------------------------------ #
+    # 对话压缩（方案 B 手动 + 方案 D 自动）
+    # ------------------------------------------------------------------ #
+    def compress_history(self, keep_recent=2):
+        """同步请求 LLM 生成历史摘要并压缩对话。
+
+        通用化做法：发一个独立的非工具、非流式 LLM 调用，让模型读完
+        当前所有 messages，输出一段 200-400 字的摘要，再用摘要替换
+        早期消息。所有 OpenAI 兼容模型都能完成。
+
+        :param keep_recent: 保留的最近消息条数
+        :return: dict 形如 {'ok': bool, 'removed': int, 'summary': str, 'error': str?}
+        """
+        if len(self._conv) <= keep_recent + 1:
+            return {
+                'ok': False,
+                'removed': 0,
+                'summary': '',
+                'error': '对话太短，无需压缩',
+            }
+
+        # 构造摘要提示词：把当前历史作为输入，要求模型输出纯文本摘要
+        summary_instruction = (
+            '你正在为一个 3ds Max AI 助手压缩对话历史。请阅读以下完整对话，'
+            '输出一段 200~400 字的中文摘要，要求：\n'
+            '1. 保留用户的核心目标和已确立的偏好；\n'
+            '2. 保留已成功创建/修改的关键场景对象（名称、关键属性）；\n'
+            '3. 保留尚未完成、需要后续跟进的事项；\n'
+            '4. 用要点形式列出，不要客套；\n'
+            '5. 仅输出摘要正文，不要包含"以下是摘要"等元描述。'
+        )
+
+        # 把历史以 user 角色塞给摘要模型，避免它误以为自己就是那个 agent
+        history_dump = self._dump_history_for_summary()
+        summary_msgs = [
+            {'role': 'system', 'content': summary_instruction},
+            {
+                'role': 'user',
+                'content': '【需要压缩的对话历史】\n' + history_dump,
+            },
+        ]
+
+        try:
+            resp = self._llm.chat(
+                messages=summary_msgs,
+                tools=None,
+                stream=False,
+            )
+        except LLMError as exc:
+            return {
+                'ok': False, 'removed': 0, 'summary': '',
+                'error': '生成摘要失败: {}'.format(exc),
+            }
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                'ok': False, 'removed': 0, 'summary': '',
+                'error': '生成摘要异常: {}'.format(exc),
+            }
+
+        summary = (resp.get('content') or '').strip()
+        if not summary:
+            return {
+                'ok': False, 'removed': 0, 'summary': '',
+                'error': '模型未返回摘要内容',
+            }
+
+        ok, removed = self._conv.replace_with_summary(
+            summary, keep_recent=keep_recent,
+        )
+        return {
+            'ok': ok,
+            'removed': removed,
+            'summary': summary,
+            'error': '' if ok else '可压缩内容不足',
+        }
+
+    def _dump_history_for_summary(self):
+        """把当前 messages dump 成易读文本，供摘要 prompt 使用。"""
+        lines = []
+        for m in self._conv.messages:
+            role = m.role
+            if role == 'user':
+                lines.append('[用户] ' + (m.content or ''))
+            elif role == 'assistant':
+                if m.tool_calls:
+                    names = []
+                    for tc in m.tool_calls:
+                        fn = (tc.get('function') or {})
+                        names.append(fn.get('name') or '?')
+                    lines.append(
+                        '[助手] (调用工具: {}) {}'.format(
+                            ', '.join(names), m.content or '',
+                        ),
+                    )
+                else:
+                    lines.append('[助手] ' + (m.content or ''))
+            elif role == 'tool':
+                # 工具结果可能很长，截断一下
+                content = m.content or ''
+                if len(content) > 300:
+                    content = content[:300] + '...(truncated)'
+                lines.append(
+                    '[工具结果 {}] {}'.format(m.name or '?', content),
+                )
+            elif role == 'system':
+                # 中途 system note 也写入摘要上下文
+                content = m.content or ''
+                if len(content) > 200:
+                    content = content[:200] + '...'
+                lines.append('[系统提示] ' + content)
+        return '\n'.join(lines)

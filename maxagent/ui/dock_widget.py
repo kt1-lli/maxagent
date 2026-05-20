@@ -41,7 +41,11 @@ from ..llm_client import build_client_from_profile
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from ..sessions import SessionManager
+from ..sessions import SessionMeta
+from ..skills import SkillManager
 from ..tools import ToolDispatcher
+from ..ui_state import UIStateManager
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
 from .markdown_render import render_markdown
@@ -378,14 +382,40 @@ class _ToolCallBlock(QtWidgets.QWidget):
         cv.setContentsMargins(8, 4, 8, 4)
         cv.setSpacing(2)
 
-        # 头部按钮
+        # 头部行：[▶箭头按钮] [🔧 name 状态符]  ← 整行可点击折叠
+        head_row = QtWidgets.QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.setSpacing(4)
+
         self._head_btn = QtWidgets.QToolButton()
         self._head_btn.setCheckable(True)
         self._head_btn.setChecked(False)
-        self._head_btn.setText(self._head_text(running=True))
+        self._head_btn.setText('▶')
+        self._head_btn.setFixedWidth(18)
         self._head_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._head_btn.setStyleSheet(
+            'QToolButton { background:transparent; color:#aaa;'
+            'border:none; padding:0; font-size:10pt; }'
+            'QToolButton:hover { color:#fff; }'
+        )
         self._head_btn.clicked.connect(self._toggle)
-        cv.addWidget(self._head_btn)
+        head_row.addWidget(self._head_btn)
+
+        # 工具名 QLabel（支持富文本），可点击同步折叠
+        self._head_label = QtWidgets.QLabel()
+        self._head_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._head_label.setStyleSheet(
+            'background:transparent; color:#d0d0d0;'
+            'font-family:Consolas,\'Courier New\',monospace;'
+            'font-size:10pt;'
+        )
+        self._head_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        # 让 label 也接受点击折叠
+        self._head_label.mousePressEvent = self._on_label_clicked
+        head_row.addWidget(self._head_label, 1)
+        cv.addLayout(head_row)
+
+        self._refresh_head_label(running=True)
 
         # 详情区（默认折叠）
         self._detail = QtWidgets.QWidget()
@@ -425,7 +455,13 @@ class _ToolCallBlock(QtWidgets.QWidget):
 
         outer.addWidget(container, 1)
 
-    def _head_text(self, running=False):
+    def _refresh_head_label(self, running=False):
+        """刷新工具名行的富文本 + 箭头按钮文本。
+
+        头部由两个 widget 拼成：
+        - self._head_btn：纯文本的 ▶ / ▼，QToolButton 直接显示符号
+        - self._head_label：富文本的图标 + 工具名 + 状态对勾
+        """
         icon = '⚠️' if self._dangerous else '🔧'
         if running:
             sym = '⋯'
@@ -436,29 +472,35 @@ class _ToolCallBlock(QtWidgets.QWidget):
         else:
             sym = '✗'
             color = '#e57373'
-        arrow = '▼' if self._head_btn and self._head_btn.isChecked() else '▶'
-        return (
-            '{arrow} {icon} <b>{name}</b>  '
+        expanded = bool(self._head_btn and self._head_btn.isChecked())
+        # 箭头由 QToolButton 单独承载，避免 setText 吃 HTML 的问题
+        self._head_btn.setText('▼' if expanded else '▶')
+        # 工具名 + 状态符放进 QLabel（支持 RichText）
+        label_html = (
+            '{icon} <b>{name}</b>  '
             '<span style="color:{color};">{sym}</span>'
         ).format(
-            arrow=arrow, icon=icon, name=self._name,
+            icon=icon, name=html_escape(self._name),
             color=color, sym=sym,
         )
+        self._head_label.setText(label_html)
+
+    def _on_label_clicked(self, _event):
+        """点击工具名 label 时也触发折叠/展开。"""
+        self._head_btn.setChecked(not self._head_btn.isChecked())
+        self._toggle()
 
     def _toggle(self):
         expanded = self._head_btn.isChecked()
         self._detail.setVisible(expanded)
-        # 刷新箭头
-        self._head_btn.setText(self._head_text(
-            running=(self._result_ok is None)
-        ))
+        self._refresh_head_label(running=(self._result_ok is None))
 
     def set_result(self, ok, result_str):
         # type: (bool, str) -> None
         self._result_ok = bool(ok)
         self._result_text = result_str or ''
         # 刷新头部
-        self._head_btn.setText(self._head_text(running=False))
+        self._refresh_head_label(running=False)
         # 刷新结果区
         self._result_title.setText(
             '<span style="color:#7fb3d5;font-size:9pt;">结果:</span>'
@@ -718,7 +760,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.setStyleSheet(_STYLE)
 
         self._config = config_manager or ConfigManager()
+        self._ui_state_mgr = UIStateManager()
+        self._ui_state = self._ui_state_mgr.load()
         self._llm = self._build_llm_client()
+        self._session_mgr = SessionManager()
+        self._skill_mgr = SkillManager()
+        self._current_session = None  # type: Optional[SessionMeta]
         self._conv = Conversation()
         self._dispatcher = ToolDispatcher()
         # type: Optional[AgentWorker]
@@ -729,6 +776,13 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         self._build_ui()
         self._refresh_profiles()
+        self._refresh_sessions_combo()
+        # UI 构建完成后恢复分割器尺寸（其他几何由外层 QDockWidget 处理）
+        self._restore_splitter_state()
+        # 自动恢复上次的会话或新建一个
+        self._bootstrap_session()
+        # 注册"学习新工具"审批回调（把弹窗与本面板挂钩）
+        self._install_learn_approval_callback()
 
     # ------------------------------------------------------------------ #
     # 构建 UI
@@ -738,7 +792,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(4)
 
-        # === 顶部条 ===
+        # === 顶部条第 1 行：Profile + 设置 ===
         top = QtWidgets.QHBoxLayout()
         top.setSpacing(6)
         top.addWidget(QtWidgets.QLabel('Profile:'))
@@ -750,10 +804,68 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
-        self.clear_btn = QtWidgets.QPushButton('🗑 清空')
-        self.clear_btn.clicked.connect(self._clear_history)
-        top.addWidget(self.clear_btn)
         outer.addLayout(top)
+
+        # === 顶部条第 2 行：会话管理 ===
+        sess_row = QtWidgets.QHBoxLayout()
+        sess_row.setSpacing(4)
+        self.new_session_btn = QtWidgets.QPushButton('➕ 新对话')
+        self.new_session_btn.setToolTip('开启一个新的空白对话')
+        self.new_session_btn.clicked.connect(self._on_new_session)
+        sess_row.addWidget(self.new_session_btn)
+
+        sess_row.addWidget(QtWidgets.QLabel('会话:'))
+        self.session_combo = QtWidgets.QComboBox()
+        self.session_combo.setMinimumWidth(220)
+        self.session_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents,
+        )
+        self.session_combo.currentIndexChanged.connect(
+            self._on_session_combo_changed,
+        )
+        sess_row.addWidget(self.session_combo, 1)
+
+        self.rename_session_btn = QtWidgets.QPushButton('✏')
+        self.rename_session_btn.setFixedWidth(28)
+        self.rename_session_btn.setToolTip('重命名当前会话')
+        self.rename_session_btn.clicked.connect(self._on_rename_session)
+        sess_row.addWidget(self.rename_session_btn)
+
+        self.delete_session_btn = QtWidgets.QPushButton('🗑')
+        self.delete_session_btn.setFixedWidth(28)
+        self.delete_session_btn.setToolTip('删除当前会话')
+        self.delete_session_btn.clicked.connect(self._on_delete_session)
+        sess_row.addWidget(self.delete_session_btn)
+
+        self.clear_btn = QtWidgets.QPushButton('清空')
+        self.clear_btn.setToolTip('清空当前会话的消息（保留会话本身）')
+        self.clear_btn.clicked.connect(self._clear_history)
+        sess_row.addWidget(self.clear_btn)
+        outer.addLayout(sess_row)
+
+        # === 顶部条第 3 行：上下文 token 监控 + 压缩按钮 ===
+        ctx_row = QtWidgets.QHBoxLayout()
+        ctx_row.setSpacing(4)
+        self.context_label = QtWidgets.QLabel('📊 上下文: -')
+        self.context_label.setToolTip(
+            '当前对话历史占用的估算 token 数 / 上限。\n'
+            '超过上限时会自动裁剪最早的消息（保护 tool_call 配对与最近 4 条）。\n'
+            '上限可在「设置」中按 Profile 调整。',
+        )
+        self.context_label.setStyleSheet(
+            'color:#aaa;font-size:9pt;padding:0 4px;',
+        )
+        ctx_row.addWidget(self.context_label)
+        ctx_row.addStretch(1)
+
+        self.compress_btn = QtWidgets.QPushButton('🗜 压缩对话')
+        self.compress_btn.setToolTip(
+            '让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
+            '适合长对话节省 token，但会失去早期细节。',
+        )
+        self.compress_btn.clicked.connect(self._on_compress_history)
+        ctx_row.addWidget(self.compress_btn)
+        outer.addLayout(ctx_row)
 
         # === 中部：QSplitter (聊天区 | 输入区) ===
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -824,11 +936,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.status_label.setStyleSheet('color:#888;font-size:10pt;')
         outer.addWidget(self.status_label)
 
-        # === 欢迎语 ===
-        self._renderer.add_welcome(
-            '👋 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
-            '点击下方任一示例快速开始：'
-        )
+        # 欢迎语 / 历史回放由 _bootstrap_session() 在 __init__ 末尾负责
 
     # ------------------------------------------------------------------ #
     # Profile / LLM
@@ -849,6 +957,237 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         return build_client_from_profile(prof)
 
     # ------------------------------------------------------------------ #
+    # UI 状态：恢复 / 保存
+    # ------------------------------------------------------------------ #
+    def _restore_splitter_state(self):
+        """从 ui_state.json 恢复分割器尺寸。
+
+        只在 sizes 看起来合法时应用，避免上次崩溃存了奇怪的值导致
+        本次启动就看不到输入框。
+        """
+        sizes = list(self._ui_state.splitter_sizes or [])
+        if len(sizes) == 2 and all(isinstance(s, int) and s >= 0 for s in sizes):
+            # 至少留出最小输入区高度
+            if sizes[1] < self._MIN_INPUT_HEIGHT:
+                sizes[1] = self._MIN_INPUT_HEIGHT
+            try:
+                self.splitter.setSizes(sizes)
+            except Exception:  # pylint: disable=broad-except
+                # Qt 在 widget 还未真正渲染时可能拒绝 setSizes，忽略
+                pass
+
+    def save_ui_state(self, geometry_b64='', floating=None,
+                      dock_area=None, embedded_ok=None):
+        """持久化当前 UI 状态到磁盘。
+
+        :param geometry_b64: 调用方（startup.py）从 QDockWidget /
+            QMainWindow.saveGeometry 拿到的 base64 字符串。dock_widget
+            自己不负责编码这部分，因为真正的 widget 是包在外层的
+            QDockWidget。
+        :param floating: 是否浮动；None 表示沿用旧值
+        :param dock_area: Qt 停靠区域枚举的整数值；None 表示沿用旧值
+        :param embedded_ok: 本次启动是否成功嵌入到 Max
+        """
+        st = self._ui_state
+        # 分割器尺寸总是从当前 widget 取
+        try:
+            st.splitter_sizes = list(self.splitter.sizes())
+        except Exception:  # pylint: disable=broad-except
+            pass
+        if geometry_b64:
+            st.geometry_b64 = geometry_b64
+        if floating is not None:
+            st.floating = bool(floating)
+        if dock_area is not None:
+            try:
+                st.dock_area = int(dock_area)
+            except (TypeError, ValueError):
+                pass
+        if embedded_ok is not None:
+            st.last_embedded_ok = bool(embedded_ok)
+        # 独立窗口模式下记录窗口尺寸
+        try:
+            if self.isWindow():
+                geo = self.geometry()
+                st.window_w = geo.width()
+                st.window_h = geo.height()
+                st.window_x = geo.x()
+                st.window_y = geo.y()
+                st.maximized = bool(self.isMaximized())
+        except Exception:  # pylint: disable=broad-except
+            pass
+        self._ui_state_mgr.save(st)
+
+    def get_ui_state(self):
+        """返回当前 UIState（供 startup.py 决定如何恢复几何）。"""
+        return self._ui_state
+
+    def closeEvent(self, event):  # noqa: N802 (Qt 命名)
+        """窗口关闭时持久化分割器/几何状态。"""
+        try:
+            self.save_ui_state()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
+            self._save_current_session()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        super(MaxAgentDockWidget, self).closeEvent(event)
+
+    def _get_active_max_loops(self):
+        # type: () -> int
+        """从当前 profile 读取工具调用最大循环数；缺省/异常时回退到默认。"""
+        try:
+            prof = self._config.get_active_profile()
+            v = int(getattr(prof, 'max_tool_loops', 0) or 0)
+            if v > 0:
+                return v
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # 回退到 worker 模块定义的默认值
+        from ..agent.worker import MAX_TOOL_LOOPS
+        return MAX_TOOL_LOOPS
+
+    def _get_active_max_history_tokens(self):
+        # type: () -> int
+        """从当前 profile 读取历史 token 预算；缺省/异常时回退到 32000。"""
+        try:
+            prof = self._config.get_active_profile()
+            v = int(getattr(prof, 'max_history_tokens', 0) or 0)
+            if v > 0:
+                return v
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return 32000
+
+    def _refresh_context_label(self):
+        """刷新顶部 token 状态条。
+
+        显示格式：📊 上下文: 2.5K/32K (8 条)
+        颜色根据占比变化：<60% 灰、<85% 橙、>=85% 红
+        """
+        try:
+            cur = self._conv.estimate_total_tokens()
+        except Exception:  # pylint: disable=broad-except
+            cur = 0
+        budget = self._get_active_max_history_tokens()
+        msgs = len(self._conv) if self._conv else 0
+
+        def _fmt(n):
+            if n >= 1000:
+                return '{:.1f}K'.format(n / 1000.0)
+            return str(n)
+
+        ratio = (cur / budget) if budget > 0 else 0.0
+        if ratio < 0.6:
+            color = '#888'
+        elif ratio < 0.85:
+            color = '#d89e3a'
+        else:
+            color = '#d65c5c'
+        text = '📊 上下文: {} / {}  ({} 条)'.format(
+            _fmt(cur), _fmt(budget), msgs,
+        )
+        self.context_label.setText(text)
+        self.context_label.setStyleSheet(
+            'color:{};font-size:9pt;padding:0 4px;'.format(color),
+        )
+
+    def _on_history_trimmed(self, removed, current_tokens, budget_tokens):
+        """worker 通知"已自动裁剪 N 条早期消息"。"""
+        self._renderer.add_status(
+            '🧹 历史已自动裁剪 {} 条早期消息以适配 token 预算 '
+            '({}/{})'.format(removed, current_tokens, budget_tokens),
+        )
+        self._refresh_context_label()
+
+    def _on_compress_history(self):
+        """方案 B：手动触发"压缩对话"——让 LLM 总结后替换早期消息。"""
+        if self._is_running:
+            QtWidgets.QMessageBox.information(
+                self, '提示',
+                '请等待当前对话轮完成后再压缩。',
+            )
+            return
+        if len(self._conv) < 4:
+            QtWidgets.QMessageBox.information(
+                self, '提示',
+                '当前对话较短，无需压缩。',
+            )
+            return
+        # 二次确认（压缩不可逆）
+        reply = QtWidgets.QMessageBox.question(
+            self, '压缩对话',
+            '将让 LLM 阅读并总结当前对话历史，然后用一段摘要替换早期消息，'
+            '只保留最近 2 轮。\n\n'
+            '✅ 节省 token、加速后续对话\n'
+            '⚠️ 早期细节将不可恢复\n\n'
+            '是否继续？',
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        self._set_running(True)
+        self.status_label.setText('正在生成历史摘要...')
+        self._renderer.add_status('🗜 正在压缩对话历史，请稍候...')
+        # 同步在后台线程跑摘要请求，避免冻结 UI
+        from ..qt_compat import QtCore as _QtCore
+
+        worker_holder = {'result': None, 'err': None}
+
+        class _CompressThread(_QtCore.QThread):
+
+            def __init__(self, parent_dock):
+                super(_CompressThread, self).__init__(parent_dock)
+                self._dock = parent_dock
+
+            def run(self):
+                try:
+                    # 用一个临时的 AgentWorker 跑 compress（共享 conv/llm）
+                    tmp = AgentWorker(
+                        llm_client=self._dock._llm,
+                        conversation=self._dock._conv,
+                        dispatcher=self._dock._dispatcher,
+                    )
+                    worker_holder['result'] = tmp.compress_history(
+                        keep_recent=2,
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    worker_holder['err'] = str(exc)
+
+        thr = _CompressThread(self)
+
+        def _on_done():
+            self._set_running(False)
+            self.status_label.setText('准备就绪')
+            if worker_holder['err']:
+                self._renderer.add_error(
+                    '压缩失败: {}'.format(worker_holder['err']),
+                )
+                return
+            res = worker_holder['result'] or {}
+            if not res.get('ok'):
+                self._renderer.add_error(
+                    '压缩失败: {}'.format(res.get('error') or '未知错误'),
+                )
+                return
+            removed = res.get('removed', 0)
+            self._renderer.add_status(
+                '✅ 已压缩 {} 条早期消息为摘要。'.format(removed),
+            )
+            # 刷新视图：清空重放
+            self._renderer.clear()
+            self._pending_tool_blocks.clear()
+            self._replay_messages(self._conv)
+            self._refresh_context_label()
+            self._save_current_session(force=True)
+
+        thr.finished.connect(_on_done)
+        thr.start()
+
+    # ------------------------------------------------------------------ #
     # 槽：用户操作
     # ------------------------------------------------------------------ #
     def _on_profile_changed(self, _idx):
@@ -859,6 +1198,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._config.set_active_profile(name)
             self._llm = self._build_llm_client()
             self._renderer.add_status('已切换到 Profile: {}'.format(name))
+            self._refresh_context_label()
         except Exception as exc:  # pylint: disable=broad-except
             self._renderer.add_error('切换 Profile 失败: {}'.format(exc))
 
@@ -869,6 +1209,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._llm = self._build_llm_client()
             self._refresh_profiles()
             self._renderer.add_status('设置已保存')
+            self._refresh_context_label()
 
     def _clear_history(self):
         self._conv.clear()
@@ -877,6 +1218,239 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._renderer.add_welcome(
             '对话已清空。点击下方任一示例快速开始：'
         )
+        # 同步把空对话写回当前会话文件
+        self._save_current_session(force=True)
+        self._refresh_context_label()
+
+    # ------------------------------------------------------------------ #
+    # 会话管理（多对话）
+    # ------------------------------------------------------------------ #
+    def _refresh_sessions_combo(self, select_sid=None):
+        """刷新会话下拉，可选择切到指定 sid。"""
+        self.session_combo.blockSignals(True)
+        self.session_combo.clear()
+        target_idx = -1
+        for i, m in enumerate(self._session_mgr.list_sessions()):
+            label = '{}  ({}条)'.format(m.title or '未命名', m.message_count)
+            self.session_combo.addItem(label, m.sid)
+            if select_sid and m.sid == select_sid:
+                target_idx = i
+        if target_idx >= 0:
+            self.session_combo.setCurrentIndex(target_idx)
+        self.session_combo.blockSignals(False)
+
+    def _bootstrap_session(self):
+        """启动时恢复上次会话或新建一个。
+
+        策略：UI 状态里记录了 last_session_sid 时优先恢复；否则取最近的；
+        都没有就 create 一个新的。
+        """
+        last_sid = getattr(self._ui_state, 'last_session_sid', '') or ''
+        sessions = self._session_mgr.list_sessions()
+        target = None
+        if last_sid:
+            for m in sessions:
+                if m.sid == last_sid:
+                    target = m
+                    break
+        if target is None and sessions:
+            target = sessions[0]
+        if target is None:
+            # 第一次启动：创建一个新的
+            target = self._session_mgr.create_session()
+        self._load_session(target.sid)
+        self._refresh_sessions_combo(select_sid=target.sid)
+
+    def _load_session(self, sid):
+        # type: (str) -> bool
+        """加载指定会话到当前面板，返回是否成功。"""
+        result = self._session_mgr.load(sid)
+        if result is None:
+            return False
+        meta, conv = result
+        self._current_session = meta
+        self._conv = conv
+        self._pending_tool_blocks.clear()
+        self._renderer.clear()
+        # 方案 C：从磁盘恢复的会话注入"重启对齐"提示，
+        # 让 LLM 知道场景可能已变。空会话不注入。
+        try:
+            if conv.messages and not conv.has_restored_marker():
+                injected = conv.inject_restored_notice()
+                if injected:
+                    # 立刻持久化，避免下次启动重复注入
+                    self._save_current_session(force=True)
+        except Exception as exc:  # pylint: disable=broad-except
+            print('[maxagent] inject_restored_notice 异常: {}'.format(exc))
+        # 持久化最近一次会话 ID 到 ui_state
+        try:
+            self._ui_state.last_session_sid = sid
+            self._ui_state_mgr.save(self._ui_state)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # 回放历史消息
+        if not conv.messages:
+            self._renderer.add_welcome(
+                '👋 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
+                '点击下方任一示例快速开始：'
+            )
+        else:
+            self._replay_messages(conv)
+        # 刷新 token 状态显示
+        self._refresh_context_label()
+        return True
+
+    def _replay_messages(self, conv):
+        """把 Conversation 里的消息按气泡形式重新渲染。
+
+        工具调用按 (assistant tool_calls -> tool result) 配对展示，
+        不再实际执行。
+        """
+        # 建索引: tool_call_id -> tool result message
+        tool_results = {}
+        for m in conv.messages:
+            if m.role == 'tool' and m.tool_call_id:
+                tool_results[m.tool_call_id] = m
+
+        for m in conv.messages:
+            if m.role == 'user':
+                if m.content:
+                    self._renderer.add_user(m.content)
+            elif m.role == 'assistant':
+                if m.content:
+                    # 直接渲染最终版（不走流式）
+                    self._renderer._close_streaming_if_any()  # noqa: SLF001
+                    bubble = _AssistantBubble(m.content)
+                    self._renderer._append(bubble)  # noqa: SLF001
+                if m.tool_calls:
+                    for tc in m.tool_calls:
+                        try:
+                            fn = tc.get('function') or {}
+                            name = fn.get('name', '')
+                            args_str = fn.get('arguments', '{}')
+                            call_id = tc.get('id', '')
+                        except AttributeError:
+                            continue
+                        from ..tools.registry import get_tool
+                        spec = get_tool(name)
+                        dangerous = bool(spec and spec.dangerous)
+                        block = self._renderer.add_tool_call(
+                            name, args_str, dangerous=dangerous,
+                        )
+                        # 回填结果
+                        rmsg = tool_results.get(call_id)
+                        if rmsg is not None:
+                            ok = True
+                            try:
+                                rj = json.loads(rmsg.content or '{}')
+                                ok = bool(rj.get('ok', True))
+                            except (TypeError, ValueError):
+                                ok = True
+                            block.set_result(ok, rmsg.content or '')
+            elif m.role == 'system':
+                # 中途的 system note，不展示给用户（避免污染观感）
+                continue
+
+    def _save_current_session(self, force=False):
+        """保存当前会话到磁盘并刷新下拉。"""
+        if self._current_session is None:
+            return
+        # 没消息时也允许保存（force=True），用于清空后立即落盘
+        if not force and len(self._conv) == 0:
+            return
+        try:
+            self._session_mgr.save(self._current_session, self._conv)
+        except OSError as exc:
+            print('[maxagent] 保存会话失败: {}'.format(exc))
+            return
+        # 刷新下拉但保持当前选中
+        self._refresh_sessions_combo(select_sid=self._current_session.sid)
+
+    def _on_new_session(self):
+        if self._is_running:
+            self._renderer.add_status('请先停止当前对话再新建会话')
+            return
+        # 先把当前会话存盘
+        self._save_current_session()
+        meta = self._session_mgr.create_session()
+        self._load_session(meta.sid)
+        self._refresh_sessions_combo(select_sid=meta.sid)
+
+    def _on_session_combo_changed(self, idx):
+        if idx < 0 or self._is_running:
+            return
+        sid = self.session_combo.itemData(idx)
+        if not sid or (self._current_session
+                       and sid == self._current_session.sid):
+            return
+        # 切换前保存
+        self._save_current_session()
+        if not self._load_session(sid):
+            self._renderer.add_error('加载会话失败: {}'.format(sid))
+
+    def _on_rename_session(self):
+        if self._current_session is None:
+            return
+        old = self._current_session.title
+        new, ok = QtWidgets.QInputDialog.getText(
+            self, '重命名会话', '新标题:',
+            QtWidgets.QLineEdit.EchoMode.Normal, old,
+        )
+        if not ok:
+            return
+        new = (new or '').strip()
+        if not new or new == old:
+            return
+        if self._session_mgr.rename(self._current_session.sid, new):
+            self._current_session.title = new
+            self._refresh_sessions_combo(
+                select_sid=self._current_session.sid,
+            )
+
+    def _on_delete_session(self):
+        if self._current_session is None:
+            return
+        if self._is_running:
+            self._renderer.add_status('请先停止当前对话再删除会话')
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '删除会话',
+            '确定要删除会话「{}」吗？此操作不可恢复。'.format(
+                self._current_session.title,
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if ret != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        sid = self._current_session.sid
+        self._session_mgr.delete(sid)
+        # 切到下一个会话（或新建一个）
+        sessions = self._session_mgr.list_sessions()
+        if sessions:
+            self._load_session(sessions[0].sid)
+            self._refresh_sessions_combo(select_sid=sessions[0].sid)
+        else:
+            meta = self._session_mgr.create_session()
+            self._load_session(meta.sid)
+            self._refresh_sessions_combo(select_sid=meta.sid)
+
+    # ------------------------------------------------------------------ #
+    # 工具学习（自进化）
+    # ------------------------------------------------------------------ #
+    def _install_learn_approval_callback(self):
+        """把审批回调挂到 learn_tools 模块。
+
+        learn_tools 的 propose_new_tool 工具在主线程执行（已配置
+        run_on_main_thread=True），所以这个 callback 会在主线程被调用，
+        弹窗 exec_ 不会阻塞 Qt 事件循环失败。
+        """
+        try:
+            from .learn_approval_dialog import make_approval_callback
+            from ..tools.learn_tools import set_approval_callback
+            set_approval_callback(make_approval_callback(parent_widget=self))
+        except Exception as exc:  # pylint: disable=broad-except
+            print('[maxagent] 注册学习审批回调失败: {}'.format(exc))
 
     def _on_example_picked(self, text):
         # 把示例文本填入输入框，让用户可以编辑后再发
@@ -898,13 +1472,19 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             llm_client=self._llm,
             conversation=self._conv,
             dispatcher=self._dispatcher,
+            max_tool_loops=self._get_active_max_loops(),
+            max_history_tokens=self._get_active_max_history_tokens(),
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
+        self._worker.set_system_prompt_addon_provider(
+            self._skill_mgr.build_system_prompt_addon,
+        )
         self._worker.chunk_received.connect(self._on_chunk)
         self._worker.tool_started.connect(self._on_tool_started)
         self._worker.tool_finished.connect(self._on_tool_finished)
         self._worker.text_message_complete.connect(self._on_text_complete)
         self._worker.status_changed.connect(self._on_status)
+        self._worker.history_trimmed.connect(self._on_history_trimmed)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.run_in_thread(text)
@@ -960,11 +1540,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._renderer.end_turn()
         self.status_label.setText('完成')
         self._set_running(False)
+        self._save_current_session()
+        self._refresh_context_label()
 
     def _on_failed(self, err):
         self._renderer.add_error(err)
         self.status_label.setText('失败')
         self._set_running(False)
+        # 失败也保存：用户能在历史里看到失败原因
+        self._save_current_session()
+        self._refresh_context_label()
 
     # ------------------------------------------------------------------ #
     # 主线程同步工具执行

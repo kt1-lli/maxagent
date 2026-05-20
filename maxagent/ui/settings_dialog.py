@@ -138,6 +138,35 @@ class SettingsDialog(QtWidgets.QDialog):
         self.timeout_spin.setSuffix(' 秒')
         right.addRow('请求超时:', self.timeout_spin)
 
+        self.max_loops_spin = QtWidgets.QSpinBox()
+        self.max_loops_spin.setRange(4, 200)
+        self.max_loops_spin.setValue(40)
+        self.max_loops_spin.setSuffix(' 轮')
+        self.max_loops_spin.setToolTip(
+            '一次用户输入后，Agent 最多允许的「LLM↔工具」往返轮数。\n'
+            '批量任务（如"测试所有工具"）可能需要 40-80 轮。\n'
+            '接近上限时会自动提示模型收尾，超限后会保留已完成结果。',
+        )
+        right.addRow('工具调用上限:', self.max_loops_spin)
+
+        self.max_history_tokens_spin = QtWidgets.QSpinBox()
+        self.max_history_tokens_spin.setRange(2000, 200000)
+        self.max_history_tokens_spin.setSingleStep(2000)
+        self.max_history_tokens_spin.setValue(32000)
+        self.max_history_tokens_spin.setSuffix(' tokens')
+        self.max_history_tokens_spin.setToolTip(
+            '历史对话保留的 token 预算上限。\n'
+            '每次发请求前自动裁剪最早消息，但严格保护：\n'
+            '  • system 提示\n'
+            '  • 最近 4 条消息\n'
+            '  • assistant(tool_calls) 与对应 tool 结果的配对\n\n'
+            '推荐值：\n'
+            '  • 长上下文模型 (GPT-4 128K / Claude 200K): 64000\n'
+            '  • DeepSeek / Qwen Max (32-64K): 32000 (默认)\n'
+            '  • 本地小模型 (7B/14B): 8000-16000',
+        )
+        right.addRow('历史 token 预算:', self.max_history_tokens_spin)
+
         self.stream_chk = QtWidgets.QCheckBox('启用流式输出')
         self.stream_chk.setChecked(True)
         right.addRow('', self.stream_chk)
@@ -153,6 +182,42 @@ class SettingsDialog(QtWidgets.QDialog):
             '可选：每行一个 KEY=VALUE，例如\nX-Org-Id=foo\n',
         )
         right.addRow('自定义 Header:', self.headers_edit)
+
+        # === 全局应用设置（与 Profile 无关，作用于整个 MaxAgent）===
+        sep_label = QtWidgets.QLabel('— 应用设置 —')
+        sep_label.setStyleSheet('color:#888; padding-top:6px;')
+        right.addRow('', sep_label)
+
+        self.auto_show_chk = QtWidgets.QCheckBox(
+            'Max 启动时自动显示 MaxAgent 面板',
+        )
+        self.auto_show_chk.setToolTip(
+            '关闭后，Max 启动时不会自动弹出面板，需在 MAXScript Listener\n'
+            '中执行 g_show_max_agent() 或通过菜单/快捷键手动显示。',
+        )
+        self.auto_show_chk.toggled.connect(self._on_app_setting_changed)
+        right.addRow('', self.auto_show_chk)
+
+        self.allow_escape_chk = QtWidgets.QCheckBox(
+            '允许使用 run_maxscript / run_python 工具',
+        )
+        self.allow_escape_chk.setToolTip(
+            '关闭后 LLM 无法执行任意脚本，仅能调用预定义工具。',
+        )
+        self.allow_escape_chk.toggled.connect(self._on_app_setting_changed)
+        right.addRow('', self.allow_escape_chk)
+
+        self.confirm_exec_chk = QtWidgets.QCheckBox(
+            '执行脚本工具前弹窗确认',
+        )
+        self.confirm_exec_chk.toggled.connect(self._on_app_setting_changed)
+        right.addRow('', self.confirm_exec_chk)
+
+        self.wrap_undo_chk = QtWidgets.QCheckBox(
+            '工具操作包裹 Undo（可 Ctrl+Z 回滚）',
+        )
+        self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
+        right.addRow('', self.wrap_undo_chk)
 
         # 测试连接结果
         self.test_label = QtWidgets.QLabel('')
@@ -209,6 +274,40 @@ class SettingsDialog(QtWidgets.QDialog):
                 break
         self.profile_list.blockSignals(False)
         self._load_to_form(active)
+        # 全局应用设置（与具体 Profile 无关）
+        self._load_app_settings()
+
+    def _load_app_settings(self):
+        """从 AppConfig 把全局开关加载到对应复选框。"""
+        cfg = self._config.config
+        # 阻塞信号，避免触发 _on_app_setting_changed 把 _dirty 置为 True
+        for chk, val in (
+            (self.auto_show_chk, cfg.auto_show_on_startup),
+            (self.allow_escape_chk, cfg.allow_escape_hatch),
+            (self.confirm_exec_chk, cfg.confirm_before_exec),
+            (self.wrap_undo_chk, cfg.wrap_undo),
+        ):
+            chk.blockSignals(True)
+            chk.setChecked(bool(val))
+            chk.blockSignals(False)
+
+    def _on_app_setting_changed(self, _checked):
+        """任一全局开关变化时立刻保存到 AppConfig（不需要点应用）。
+
+        全局开关数量少且独立于 Profile 编辑，立即写盘体验更直接，
+        而且避免用户切换 Profile 时被"未保存提示"打断。
+        """
+        cfg = self._config.config
+        cfg.auto_show_on_startup = bool(self.auto_show_chk.isChecked())
+        cfg.allow_escape_hatch = bool(self.allow_escape_chk.isChecked())
+        cfg.confirm_before_exec = bool(self.confirm_exec_chk.isChecked())
+        cfg.wrap_undo = bool(self.wrap_undo_chk.isChecked())
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '应用设置写盘失败: {}'.format(exc),
+            )
 
     def _load_to_form(self, profile_name):
         prof = self._config.get_profile(profile_name)
@@ -221,6 +320,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.temperature_spin.setValue(float(prof.temperature))
         self.max_tokens_spin.setValue(int(prof.max_tokens or 0))
         self.timeout_spin.setValue(int(prof.timeout))
+        self.max_loops_spin.setValue(int(getattr(prof, 'max_tool_loops', 40) or 40))
+        self.max_history_tokens_spin.setValue(
+            int(getattr(prof, 'max_history_tokens', 32000) or 32000),
+        )
         self.stream_chk.setChecked(bool(prof.stream))
         self.tools_chk.setChecked(bool(prof.supports_tools))
         # headers
@@ -256,6 +359,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 if self.max_tokens_spin.value() > 0 else 4096
             ),
             timeout=int(self.timeout_spin.value()),
+            max_tool_loops=int(self.max_loops_spin.value()),
+            max_history_tokens=int(self.max_history_tokens_spin.value()),
             stream=bool(self.stream_chk.isChecked()),
             supports_tools=bool(self.tools_chk.isChecked()),
             extra_headers=headers,

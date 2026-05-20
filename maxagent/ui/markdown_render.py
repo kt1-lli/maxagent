@@ -44,8 +44,12 @@ def html_escape(text):
 # 顺序很重要：先 inline code，再 bold/italic/link，避免误伤 code 内的
 # 特殊字符。inline code 内部不再做 markdown 解析。
 _RE_INLINE_CODE = re.compile(r'`([^`\n]+)`')
-_RE_BOLD = re.compile(r'\*\*([^*\n]+)\*\*')
-_RE_ITALIC = re.compile(r'(?<![\*\w])\*([^*\n]+)\*(?!\*)')
+# 加粗 / 斜体支持嵌套：先把 inline code 抠出，再处理 bold（贪婪匹配最长），
+# 最后处理 italic。bold 用 (?:.+?) 非贪婪避免吞掉后续多个 ** 段。
+_RE_BOLD = re.compile(r'\*\*(?=\S)([^\n]+?)(?<=\S)\*\*')
+# italic 必须避开两侧都是字母数字的情况（如 a_b_c, 1*2*3），
+# 这里只做保守支持：前后非星号且内容非空。
+_RE_ITALIC = re.compile(r'(?<![\*\w])\*(?=\S)([^\*\n]+?)(?<=\S)\*(?!\*)')
 # [text](url) 形式
 _RE_LINK = re.compile(r'\[([^\]]+)\]\(([^)\s]+)\)')
 
@@ -256,8 +260,8 @@ def render_markdown(text):
         if not line.strip():
             _flush_list()
             list_kind = None
-            # 单个空行 -> 段间距，连续空行只算一次
-            out.append('<div style="height:6px;"></div>')
+            # 单个空行 -> 段间距，连续空行只算一次（中文阅读放宽到 10px）
+            out.append('<div style="height:10px;"></div>')
             i += 1
             continue
 
@@ -288,7 +292,7 @@ def render_markdown(text):
             _render_inline(html_escape(ln)) for ln in para_lines
         )
         out.append(
-            '<div style="margin:2px 0;line-height:1.55;">{}</div>'.format(body)
+            '<div style="margin:2px 0;line-height:1.6;">{}</div>'.format(body)
         )
 
     _flush_list()
