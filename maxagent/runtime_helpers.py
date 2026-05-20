@@ -71,7 +71,7 @@ def has_runtime_attr(name):
 def _make_bridge_class():
     """延迟创建 Qt Bridge 类，避免模块导入期就依赖 Qt。"""
     # pylint: disable=import-outside-toplevel
-    from .ui.qt_compat import QtCore
+    from .qt_compat import QtCore
 
     class _Bridge(QtCore.QObject):
         """Qt 桥接对象，用 signal 把任务从子线程送到主线程。"""

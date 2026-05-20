@@ -216,6 +216,105 @@ def save_config(cfg: AppConfig) -> None:
         os.rename(tmp, path)
 
 
+class ConfigManager:
+    """AppConfig 的 UI 友好包装器。
+
+    封装 ``dock_widget`` / ``settings_dialog`` 需要的高层操作：profile 列表、
+    切换激活 profile、增删改查 profile，并自动持久化。
+
+    :param config_path: 自定义配置文件路径，None 时使用默认路径
+                        （便于单元测试隔离）
+    """
+
+    def __init__(self, config_path=None):
+        # type: (Optional[str]) -> None
+        self._custom_path = config_path
+        self._cfg = self._load()
+
+    # -------- 内部 IO（支持自定义路径） --------
+    def _path(self) -> str:
+        return self._custom_path if self._custom_path else get_config_path()
+
+    def _load(self) -> AppConfig:
+        path = self._path()
+        if not os.path.exists(path):
+            cfg = AppConfig()
+            cfg.profiles = [
+                LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
+            ]
+            cfg.active_profile = cfg.profiles[0].name
+            self._save(cfg)
+            return cfg
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            return AppConfig.from_dict(raw)
+        except (OSError, ValueError, KeyError) as exc:
+            print("[maxagent] 配置加载失败，使用默认: {}".format(exc))
+            cfg = AppConfig()
+            cfg.profiles = [
+                LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
+            ]
+            cfg.active_profile = cfg.profiles[0].name
+            return cfg
+
+    def _save(self, cfg: AppConfig) -> None:
+        path = self._path()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(cfg.to_dict(), fh, ensure_ascii=False, indent=2)
+        if os.path.exists(path):
+            os.replace(tmp, path)
+        else:
+            os.rename(tmp, path)
+
+    # -------- 公共 API --------
+    def save(self) -> None:
+        """持久化当前配置到磁盘。"""
+        self._save(self._cfg)
+
+    @property
+    def config(self) -> AppConfig:
+        return self._cfg
+
+    def list_profile_names(self) -> List[str]:
+        return [p.name for p in self._cfg.profiles]
+
+    def get_active_profile_name(self) -> str:
+        return self._cfg.active_profile
+
+    def get_active_profile(self) -> Optional[LLMProfile]:
+        return self._cfg.get_active_profile()
+
+    def get_profile(self, name: str) -> Optional[LLMProfile]:
+        for p in self._cfg.profiles:
+            if p.name == name:
+                return p
+        return None
+
+    def set_active_profile(self, name: str) -> None:
+        if self.get_profile(name) is None:
+            raise ValueError("Profile 不存在: {}".format(name))
+        self._cfg.active_profile = name
+        self.save()
+
+    def upsert_profile(self, profile: LLMProfile) -> None:
+        """新增或就地更新 profile（按 name 匹配）。"""
+        for i, p in enumerate(self._cfg.profiles):
+            if p.name == profile.name:
+                self._cfg.profiles[i] = profile
+                return
+        self._cfg.profiles.append(profile)
+
+    def delete_profile(self, name: str) -> None:
+        if name == self._cfg.active_profile:
+            raise ValueError("不能删除当前激活的 Profile")
+        self._cfg.profiles = [
+            p for p in self._cfg.profiles if p.name != name
+        ]
+
+
 if __name__ == "__main__":
     # 简单自检
     c = load_config()

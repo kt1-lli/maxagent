@@ -39,13 +39,16 @@ from typing import Optional
 from ..agent import AgentWorker
 from ..agent import Conversation
 from ..config import ConfigManager
+from ..llm_client import build_client_from_profile
 from ..llm_client import LLMClient
-from ..qt_compat import QApplication
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from ..qt_compat import Signal
 from ..tools import ToolDispatcher
+
+
+QApplication = QtWidgets.QApplication
 
 
 # 简单的样式表
@@ -102,7 +105,7 @@ class _ChatRenderer(object):
         cur = self._browser.toHtml()
         # 简单粗暴：直接 setHtml 会闪烁；用 textCursor + insertHtml 更平滑
         cursor = self._browser.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.insertHtml(html)
         self._browser.setTextCursor(cursor)
         self._browser.ensureCursorVisible()
@@ -130,7 +133,7 @@ class _ChatRenderer(object):
         """流式追加 token。"""
         safe = self._escape(chunk).replace('\n', '<br>')
         cursor = self._browser.textCursor()
-        cursor.movePosition(cursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.insertHtml(safe)
         self._browser.setTextCursor(cursor)
         self._browser.ensureCursorVisible()
@@ -333,7 +336,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _build_llm_client(self):
         prof = self._config.get_active_profile()
-        return LLMClient(profile=prof)
+        return build_client_from_profile(prof)
 
     # ------------------------------------------------------------------ #
     # 槽：用户操作

@@ -8,9 +8,9 @@
     本层屏蔽两者 import 路径与 API 差异，让上层 UI 代码无感切换。
 
 使用方式：
-    from maxagent.ui.qt_compat import QtCore, QtGui, QtWidgets
-    from maxagent.ui.qt_compat import Signal, Slot, QAction
-    from maxagent.ui.qt_compat import IS_PYSIDE6, exec_compat
+    from maxagent.qt_compat import QtCore, QtGui, QtWidgets
+    from maxagent.qt_compat import Signal, Slot, QAction
+    from maxagent.qt_compat import IS_PYSIDE6, exec_compat
 """
 
 from __future__ import absolute_import

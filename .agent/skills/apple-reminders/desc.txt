@@ -1,0 +1,22 @@
+Apple Reminders 命令行管理工具
+
+通过 remindctl CLI 管理 macOS 上的提醒事项应用。
+
+主要功能：
+- 查看提醒列表（按日期过滤：今天、明天、本周、已过期等）
+- 创建提醒事项
+- 编辑提醒标题和到期日期
+- 完成提醒事项
+- 删除提醒事项
+- 管理提醒列表（创建、重命名、删除）
+- 支持多种输出格式（JSON、TSV、纯文本）
+
+日期格式支持：
+- 相对日期：today, tomorrow, yesterday
+- 标准日期：YYYY-MM-DD
+- 带时间：YYYY-MM-DD HH:mm
+- ISO 8601 格式
+
+系统要求：
+- 仅支持 macOS 系统
+- 需要在系统设置中授予 Reminders 权限

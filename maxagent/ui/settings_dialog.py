@@ -23,6 +23,7 @@ from typing import Optional
 
 from ..config import ConfigManager
 from ..config import LLMProfile
+from ..llm_client import build_client_from_profile
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
 from ..qt_compat import QtCore
@@ -204,7 +205,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.max_tokens_spin.setValue(int(prof.max_tokens or 0))
         self.timeout_spin.setValue(int(prof.timeout))
         self.stream_chk.setChecked(bool(prof.stream))
-        self.tools_chk.setChecked(bool(prof.use_tools))
+        self.tools_chk.setChecked(bool(prof.supports_tools))
         # headers
         if prof.extra_headers:
             text = '\n'.join(
@@ -235,11 +236,11 @@ class SettingsDialog(QtWidgets.QDialog):
             temperature=float(self.temperature_spin.value()),
             max_tokens=(
                 int(self.max_tokens_spin.value())
-                if self.max_tokens_spin.value() > 0 else None
+                if self.max_tokens_spin.value() > 0 else 4096
             ),
             timeout=int(self.timeout_spin.value()),
             stream=bool(self.stream_chk.isChecked()),
-            use_tools=bool(self.tools_chk.isChecked()),
+            supports_tools=bool(self.tools_chk.isChecked()),
             extra_headers=headers,
         )
 
@@ -353,7 +354,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
         try:
-            client = LLMClient(profile=prof)
+            client = build_client_from_profile(prof)
             # 发一个最简单的 ping
             resp = client.chat(
                 messages=[

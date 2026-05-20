@@ -34,13 +34,16 @@ from typing import Optional
 
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
-from ..qt_compat import QObject
-from ..qt_compat import QThread
+from ..qt_compat import QtCore
 from ..qt_compat import Signal
 from ..tools import build_openai_tools_schema
 from ..tools import ToolDispatcher
 from ..tools import ToolExecutionError
 from .conversation import Conversation
+
+
+QObject = QtCore.QObject
+QThread = QtCore.QThread
 
 
 # 工具调用循环的最大轮数，防止 LLM 死循环
@@ -164,7 +167,7 @@ class AgentWorker(QObject):
                     messages=messages,
                     tools=tools_schema,
                     stream=True,
-                    on_text_chunk=self._on_text_chunk,
+                    on_delta=self._on_text_chunk,
                 )
             except LLMError as exc:
                 self.failed.emit('LLM 调用失败: {}'.format(exc))
@@ -178,7 +181,30 @@ class AgentWorker(QObject):
 
             # 解析返回
             content = resp.get('content') or ''
-            tool_calls = resp.get('tool_calls') or []
+            # LLMClient 返回的 tool_calls 是扁平格式 {id, name, arguments(dict)}
+            # 需要还原为 OpenAI 原生 {id, type, function:{name, arguments(json_str)}}
+            # 才能塞回 conversation 让下一轮 LLM 读懂
+            flat_calls = resp.get('tool_calls') or []
+            tool_calls = []
+            for tc in flat_calls:
+                args_obj = tc.get('arguments')
+                if isinstance(args_obj, str):
+                    args_str = args_obj
+                else:
+                    try:
+                        args_str = json.dumps(
+                            args_obj or {}, ensure_ascii=False,
+                        )
+                    except (TypeError, ValueError):
+                        args_str = '{}'
+                tool_calls.append({
+                    'id': tc.get('id') or '',
+                    'type': 'function',
+                    'function': {
+                        'name': tc.get('name') or '',
+                        'arguments': args_str,
+                    },
+                })
             finish_reason = resp.get('finish_reason') or ''
 
             # 把 assistant 消息记入历史
