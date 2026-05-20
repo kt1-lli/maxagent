@@ -22,56 +22,38 @@
 
 ## 🚀 5 分钟上手
 
-### 1. 安装
+### 1. 启动（推荐：免安装方式）⭐
 
-下载本仓库到任意目录，在普通 Python 终端（不是 Max 内）执行：
+下载本仓库到任意目录，**直接把 `MAXAGENT_INSTALL.ms` 拖到 3ds Max 视口** —— 完成。
+
+启动器会自动把仓库目录注入 `sys.path` 并显示面板，**无需事先 `pip install`、无需拷贝文件到 Max 启动目录**。
+重启 Max 后再次拖入即可，每次拖入都是幂等的，不会污染 `sys.path`。
+
+注册到工具栏 / 快捷键（拖入一次后即可）：
+
+```
+Customize → Customize User Interface
+  Category:  MaxAgent
+  Action:    MaxAgent_Show / MaxAgent_Toggle
+```
+
+> 💡 适合开发期、多版本切换、绿色分发。删除整个仓库目录就等于完全卸载。
+
+### 1.b 持久安装（可选：每次启动 Max 自动加载）
+
+如果你想 **每次启动 Max 都自动加载 MaxAgent**（不用每次拖 ms 文件），用 `install.py`：
 
 ```powershell
 cd path\to\maxagent-project
-python install.py
+python install.py            # 装到所有检测到的 Max 版本
+python install.py --version 2024   # 只装 Max 2024
+python install.py --uninstall      # 卸载
 ```
 
-输出示例：
+安装后启动 Max 会看到 MaxScript Listener 打印 `[MaxAgent] 已加载`，
+此后通过 MaxScript `g_show_max_agent()` 或 Python `import maxagent; maxagent.show()` 调出面板。
 
-```
-检测到 2 个 Max 安装:
-  - Max 2024: 2024 - 64bit (C:\Users\you\AppData\Local\Autodesk\3dsMax\2024 - 64bit\ENU\scripts\startup)
-  - Max 2025: 2025 - 64bit (...)
-
->>> 安装到 Max 2024 ...
-  [OK] 包已拷贝
-  [OK] 引导脚本: ...maxagent_startup.py
-
-安装完成: 2/2 成功
-```
-
-**只装某个版本**：
-
-```powershell
-python install.py --version 2024
-```
-
-**卸载**：
-
-```powershell
-python install.py --uninstall
-```
-
-### 2. 启动
-
-启动 Max → MaxAgent 会自动加载（看 MAXScript Listener 是否打印 `[MaxAgent] 已加载`）。
-
-显示面板的 3 种方式（任选）：
-
-| 方式 | 操作 |
-|------|------|
-| MaxScript Listener | 输入 `g_show_max_agent()` 回车 |
-| Python Listener | 输入 `import maxagent; maxagent.show()` |
-| 拖动启动器 | 把仓库根目录的 `MAXAGENT_INSTALL.ms` 拖到 Max 视口 |
-
-绑定快捷键：`Customize → Customize User Interface → Keyboard → Category: MaxAgent`，给 `MaxAgent_Toggle` 绑个 F12 之类。
-
-### 3. 配置 LLM
+### 2. 配置 LLM
 
 第一次启动后，点面板顶部的 **⚙ 设置**：
 
@@ -118,7 +100,7 @@ API Key:  sk-xxx
 
 填完后点 **🧪 测试连接** 验证。绿色 ✓ 即可使用。
 
-### 4. 试一试
+### 3. 试一试
 
 ```
 👤 你: 创建一个茶壶，加 TurboSmooth 修改器，迭代 2 次
@@ -138,10 +120,10 @@ API Key:  sk-xxx
 
 ```
 maxagent-project/
-├── install.py               # 一键安装脚本
+├── install.py               # 持久安装脚本（可选）
 ├── setup.py                 # 可选 pip 安装
 ├── requirements.txt
-├── MAXAGENT_INSTALL.ms      # MaxScript 启动器
+├── MAXAGENT_INSTALL.ms      # MaxScript 启动器（免安装入口，拖入 Max 视口即可）
 ├── README.md                # 本文档
 ├── docs/
 │   ├── architecture.md      # 架构 + 线程模型
