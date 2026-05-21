@@ -33,10 +33,41 @@ def _get_node(name):
     return node
 
 
+def _normalize_names(names):
+    """把 names 归一化为 list[str]，兼容 LLM 的多种输入形式。
+
+    支持的输入：
+    - list/tuple of str: 直接使用
+    - 单个 str: 按逗号/分号/中文逗号切分；若都没有则视为单元素列表
+    - None / 空: 返回空列表
+
+    防御 LLM 把 ["A", "B"] 在 JSON schema 中错误传成 "A,B" 字符串
+    导致 ``for n in names`` 逐字符迭代的经典 bug。
+    """
+    if names is None:
+        return []
+    if isinstance(names, (list, tuple)):
+        return [str(x).strip() for x in names if str(x).strip()]
+    if isinstance(names, str):
+        s = names.strip()
+        if not s:
+            return []
+        # 优先按分隔符切分
+        for sep in (',', ';', '，', '；'):
+            if sep in s:
+                return [p.strip() for p in s.split(sep) if p.strip()]
+        return [s]
+    # 其他类型尝试转 str
+    return [str(names)]
+
+
 def _get_nodes(names):
+    items = _normalize_names(names)
+    if not items:
+        return []
     out = []
     missing = []
-    for n in names or []:
+    for n in items:
         node = rt.getNodeByName(n, exact=True, all=False)
         if node is None:
             missing.append(n)
@@ -169,14 +200,17 @@ def export_file(file_path, selected_only=False):
 
 
 @tool(
-    description='按名字删除一个或多个对象。被删除对象不可通过 Ctrl+Z 之外的方式恢复。',
+    description=(
+        '按名字删除一个或多个对象。被删除对象不可通过 Ctrl+Z 之外的方式恢复。'
+        'names 接受字符串数组 ["Box01","Box02"] 或逗号分隔字符串 "Box01,Box02"。'
+    ),
     category='scene_io',
     dangerous=True,
 )
 def delete_objects(names):
     """删除对象。
 
-    :param names: 对象名列表（逐个精确匹配）
+    :param names: 对象名列表（list 或逗号分隔字符串均可）
     :returns: dict {"deleted": N, "names": [...]}
     """
     _ensure_in_max()
@@ -228,7 +262,10 @@ def set_object_frozen(names, frozen=True):
 
 
 @tool(
-    description='把指定对象设为当前选中。',
+    description=(
+        '把指定对象设为当前选中。'
+        'names 接受字符串数组 ["Box01","Box02"] 或逗号分隔字符串 "Box01,Box02"。'
+    ),
     category='scene_io',
     wrap_undo=False,
 )

@@ -11,6 +11,7 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import json
 from typing import Any
 from typing import Dict
 
@@ -84,9 +85,19 @@ def add_modifier(name, modifier_type, params=None):
             '未知修改器类型: {} (尝试 {})'.format(modifier_type, cls_name),
         )
     mod = cls()
-    # 应用参数
-    if params:
-        for key, val in params.items():
+    # 应用参数。LLM 偶尔会把 dict 序列化成 JSON 字符串传进来，这里做兼容
+    norm_params = params
+    if isinstance(norm_params, str):
+        s = norm_params.strip()
+        if not s:
+            norm_params = None
+        else:
+            try:
+                norm_params = json.loads(s)
+            except (ValueError, TypeError):
+                norm_params = None
+    if norm_params and isinstance(norm_params, dict):
+        for key, val in norm_params.items():
             try:
                 setattr(mod, key, val)
             except Exception:  # pylint: disable=broad-except

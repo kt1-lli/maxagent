@@ -42,6 +42,71 @@ def _to_color(rgb):
     return rt.color(r, g, b)
 
 
+# 模块级缓存：保存 agent 创建过的材质，确保未被对象引用时也能再次通过名字找到
+# 注意：不会跨 Max 重启保留；仅是当前会话内的弱引用簿
+_MATERIAL_REGISTRY = {}
+
+
+def _register_material_to_medit(mat):
+    """把刚创建的材质放进材质编辑器空槽 + 内存簿。
+
+    Max 设计上：未被任何对象引用的材质既不在 ``sceneMaterials`` 也不在
+    ``getMeditMaterial`` 列表里。这会导致 ``create_*`` 之后立刻
+    ``assign_material`` 找不到。这里做两件事：
+    1. 找到第一个空 medit 槽放进去（会显示在材质编辑器面板）
+    2. 在模块内存里登记一份（最直接的找回路径）
+    """
+    try:
+        _MATERIAL_REGISTRY[str(mat.name)] = mat
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        # 查找一个空槽（默认 24 个槽位，从 1 开始）
+        for i in range(1, 25):
+            slot = rt.getMeditMaterial(i)
+            cls = str(rt.classOf(slot))
+            # 默认空槽是 Standardmaterial 且名字以 #map 开头
+            if cls in ('Standardmaterial', 'PhysicalMaterial'):
+                slot_name = str(getattr(slot, 'name', '') or '')
+                if (not slot_name) or slot_name.startswith('Map ') \
+                        or slot_name.startswith('#') \
+                        or slot_name == cls:
+                    rt.setMeditMaterial(i, mat)
+                    break
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+def _find_material_by_name(material_name):
+    """按名字在所有可能位置查找材质。"""
+    # 1. agent 内存簿（最快、最可靠）
+    if material_name in _MATERIAL_REGISTRY:
+        try:
+            mat = _MATERIAL_REGISTRY[material_name]
+            # 验证仍有效
+            _ = str(rt.classOf(mat))
+            return mat
+        except Exception:  # pylint: disable=broad-except
+            _MATERIAL_REGISTRY.pop(material_name, None)
+    # 2. sceneMaterials（已被对象引用过的）
+    try:
+        for i in range(int(rt.sceneMaterials.count)):
+            m = rt.sceneMaterials[i]
+            if str(m.name) == material_name:
+                return m
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # 3. medit 槽
+    for i in range(1, 25):
+        try:
+            m = rt.getMeditMaterial(i)
+            if str(m.name) == material_name:
+                return m
+        except Exception:  # pylint: disable=broad-except
+            continue
+    return None
+
+
 @tool(
     description=(
         '创建一个标准材质（Standard Material）。返回材质名供后续 assign_material 使用。'
@@ -84,6 +149,9 @@ def create_standard_material(
         mat.selfIllumAmount = float(self_illumination)
     except Exception:  # pylint: disable=broad-except
         pass
+    # 把材质注册到材质编辑器槽，确保后续 assign_material 能通过 name 找到
+    # 不放槽的话，未被对象引用前材质既不在 sceneMaterials 也不在 medit
+    _register_material_to_medit(mat)
     return {'name': str(mat.name), 'type': str(rt.classOf(mat))}
 
 
@@ -124,6 +192,7 @@ def create_physical_material(
             mat.trans_ior = float(ior)
         except Exception:  # pylint: disable=broad-except
             pass
+        _register_material_to_medit(mat)
         return {
             'name': str(mat.name),
             'type': 'PhysicalMaterial',
@@ -133,6 +202,7 @@ def create_physical_material(
     mat = rt.Standardmaterial()
     mat.name = name
     mat.diffuse = _to_color(base_color or [200, 200, 200])
+    _register_material_to_medit(mat)
     return {
         'name': str(mat.name),
         'type': 'Standardmaterial',
@@ -156,29 +226,12 @@ def assign_material(object_name, material_name):
     """
     _ensure_in_max()
     node = _get_node(object_name)
-    # 在 sceneMaterials 中查找
-    mat = None
-    try:
-        for i in range(int(rt.sceneMaterials.count)):
-            m = rt.sceneMaterials[i]
-            if str(m.name) == material_name:
-                mat = m
-                break
-    except Exception:  # pylint: disable=broad-except
-        pass
-    # 也尝试通过 getMeditMaterial 查 material editor 槽
-    if mat is None:
-        for i in range(1, 25):
-            try:
-                m = rt.getMeditMaterial(i)
-                if str(m.name) == material_name:
-                    mat = m
-                    break
-            except Exception:  # pylint: disable=broad-except
-                continue
+    mat = _find_material_by_name(material_name)
     if mat is None:
         raise ValueError('材质未找到: {}'.format(material_name))
     node.material = mat
+    # 赋给对象后材质会自动进入 sceneMaterials；把它也补进内存簿避免后续重复查找
+    _MATERIAL_REGISTRY[str(mat.name)] = mat
     return {
         'object': str(node.name),
         'material': str(mat.name),
@@ -203,13 +256,7 @@ def add_diffuse_map(material_name, image_path):
     _ensure_in_max()
     if not os.path.isfile(image_path):
         raise ValueError('图片文件不存在: {}'.format(image_path))
-    # 查材质
-    mat = None
-    for i in range(int(rt.sceneMaterials.count)):
-        m = rt.sceneMaterials[i]
-        if str(m.name) == material_name:
-            mat = m
-            break
+    mat = _find_material_by_name(material_name)
     if mat is None:
         raise ValueError('材质未找到: {}'.format(material_name))
     bmap = rt.Bitmaptexture(filename=image_path)
