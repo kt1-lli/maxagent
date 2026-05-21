@@ -233,3 +233,49 @@ class TestReplaceWithSummary:
         for m in c.messages:
             if m.role == 'tool':
                 assert m.tool_call_id in seen
+
+
+class TestSystemPromptRules:
+    """验证硬规则与身份提示已正确写入 DEFAULT_SYSTEM_PROMPT。
+
+    每条规则都对应用户线上反馈过的具体问题，回归时一旦被人误删能立刻发现。
+    """
+
+    def _prompt(self):
+        from maxagent.agent.conversation import DEFAULT_SYSTEM_PROMPT
+        return DEFAULT_SYSTEM_PROMPT
+
+    def test_identity_lockdown(self):
+        # #4：问"你是谁"必须答 MaxAgent，不能透露底层模型
+        prompt = self._prompt()
+        assert 'MaxAgent' in prompt
+        assert '身份铁律' in prompt
+        # 必须明确禁止透露底层 LLM 厂商
+        assert '严禁透露' in prompt or '严禁说出' in prompt
+
+    def test_anti_hallucination_rule(self):
+        # #1：禁止捏造 MaxScript / pymxs API
+        prompt = self._prompt()
+        assert '反幻觉' in prompt
+        assert '严禁捏造' in prompt
+
+    def test_local_scope_rule(self):
+        # #2：local 只在所属括号内生效
+        prompt = self._prompt()
+        assert 'local 作用域铁律' in prompt
+        assert '括号' in prompt
+
+    def test_if_then_else_rule(self):
+        # #3：else 必须配 then；if-do 不能带 else
+        prompt = self._prompt()
+        assert 'then' in prompt and 'else' in prompt
+        # 应当含有"then 关键字不可省略"或等价禁止文案
+        assert '不可省略' in prompt or '禁止' in prompt
+
+    def test_rules_are_appended_after_workflow(self):
+        # 确认硬规则确实被拼接到 prompt 末尾，而不是被截断
+        from maxagent.agent.coding_rules import CODING_RULES
+        prompt = self._prompt()
+        # 抽 CODING_RULES 的标志性子串验证
+        assert '代码生成硬性规则' in prompt
+        assert CODING_RULES.strip() in prompt

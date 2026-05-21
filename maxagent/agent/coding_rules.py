@@ -31,16 +31,44 @@ CODING_RULES = """\
 使用 run_maxscript / run_python 工具时，必须 100% 遵守以下规则。
 ==============================================================
 
+【🔴 反幻觉铁律 - 最高优先级】
+- 严禁捏造任何 API：函数名 / 方法名 / 属性名 / 参数签名 / 修改器名 /
+  全局变量名都必须是 3ds Max 官方文档中真实存在的；不确定就不写。
+- 不确定 API 是否存在时，必须按以下顺序处理：
+  1) 先用 run_maxscript 跑最小验证脚本，例如 `isProperty objects #foo`、
+     `getPropNames Box01`、`showProperties $`；
+  2) 用 `classOf` / `superClassOf` / `getInterfaces` 反查；
+  3) 仍无法确认时，明确告知用户"不确定该 API 是否存在"，请用户确认或换方案，
+     绝对禁止写一段"看起来很合理"的代码当成解决方案交付。
+- 涉及不熟悉的修改器 / 控制器 / 渲染器（如 V-Ray、Corona、第三方插件）时，
+  必须先探测 `pluginManager.pluginDllName` 或 classOf 是否可用，再调用。
+- 回答中只要出现"应该是"、"大概"、"我记得"、"通常"等不确定表述时，对应代码
+  必须改为先探测后执行，不允许直接返回。
+
 【通用 - 适用所有代码】
 - 所有注释必须使用中文。
 - 标识符（变量名 / 函数名）必须使用英文 camelCase；禁止中文命名。
 - 不要使用语言保留关键字作为标识符。
-- 不要捏造 API；不确定 API 是否存在时，先用查询工具或最小验证脚本探测。
 
 【MaxScript 专用规则】
-- 所有变量必须用 local / global / persistent global 显式声明，禁止隐式全局。
+- 变量声明：所有变量必须用 local / global / persistent global 显式声明，
+  禁止隐式全局。
+- ⚠️ local 作用域铁律：local 只在它所属的【一对括号 ( ... )】或函数体
+  /控制流块内有效。这意味着：
+  * 在 fn 函数体最外层、rollout 事件处理体内、`( ... )` 表达式块内声明的
+    local，仅在该块内可见；离开括号即失效。
+  * 多个 local 必须写在【同一个】括号块内才能互相访问；不要把 local 写在
+    不同括号块里再期望跨块访问。
+  * 顶层脚本想要跨块共享变量必须用 global / persistent global，不能用 local。
+  * 错误示范：`( local a = 1 ) ( print a )` —— 第二个括号里 a 已经不存在。
+  * 正确示范：`( local a = 1; print a )` —— 同一括号块内使用。
+- ⚠️ if 控制流必须严格遵守：
+  * 有 else 时：`if cond then expr1 else expr2`  —— `then` 关键字不可省略。
+  * 无 else 时：`if cond do expr`               —— 用 do，不用 then。
+  * 严禁出现 `if cond expr1 else expr2`（缺 then）或
+    `if cond then expr` 后面没有 else 也没有 do（语法错误）。
+  * 多行写法：`if cond then ( ... ) else ( ... )`，括号里多条语句用分号或换行分隔。
 - 函数必须使用 return 显式返回值，不依赖最后一行隐式返回。
-- if 控制流：有 else 用 `if cond then ... else ...`；无 else 用 `if cond do ...`。
 - for 循环：遍历用 `for x in coll do ...`；计数用 `for i = 1 to N do ...`；
   收集用 `result = for x in coll collect expr`。
 - 数组索引从 1 开始（`arr[1]` 是第一个元素）。
@@ -75,6 +103,8 @@ CODING_RULES = """\
 - 禁止把 0-based / 1-based 索引混用。
 - 禁止用 `is` 比较 pymxs 对象。
 - 禁止在不确认 DLL 是否加载、文件是否存在的情况下直接调用外部资源。
+- 禁止 MaxScript 中出现 `if ... else` 而缺少 `then`。
+- 禁止把 local 声明放在与使用处不同的括号块。
 ==============================================================
 """
 
