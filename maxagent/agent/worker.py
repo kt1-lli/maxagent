@@ -115,6 +115,17 @@ class AgentWorker(QObject):
         # 当前轮的用户输入（供 sys_addon_provider 用于触发词匹配）
         self._current_user_input = ''
 
+        # ---------- chunk 节流（合并主线程信号风暴） ----------
+        # LLM 流式每个 token 一个 chunk，在子线程里先攒到 buffer，
+        # 满足任一条件再 emit：累计字节 >= _chunk_flush_chars
+        # 或距离上次 flush 时间 >= _chunk_flush_interval 秒。
+        # 这样把每秒数百次 emit 降到 ~20 次，主线程事件队列大幅减负。
+        self._chunk_buf = []  # type: list
+        self._chunk_buf_lock = threading.Lock()
+        self._chunk_last_flush = 0.0
+        self._chunk_flush_chars = 48
+        self._chunk_flush_interval = 0.05  # 50ms
+
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
@@ -266,6 +277,8 @@ class AgentWorker(QObject):
                     cancel_check=self._cancel_event.is_set,
                 )
             except LLMError as exc:
+                # LLM 出错前，先把已经收到的流式残片送达 UI
+                self._flush_chunk_buf()
                 # 用户主动取消用 LLMError("用户取消") 表达，区别于其他错误
                 if '用户取消' in str(exc):
                     self.failed.emit('用户取消')
@@ -273,6 +286,7 @@ class AgentWorker(QObject):
                 self.failed.emit('LLM 调用失败: {}'.format(exc))
                 return
             except Exception as exc:  # pylint: disable=broad-except
+                self._flush_chunk_buf()
                 tb = traceback.format_exc()
                 self.failed.emit(
                     'LLM 调用异常: {}\n{}'.format(exc, tb),
@@ -281,6 +295,10 @@ class AgentWorker(QObject):
 
             # 解析返回
             content = resp.get('content') or ''
+
+            # 该轮 LLM 流式已结束：先把 chunk 残留 buffer 全部 flush 给 UI，
+            # 避免后续 text_message_complete / 工具气泡先于尾巴文字到达
+            self._flush_chunk_buf()
 
             # 把 usage 信息派发给 UI（如果后端返回了）
             usage = resp.get('usage') or {}
@@ -415,9 +433,42 @@ class AgentWorker(QObject):
     # 工具/辅助
     # ------------------------------------------------------------------ #
     def _on_text_chunk(self, chunk):
-        """LLM 流式返回 token 时由 LLMClient 调用（仍在子线程）。"""
-        if chunk:
-            self.chunk_received.emit(chunk)
+        """LLM 流式返回 token 时由 LLMClient 调用（仍在子线程）。
+
+        节流策略（避免主线程信号风暴）：
+        - 把 token 攒进 buffer
+        - 满足"累计字符数达到阈值"或"距离上次 flush 超过时间窗"任一条件，
+          才把合并后的字符串一次性 emit 到主线程
+        - 一轮 LLM 调用结束（文本完整、工具调用前、轮末）必须显式 flush，
+          否则会丢尾巴
+        """
+        if not chunk:
+            return
+        with self._chunk_buf_lock:
+            self._chunk_buf.append(chunk)
+            total = sum(len(c) for c in self._chunk_buf)
+            now = time.time()
+            if (total >= self._chunk_flush_chars
+                    or (now - self._chunk_last_flush)
+                    >= self._chunk_flush_interval):
+                merged = ''.join(self._chunk_buf)
+                self._chunk_buf = []
+                self._chunk_last_flush = now
+            else:
+                merged = ''
+        if merged:
+            self.chunk_received.emit(merged)
+
+    def _flush_chunk_buf(self):
+        """强制把残留 buffer 全部 emit 出去，保证一轮文本完整。"""
+        with self._chunk_buf_lock:
+            if not self._chunk_buf:
+                return
+            merged = ''.join(self._chunk_buf)
+            self._chunk_buf = []
+            self._chunk_last_flush = time.time()
+        if merged:
+            self.chunk_received.emit(merged)
 
     def _emit_usage(self, usage):
         """从后端返回的 usage dict 计算成本并发信号。
