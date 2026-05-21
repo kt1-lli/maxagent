@@ -104,7 +104,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '本地模型可留空，或填 ollama / lmstudio 等占位符',
         )
         key_row.addWidget(self.api_key_edit, 1)
-        self.show_key_btn = QtWidgets.QPushButton('👁')
+        self.show_key_btn = QtWidgets.QPushButton('显示')
         self.show_key_btn.setCheckable(True)
         self.show_key_btn.toggled.connect(self._toggle_key_visible)
         key_row.addWidget(self.show_key_btn)
@@ -251,13 +251,13 @@ class SettingsDialog(QtWidgets.QDialog):
                 QtWidgets.QSizePolicy.Policy.Fixed,
             )
 
-        self.test_btn = QtWidgets.QPushButton('🧪 测试连接')
+        self.test_btn = QtWidgets.QPushButton('测试连接')
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
         _shape_btn(self.test_btn)
         op_row.addWidget(self.test_btn)
 
-        self.test_full_btn = QtWidgets.QPushButton('🔬 完整测试')
+        self.test_full_btn = QtWidgets.QPushButton('完整测试')
         self.test_full_btn.setToolTip(
             '复刻真实对话的请求：开启流式 + 携带全部工具 schema。\n'
             '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
@@ -266,7 +266,7 @@ class SettingsDialog(QtWidgets.QDialog):
         _shape_btn(self.test_full_btn)
         op_row.addWidget(self.test_full_btn)
 
-        self.apply_btn = QtWidgets.QPushButton('💾 应用')
+        self.apply_btn = QtWidgets.QPushButton('应用')
         self.apply_btn.setToolTip('保存当前 Profile 修改')
         self.apply_btn.clicked.connect(self._apply)
         _shape_btn(self.apply_btn)
@@ -493,7 +493,7 @@ class SettingsDialog(QtWidgets.QDialog):
         # 如果是当前 active，无需切换；否则保留原 active
         self._config.save()
         self._dirty = False
-        self.test_label.setText('✓ 已保存')
+        self.test_label.setText('[OK] 已保存')
         self.test_label.setStyleSheet('color:#8fce8f;')
         self._reload_profiles()
 
@@ -501,10 +501,10 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('✗ 表单错误: {}'.format(exc))
+            self.test_label.setText('[X] 表单错误: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
-        self.test_label.setText('⋯ 测试中...')
+        self.test_label.setText('... 测试中...')
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
         try:
@@ -520,17 +520,17 @@ class SettingsDialog(QtWidgets.QDialog):
             content = (resp.get('content') or '').strip()
             if content:
                 self.test_label.setText(
-                    '✓ 连接成功，模型回复: "{}"'.format(content[:40]),
+                    '[OK] 连接成功，模型回复: "{}"'.format(content[:40]),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
-                self.test_label.setText('✓ 连接成功（响应为空）')
+                self.test_label.setText('[OK] 连接成功（响应为空）')
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('✗ 连接失败: {}'.format(exc))
+            self.test_label.setText('[X] 连接失败: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('✗ 异常: {}'.format(exc))
+            self.test_label.setText('[X] 异常: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _test_connection_full(self):
@@ -541,10 +541,10 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('✗ 表单错误: {}'.format(exc))
+            self.test_label.setText('[X] 表单错误: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
-        self.test_label.setText('⋯ 完整测试中（流式+tools）...')
+        self.test_label.setText('... 完整测试中（流式+tools）...')
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
 
@@ -553,7 +553,7 @@ class SettingsDialog(QtWidgets.QDialog):
             from ..tools import build_openai_tools_schema
             tools_schema = build_openai_tools_schema()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('✗ 加载工具 schema 失败: {}'.format(exc))
+            self.test_label.setText('[X] 加载工具 schema 失败: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
 
@@ -576,19 +576,19 @@ class SettingsDialog(QtWidgets.QDialog):
             content = (resp.get('content') or ''.join(chunks)).strip()
             if content:
                 self.test_label.setText(
-                    '✓ 完整测试通过，模型回复: "{}"'.format(content[:40]),
+                    '[OK] 完整测试通过，模型回复: "{}"'.format(content[:40]),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
                 self.test_label.setText(
-                    '✓ 完整测试通过（响应为空，但握手成功）',
+                    '[OK] 完整测试通过（响应为空，但握手成功）',
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('✗ 完整测试失败: {}'.format(exc))
+            self.test_label.setText('[X] 完整测试失败: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('✗ 异常: {}'.format(exc))
+            self.test_label.setText('[X] 异常: {}'.format(exc))
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _refresh_base_url_hint(self, text):

@@ -293,7 +293,7 @@ class WelcomeBlock(QtWidgets.QWidget):
         v.addWidget(head)
 
         for ex in self._EXAMPLES:
-            btn = QtWidgets.QPushButton('💡 ' + ex)
+            btn = QtWidgets.QPushButton(ex)
             btn.setStyleSheet(
                 'QPushButton { background:#252525; color:#a0a0a0; }'
                 'QPushButton:hover { background:#2d3d2d; color:#ddd; }'

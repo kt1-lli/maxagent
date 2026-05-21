@@ -73,16 +73,19 @@ QWidget#chatContent { background-color: #1e1e1e; }
 QPlainTextEdit, QTextEdit {
     background-color: #2b2b2b;
     color: #d4d4d4;
+    border: none;
 }
 QPushButton {
     background-color: #4a4a4a;
     color: #ffffff;
+    border: none;
 }
 QPushButton:hover { background-color: #5a5a5a; }
 QPushButton:disabled { background-color: #333; color: #777; }
 QToolButton.iconBtn {
     background-color: #4a4a4a;
     color: #ffffff;
+    border: none;
 }
 QToolButton.iconBtn:hover { background-color: #5a5a5a; }
 QPushButton#sendBtn { background-color: #2d7d46; }
@@ -92,16 +95,19 @@ QPushButton#stopBtn:hover { background-color: #c44040; }
 QPushButton.miniBtn {
     background-color: transparent;
     color: #888;
+    border: none;
 }
 QPushButton.miniBtn:hover { background-color: #333; color: #ddd; }
 QToolButton {
     background-color: transparent;
     color: #d0d0d0;
+    border: none;
 }
 QToolButton:hover { color: #ffffff; }
 QComboBox {
     background-color: #3c3c3c;
     color: #d4d4d4;
+    border: none;
 }
 QLabel { color: #d4d4d4; }
 
@@ -319,8 +325,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         top.addWidget(self.profile_combo, 1)
-        # 重加载用纯图标 + tooltip，避免在窄面板下被截断
-        self.reload_btn = QtWidgets.QPushButton('🔄')
+        # 重加载按钮：纯文字，避免 emoji 在 Max 内嵌 PySide 下渲染异常
+        self.reload_btn = QtWidgets.QPushButton('重载')
         self.reload_btn.setProperty('class', 'iconBtn')
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
@@ -329,7 +335,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
-        self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
+        self.settings_btn = QtWidgets.QPushButton('设置')
         self.settings_btn.setToolTip('打开设置面板（Profile / API Key / 应用开关）')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -338,8 +344,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # === 顶部条第 2 行：会话管理 ===
         sess_row = QtWidgets.QHBoxLayout()
         sess_row.setSpacing(4)
-        # 新对话按钮：纯图标，节省横向空间（图1 中"➕ 新对话"和会话下拉互相挤压）
-        self.new_session_btn = QtWidgets.QPushButton('➕')
+        # 新对话按钮：纯文字，节省横向空间
+        self.new_session_btn = QtWidgets.QPushButton('新对话')
         self.new_session_btn.setProperty('class', 'iconBtn')
         self.new_session_btn.setToolTip('开启一个新的空白对话')
         self.new_session_btn.clicked.connect(self._on_new_session)
@@ -364,19 +370,19 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 会话操作菜单（重命名 / 删除 / 清空）合并到一个 ⋯ 按钮
         # 之前 ✏/🗑/清空 三个独立按钮在窄面板下会把会话下拉框挤掉
         self.session_menu_btn = QtWidgets.QToolButton()
-        self.session_menu_btn.setText('⋯')
+        self.session_menu_btn.setText('菜单')
         self.session_menu_btn.setProperty('class', 'iconBtn')
         self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
         self.session_menu_btn.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
         )
         sess_menu = QtWidgets.QMenu(self.session_menu_btn)
-        act_rename = sess_menu.addAction('✏  重命名当前会话')
+        act_rename = sess_menu.addAction('重命名当前会话')
         act_rename.triggered.connect(self._on_rename_session)
-        act_delete = sess_menu.addAction('🗑  删除当前会话')
+        act_delete = sess_menu.addAction('删除当前会话')
         act_delete.triggered.connect(self._on_delete_session)
         sess_menu.addSeparator()
-        act_clear = sess_menu.addAction('🧹  清空当前会话消息')
+        act_clear = sess_menu.addAction('清空当前会话消息')
         act_clear.triggered.connect(self._clear_history)
         self.session_menu_btn.setMenu(sess_menu)
         sess_row.addWidget(self.session_menu_btn)
@@ -385,7 +391,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # === 顶部条第 3 行：上下文 token 监控 + 用量统计 + 压缩按钮 ===
         ctx_row = QtWidgets.QHBoxLayout()
         ctx_row.setSpacing(4)
-        self.context_label = QtWidgets.QLabel('📊 上下文: -')
+        self.context_label = QtWidgets.QLabel('上下文: -')
         self.context_label.setToolTip(
             '当前对话历史占用的估算 token 数 / 上限。\n'
             '超过上限时会自动裁剪最早的消息（保护 tool_call 配对与最近 4 条）。\n'
@@ -395,7 +401,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         ctx_row.addWidget(self.context_label)
 
         # 累计用量（实际 LLM usage 反馈）
-        self.usage_label = QtWidgets.QLabel('💰 用量: -')
+        self.usage_label = QtWidgets.QLabel('用量: -')
         self.usage_label.setToolTip(
             '本次启动以来的累计 LLM token 用量与成本估算。\n'
             '数据来自 LLM 后端返回的 usage 字段（OpenAI / DeepSeek 等支持）。\n'
@@ -409,8 +415,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         ctx_row.addStretch(1)
 
-        # 压缩按钮：纯图标，避免把"📊 上下文"/"💰 用量"挤到换行
-        self.compress_btn = QtWidgets.QPushButton('🗜')
+        # 压缩按钮：纯文字
+        self.compress_btn = QtWidgets.QPushButton('压缩')
         self.compress_btn.setProperty('class', 'iconBtn')
         self.compress_btn.setToolTip(
             '压缩对话：让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
@@ -469,7 +475,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         # 发送/停止 合一：未运行时为发送（绿色），运行时切换为停止（红色）
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
-        self.send_btn = QtWidgets.QPushButton('🚀  发送')
+        self.send_btn = QtWidgets.QPushButton('发送')
         self.send_btn.setObjectName('sendBtn')
         # 占满整行，避免窄面板下被父布局压缩成"发"
         self.send_btn.setSizePolicy(
@@ -654,7 +660,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _refresh_context_label(self):
         """刷新顶部 token 状态条。
 
-        显示格式：📊 上下文: 2.5K/32K (8 条)
+        显示格式：上下文: 2.5K/32K (8 条)
         颜色根据占比变化：<60% 灰、<85% 橙、>=85% 红
         """
         try:
@@ -676,7 +682,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             color = '#d89e3a'
         else:
             color = '#d65c5c'
-        text = '📊 上下文: {} / {}  ({} 条)'.format(
+        text = '上下文: {} / {}  ({} 条)'.format(
             _fmt(cur), _fmt(budget), msgs,
         )
         self.context_label.setText(text)
@@ -713,7 +719,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         }
         self._refresh_usage_label()
         try:
-            self._renderer.add_status('💰 用量统计已复位')
+            self._renderer.add_status('用量统计已复位')
         except Exception:  # pylint: disable=broad-except
             pass
 
@@ -728,20 +734,20 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _refresh_usage_label(self):
         u = self._usage_session
         if u['count'] == 0:
-            self.usage_label.setText('💰 用量: -')
+            self.usage_label.setText('用量: -')
             return
         in_s = self._fmt_token(u['prompt_tokens'])
         out_s = self._fmt_token(u['completion_tokens'])
         cost = u['cost_usd']
         if cost > 0:
             self.usage_label.setText(
-                '💰 in {} / out {}  ${:.4f}  ({}次)'.format(
+                '用量: in {} / out {}  ${:.4f}  ({}次)'.format(
                     in_s, out_s, cost, u['count'],
                 ),
             )
         else:
             self.usage_label.setText(
-                '💰 in {} / out {}  ({}次)'.format(
+                '用量: in {} / out {}  ({}次)'.format(
                     in_s, out_s, u['count'],
                 ),
             )
@@ -765,7 +771,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self, '压缩对话',
             '将让 LLM 阅读并总结当前对话历史，然后用一段摘要替换早期消息，'
             '只保留最近 2 轮。\n\n'
-            '✅ 节省 token、加速后续对话\n'
+            '节省 token、加速后续对话\n'
             '⚠️ 早期细节将不可恢复\n\n'
             '是否继续？',
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -776,7 +782,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         self._set_running(True)
         self.status_label.setText('正在生成历史摘要...')
-        self._renderer.add_status('🗜 正在压缩对话历史，请稍候...')
+        self._renderer.add_status('正在压缩对话历史，请稍候...')
         # 同步在后台线程跑摘要请求，避免冻结 UI
         from ..qt_compat import QtCore as _QtCore
 
@@ -820,7 +826,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 return
             removed = res.get('removed', 0)
             self._renderer.add_status(
-                '✅ 已压缩 {} 条早期消息为摘要。'.format(removed),
+                '已压缩 {} 条早期消息为摘要。'.format(removed),
             )
             # 刷新视图：清空重放
             self._renderer.clear()
@@ -975,7 +981,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 回放历史消息
         if not conv.messages:
             self._renderer.add_welcome(
-                '👋 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
+                '你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
                 '点击下方任一示例快速开始：'
             )
         else:
@@ -1192,12 +1198,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._is_running = bool(running)
         # 发送/停止 合一按钮：切换文字 + 样式 + 启用状态
         if running:
-            self.send_btn.setText('■  停止')
+            self.send_btn.setText('停止')
             self.send_btn.setObjectName('stopBtn')
             self.send_btn.setToolTip('停止当前对话')
             self.send_btn.setEnabled(True)
         else:
-            self.send_btn.setText('🚀  发送')
+            self.send_btn.setText('发送')
             self.send_btn.setObjectName('sendBtn')
             self.send_btn.setToolTip('发送消息（Enter 或 Ctrl+Enter）')
             self.send_btn.setEnabled(True)
