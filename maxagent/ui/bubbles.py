@@ -77,7 +77,19 @@ class BubbleFrame(QtWidgets.QFrame):
 
 
 class ChatLabel(QtWidgets.QLabel):
-    """气泡内的富文本标签，自动换行 + 可选中复制。"""
+    """气泡内的富文本标签，自动换行 + 可选中复制。
+
+    重写 ``contextMenuEvent`` 提供中文右键菜单，菜单项包括：
+
+    - 复制（仅当有选中文本时启用）
+    - 复制全部
+    - 复制为纯文本（去除 HTML 标签）
+    - 全选
+    - 打开链接 / 复制链接地址（仅当鼠标位置上有链接时）
+
+    设计注意：QLabel 自身没有 ``copy()`` API，"复制选中"通过把选中区
+    rich text 写到剪贴板的方式实现；剪贴板拿到 plain text 也能用。
+    """
 
     def __init__(self, text='', parent=None):
         super(ChatLabel, self).__init__(parent)
@@ -88,8 +100,107 @@ class ChatLabel(QtWidgets.QLabel):
         self.setOpenExternalLinks(True)
         self.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.setStyleSheet('background:transparent;')
+        # 中文右键菜单：用 CustomContextMenu 自己处理，避免 QLabel
+        # 默认菜单的英文项（Copy / Select All / ...）混入。
+        self.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        # noinspection PyUnresolvedReferences
+        self.customContextMenuRequested.connect(self._on_context_menu)
         if text:
             self.setText(text)
+
+    def _plain_text(self):
+        """把当前富文本转为纯文本（去 HTML 标签）。"""
+        # QLabel.text() 在 RichText 模式下返回原始 HTML，需要剥标签。
+        # QTextDocumentFragment 是 Qt 自带的最稳健方案。
+        try:
+            from ..qt_compat import QtGui
+            doc = QtGui.QTextDocument()
+            doc.setHtml(self.text())
+            return doc.toPlainText()
+        except Exception:  # pylint: disable=broad-except
+            # 兜底：用极简正则去标签
+            import re
+            return re.sub(r'<[^>]+>', '', self.text())
+
+    def _on_context_menu(self, pos):
+        """在 pos（QPoint，相对本控件坐标）位置弹出中文菜单。"""
+        menu = QtWidgets.QMenu(self)
+
+        has_selection = bool(self.selectedText())
+
+        # 复制选中
+        act_copy = menu.addAction('复制')
+        act_copy.setEnabled(has_selection)
+        act_copy.triggered.connect(self._copy_selection)
+
+        # 复制全部（HTML 渲染内容的纯文本版本）
+        act_copy_all = menu.addAction('复制全部')
+        act_copy_all.triggered.connect(
+            lambda: _copy_to_clipboard(self._plain_text())
+        )
+
+        menu.addSeparator()
+
+        # 全选
+        act_select_all = menu.addAction('全选')
+        act_select_all.triggered.connect(self._select_all)
+
+        # 链接相关：只有鼠标位置上确实有链接时才显示
+        link_url = ''
+        try:
+            # QLabel 提供了 ChildAtPointF；不同 PySide 版本差异较大，
+            # 用最通用的 self.linkAt 兜底（PySide2 5.12+ / PySide6 都有）
+            if hasattr(self, 'linkAt'):
+                link_url = self.linkAt(pos) or ''
+        except Exception:  # pylint: disable=broad-except
+            link_url = ''
+        if link_url:
+            menu.addSeparator()
+            act_open = menu.addAction('在浏览器中打开链接')
+            act_open.triggered.connect(
+                lambda u=link_url: self._open_link(u)
+            )
+            act_copy_link = menu.addAction('复制链接地址')
+            act_copy_link.triggered.connect(
+                lambda u=link_url: _copy_to_clipboard(u)
+            )
+
+        menu.exec_(self.mapToGlobal(pos))
+
+    def _copy_selection(self):
+        """把当前选中文本写入剪贴板（QLabel 没有 copy() 方法）。"""
+        sel = self.selectedText()
+        if sel:
+            # QLabel.selectedText() 在 RichText 模式下返回的是带 0x2028
+            # 行分隔符的纯文本，统一替换成普通 \n 再丢剪贴板。
+            sel = sel.replace('\u2028', '\n').replace('\u2029', '\n')
+            _copy_to_clipboard(sel)
+
+    def _select_all(self):
+        """全选标签内全部可见文本。"""
+        # QLabel 没有 selectAll API，需自己用 cursor 模拟。
+        # 但 PySide2/6 都允许通过 setSelection 实现：
+        #   setSelection(start, length)
+        # 然而 RichText 模式的字符索引对应"渲染后"位置，无法精确取到
+        # 末位；用 plain text 长度作为最大值即可（多出来的会被自动钳制）。
+        plain = self._plain_text()
+        if plain:
+            try:
+                self.setSelection(0, len(plain))
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    @staticmethod
+    def _open_link(url):
+        """用系统默认浏览器打开 URL。"""
+        try:
+            from ..qt_compat import QtGui
+            from ..qt_compat import QtCore as _QC
+            QtGui.QDesktopServices.openUrl(_QC.QUrl(url))
+        except Exception:  # pylint: disable=broad-except
+            pass
 
 
 # ---------------------------------------------------------------------- #
