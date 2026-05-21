@@ -96,31 +96,72 @@ def _restore_qdock_geometry(qdock, ui_state):
     return False
 
 
+def _restore_main_window_state(main_win, ui_state):
+    """如果有保存过 ``main_win.saveState()``，恢复整个 Max 主窗口的 dock 布局。
+
+    Max 的主窗口除了 Qt 自带的 saveGeometry 之外，还需要 saveState 才能
+    完整恢复"嵌入到第几列、什么宽度、相对其他 dockWidget 的顺序"。
+    """
+    state_b64 = (getattr(ui_state, 'main_state_b64', '') or '').strip()
+    if not state_b64:
+        return False
+    try:
+        from .qt_compat import QtCore
+        ba_bytes = base64.b64decode(state_b64.encode('ascii'))
+        ba = QtCore.QByteArray(ba_bytes)
+        if hasattr(main_win, 'restoreState'):
+            return bool(main_win.restoreState(ba))
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
+    return False
+
+
 def _connect_qdock_save_hooks(qdock, dock_widget):
-    """挂上保存钩子：浮动切换 / 关闭 / 区域变化时持久化 UI 状态。"""
+    """挂上保存钩子：浮动切换 / 关闭 / 区域变化时持久化 UI 状态。
+
+    同时保存：
+    - ``qdock.saveGeometry()`` —— QDockWidget 自身的位置/大小/浮动
+    - ``main_win.saveState()`` —— Max 主窗口的 dock 布局（嵌入哪一列、
+      多宽、与其他 dockWidget 的顺序）。少了这一份，重启后 Qt 不知道
+      把 QDockWidget 放回哪里，会回退到默认右侧。
+    """
     from .qt_compat import QtCore
 
     def _save():
         try:
             ba = qdock.saveGeometry()
-            # PySide2/6 的 QByteArray 都能转 bytes
             try:
                 geo_bytes = bytes(ba)
             except TypeError:
                 geo_bytes = ba.data() if hasattr(ba, 'data') else b''
             geo_b64 = base64.b64encode(geo_bytes).decode('ascii')
+
             area = None
+            main_state_b64 = ''
             try:
                 main_win = qdock.parent()
                 if main_win is not None and hasattr(main_win, 'dockWidgetArea'):
                     area = int(main_win.dockWidgetArea(qdock))
+                # 主窗口完整 dock 布局
+                if main_win is not None and hasattr(main_win, 'saveState'):
+                    state_ba = main_win.saveState()
+                    try:
+                        st_bytes = bytes(state_ba)
+                    except TypeError:
+                        st_bytes = (
+                            state_ba.data()
+                            if hasattr(state_ba, 'data') else b''
+                        )
+                    main_state_b64 = base64.b64encode(st_bytes).decode('ascii')
             except Exception:  # pylint: disable=broad-except
                 area = None
+
             dock_widget.save_ui_state(
                 geometry_b64=geo_b64,
                 floating=qdock.isFloating(),
                 dock_area=area,
                 embedded_ok=True,
+                main_state_b64=main_state_b64,
             )
         except Exception:  # pylint: disable=broad-except
             traceback.print_exc()
@@ -229,6 +270,16 @@ def show_panel(force=False):
         qdock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea,
         )
+
+        # 是否首次运行（无任何持久化几何/停靠状态）。
+        # 首次运行不主动嵌入到 Max 侧栏 —— 命令面板下方那块空间用户
+        # 通常另有用途，强制嵌入会让人困惑。改为悬浮显示，让用户自己
+        # 决定是否拖到侧栏，并由后续保存钩子记住选择。
+        first_run = (
+            not (ui_state.geometry_b64 or '').strip()
+            and not bool(ui_state.last_embedded_ok)
+        )
+
         # 默认停靠区域用 ui_state 中的值，没有则右侧
         try:
             area = QtCore.Qt.DockWidgetArea(int(ui_state.dock_area or 2))
@@ -240,8 +291,27 @@ def show_panel(force=False):
             # 某些 Max 主窗口不接受 addDockWidget，退化为浮动
             qdock.setFloating(True)
 
-        # 恢复几何（位置、大小、是否浮动）
-        _restore_qdock_geometry(qdock, ui_state)
+        if first_run:
+            # 首次运行：强制浮动，并放到屏幕中央偏右一点的位置
+            try:
+                qdock.setFloating(True)
+                # 设个合理的默认尺寸，避免出现"巴掌大"的窗口
+                qdock.resize(420, 720)
+                # 居中到主窗口
+                try:
+                    mg = main_win.geometry()
+                    cx = mg.x() + mg.width() // 2 - 210
+                    cy = mg.y() + mg.height() // 2 - 360
+                    qdock.move(max(cx, 50), max(cy, 50))
+                except Exception:  # pylint: disable=broad-except
+                    pass
+            except Exception:  # pylint: disable=broad-except
+                pass
+        else:
+            # 恢复几何（位置、大小、是否浮动）
+            _restore_qdock_geometry(qdock, ui_state)
+            # 如果之前用户保存的是嵌入状态，再尝试恢复主窗口 dock 布局
+            _restore_main_window_state(main_win, ui_state)
 
         # 注册保存钩子
         _connect_qdock_save_hooks(qdock, dock_widget)

@@ -286,6 +286,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     _DEFAULT_SPLIT_RATIO = (78, 22)
     _MIN_INPUT_HEIGHT = 60
     _MIN_CHAT_HEIGHT = 120
+    # 整体最小宽度：低于此值时按钮文字会被挤掉。
+    # 命令面板下方塞 MaxAgent 时，宽度大约 380px 才能完整显示中文按钮 +
+    # emoji 字体，强制设最小值让 Max 主窗口在拖窄时给出横向滚动条。
+    _MIN_WIDGET_WIDTH = 360
 
     def __init__(self, config_manager=None, parent=None):
         # type: (Optional[ConfigManager], Optional[Any]) -> None
@@ -293,6 +297,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.setObjectName('MaxAgentDockWidget')
         self.setWindowTitle('MaxAgent · AI 助手')
         self.setStyleSheet(_STYLE)
+        self.setMinimumWidth(self._MIN_WIDGET_WIDTH)
 
         self._config = config_manager or ConfigManager()
         self._ui_state_mgr = UIStateManager()
@@ -349,7 +354,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         top.addWidget(self.profile_combo, 1)
         # 重加载用纯图标 + tooltip，避免在窄面板下被截断
         self.reload_btn = QtWidgets.QPushButton('🔄')
-        self.reload_btn.setFixedSize(30, 26)
+        # Max 内嵌 PySide 在不同 DPI / 中文环境下字体度量差异很大，
+        # 用 minSize 自适应而不是 fixedSize 写死，避免 emoji 被裁切
+        self.reload_btn.setMinimumSize(36, 28)
+        self.reload_btn.setMaximumWidth(48)
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
             '会保存当前会话与 UI 状态、关闭面板、清空模块缓存后重新加载。\n'
@@ -358,8 +366,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
         self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
-        self.settings_btn.setMinimumWidth(72)
-        self.settings_btn.setFixedHeight(26)
+        self.settings_btn.setMinimumWidth(80)
+        self.settings_btn.setMinimumHeight(28)
         self.settings_btn.setToolTip('打开设置面板（Profile / API Key / 应用开关）')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -371,7 +379,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 新对话按钮：纯图标，节省横向空间（图1 中"➕ 新对话"和会话下拉互相挤压）
         self.new_session_btn = QtWidgets.QPushButton('➕')
         self.new_session_btn.setToolTip('开启一个新的空白对话')
-        self.new_session_btn.setFixedSize(30, 26)
+        self.new_session_btn.setMinimumSize(36, 28)
+        self.new_session_btn.setMaximumWidth(48)
         self.new_session_btn.clicked.connect(self._on_new_session)
         sess_row.addWidget(self.new_session_btn)
 
@@ -396,7 +405,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.session_menu_btn = QtWidgets.QToolButton()
         self.session_menu_btn.setText('⋯')
         self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
-        self.session_menu_btn.setFixedSize(30, 26)
+        self.session_menu_btn.setMinimumSize(36, 28)
+        self.session_menu_btn.setMaximumWidth(48)
         self.session_menu_btn.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
         )
@@ -445,7 +455,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         # 压缩按钮：纯图标，避免把"📊 上下文"/"💰 用量"挤到换行
         self.compress_btn = QtWidgets.QPushButton('🗜')
-        self.compress_btn.setFixedSize(30, 24)
+        self.compress_btn.setMinimumSize(36, 26)
+        self.compress_btn.setMaximumWidth(48)
         self.compress_btn.setToolTip(
             '压缩对话：让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
             '适合长对话节省 token，但会失去早期细节。',
@@ -505,8 +516,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
         self.send_btn = QtWidgets.QPushButton('🚀  发送')
         self.send_btn.setObjectName('sendBtn')
-        self.send_btn.setMinimumWidth(120)
-        self.send_btn.setMinimumHeight(32)
+        # Max 高 DPI 下中文+emoji 字体度量偏大，给足空间避免文字被裁
+        self.send_btn.setMinimumWidth(140)
+        self.send_btn.setMinimumHeight(36)
         # 占满整行，避免窄面板下被父布局压缩成"发"
         self.send_btn.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -599,7 +611,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 pass
 
     def save_ui_state(self, geometry_b64='', floating=None,
-                      dock_area=None, embedded_ok=None):
+                      dock_area=None, embedded_ok=None,
+                      main_state_b64=None):
         """持久化当前 UI 状态到磁盘。
 
         :param geometry_b64: 调用方（startup.py）从 QDockWidget /
@@ -609,6 +622,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         :param floating: 是否浮动；None 表示沿用旧值
         :param dock_area: Qt 停靠区域枚举的整数值；None 表示沿用旧值
         :param embedded_ok: 本次启动是否成功嵌入到 Max
+        :param main_state_b64: Max 主窗口 ``saveState()`` 的 base64，
+            None 表示沿用旧值
         """
         st = self._ui_state
         # 分割器尺寸总是从当前 widget 取
@@ -618,6 +633,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             pass
         if geometry_b64:
             st.geometry_b64 = geometry_b64
+        if main_state_b64 is not None and main_state_b64 != '':
+            st.main_state_b64 = main_state_b64
         if floating is not None:
             st.floating = bool(floating)
         if dock_area is not None:

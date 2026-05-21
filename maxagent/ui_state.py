@@ -50,6 +50,10 @@ class UIState:
     version: int = UI_STATE_VERSION
     # Qt saveGeometry 的 base64
     geometry_b64: str = ''
+    # Qt QMainWindow.saveState() 的 base64（包含 dock 布局、相对位置）
+    # 仅在嵌入到 Max 主窗口时有值。少了这一份，重启后 Qt 不知道把
+    # QDockWidget 放回哪一列，会回退到默认右侧。
+    main_state_b64: str = ''
     # QDockWidget 浮动 / 停靠
     floating: bool = False
     # Qt.RightDockWidgetArea = 2，作为默认值
