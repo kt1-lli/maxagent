@@ -224,15 +224,31 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label.setStyleSheet('color:#888;')
         right.addRow('', self.test_label)
 
-        # 操作按钮：每个按钮设最小宽度并固定 SizePolicy，避免左侧 Profile 列表
-        # 撑大时把按钮文字（"测试连接"、"完整测试"、"应用"）压到只剩前两个字。
+        # 操作按钮：根据按钮自身字体度量动态计算最小宽度，确保任何 DPI / 字体下
+        # "测试连接"、"完整测试"、"应用"、"关闭" 都能完整显示，不再硬编码像素。
         op_row = QtWidgets.QHBoxLayout()
         op_row.setSpacing(6)
         op_row.addStretch(1)
 
-        def _shape_btn(btn, min_w=92):
-            btn.setMinimumWidth(min_w)
-            btn.setMinimumHeight(28)
+        def _shape_btn(btn, fallback_min_w=80):
+            """按字体实测 + 安全余量设最小宽度，避免被父布局压缩文字。"""
+            text = btn.text() or ''
+            # 按字符数估算下限（中文/emoji 当 14px 算，ASCII 7px），
+            # 防止在某些字体度量被异常拉小时仍能容纳全部文字
+            char_lower = sum(14 if ord(c) > 127 else 7 for c in text) + 32
+            try:
+                fm = btn.fontMetrics()
+                if hasattr(fm, 'horizontalAdvance'):
+                    text_w = fm.horizontalAdvance(text)
+                else:
+                    text_w = fm.width(text)
+                # emoji 字形渲染常宽于度量值，乘 1.15；再叠加 padding/边框 32px
+                measured = int(text_w * 1.15) + 32
+            except Exception:  # pylint: disable=broad-except
+                measured = 0
+            target = max(fallback_min_w, char_lower, measured)
+            btn.setMinimumWidth(target)
+            btn.setMinimumHeight(30)
             btn.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Fixed,
                 QtWidgets.QSizePolicy.Policy.Fixed,
@@ -241,7 +257,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_btn = QtWidgets.QPushButton('🧪 测试连接')
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
-        _shape_btn(self.test_btn, 110)
+        _shape_btn(self.test_btn)
         op_row.addWidget(self.test_btn)
 
         self.test_full_btn = QtWidgets.QPushButton('🔬 完整测试')
@@ -250,18 +266,18 @@ class SettingsDialog(QtWidgets.QDialog):
             '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
         )
         self.test_full_btn.clicked.connect(self._test_connection_full)
-        _shape_btn(self.test_full_btn, 110)
+        _shape_btn(self.test_full_btn)
         op_row.addWidget(self.test_full_btn)
 
         self.apply_btn = QtWidgets.QPushButton('💾 应用')
         self.apply_btn.setToolTip('保存当前 Profile 修改')
         self.apply_btn.clicked.connect(self._apply)
-        _shape_btn(self.apply_btn, 80)
+        _shape_btn(self.apply_btn)
         op_row.addWidget(self.apply_btn)
 
         self.close_btn = QtWidgets.QPushButton('关闭')
         self.close_btn.clicked.connect(self.accept)
-        _shape_btn(self.close_btn, 70)
+        _shape_btn(self.close_btn)
         op_row.addWidget(self.close_btn)
 
         right_box = QtWidgets.QVBoxLayout()

@@ -271,46 +271,54 @@ def show_panel(force=False):
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea,
         )
 
-        # 是否首次运行（无任何持久化几何/停靠状态）。
-        # 首次运行不主动嵌入到 Max 侧栏 —— 命令面板下方那块空间用户
-        # 通常另有用途，强制嵌入会让人困惑。改为悬浮显示，让用户自己
-        # 决定是否拖到侧栏，并由后续保存钩子记住选择。
-        first_run = (
-            not (ui_state.geometry_b64 or '').strip()
-            and not bool(ui_state.last_embedded_ok)
-        )
+        # ----------------------------------------------------------------- #
+        # 嵌入 / 浮动决策
+        #
+        # 判定标准：完全以用户上次保存的 ``ui_state.floating`` 字段为准。
+        #   - 配置文件不存在 / 字段缺省 → 默认 True（浮动）
+        #   - 用户上次主动嵌入到侧栏 → 持久化时 floating=False，本次嵌入恢复
+        #   - 用户上次是浮动状态 → 本次继续浮动
+        #
+        # 之前的实现用 ``last_embedded_ok`` 或 ``main_state_b64`` 作判据，
+        # 但这两个字段在每次成功 show 后都会被无条件写入，无法区分用户
+        # 真实意图，导致即便从未嵌入过也会被判定为"上次嵌入"。
+        # ----------------------------------------------------------------- #
+        # 浮动模式：默认 True；只有用户上次明确嵌入过才走嵌入分支
+        want_floating = bool(getattr(ui_state, 'floating', True))
+        # 配置中 floating 字段缺省时（首次运行），强制浮动
+        if not (ui_state.geometry_b64 or '').strip():
+            want_floating = True
 
-        # 默认停靠区域用 ui_state 中的值，没有则右侧
-        try:
-            area = QtCore.Qt.DockWidgetArea(int(ui_state.dock_area or 2))
-        except Exception:  # pylint: disable=broad-except
-            area = QtCore.Qt.RightDockWidgetArea
-        try:
-            main_win.addDockWidget(area, qdock)
-        except Exception:  # pylint: disable=broad-except
-            # 某些 Max 主窗口不接受 addDockWidget，退化为浮动
+        if want_floating:
+            # 浮动呈现：先以 floating QDockWidget 的方式直接 show，
+            # 不调用 addDockWidget。addDockWidget 即使紧跟 setFloating(True)
+            # 也会让 Max 主窗口记住"这里有个 dock"，重启后被 Max 自己
+            # 的状态机恢复成嵌入态。
             qdock.setFloating(True)
-
-        if first_run:
-            # 首次运行：强制浮动，并放到屏幕中央偏右一点的位置
-            try:
-                qdock.setFloating(True)
-                # 设个合理的默认尺寸，避免出现"巴掌大"的窗口
-                qdock.resize(420, 720)
-                # 居中到主窗口
+            # 应用上次保存的几何；没有则用合理默认值
+            restored = _restore_qdock_geometry(qdock, ui_state)
+            if not restored:
+                # 首次运行 / 几何丢失：固定一个不会"巴掌大"的默认尺寸
+                # 并居中到 Max 主窗口
+                qdock.resize(440, 760)
                 try:
                     mg = main_win.geometry()
-                    cx = mg.x() + mg.width() // 2 - 210
-                    cy = mg.y() + mg.height() // 2 - 360
+                    cx = mg.x() + mg.width() // 2 - 220
+                    cy = mg.y() + mg.height() // 2 - 380
                     qdock.move(max(cx, 50), max(cy, 50))
                 except Exception:  # pylint: disable=broad-except
                     pass
-            except Exception:  # pylint: disable=broad-except
-                pass
         else:
-            # 恢复几何（位置、大小、是否浮动）
+            # 之前用户主动嵌入过：先 addDockWidget 再恢复 main_win 状态
+            try:
+                area = QtCore.Qt.DockWidgetArea(int(ui_state.dock_area or 2))
+            except Exception:  # pylint: disable=broad-except
+                area = QtCore.Qt.RightDockWidgetArea
+            try:
+                main_win.addDockWidget(area, qdock)
+            except Exception:  # pylint: disable=broad-except
+                qdock.setFloating(True)
             _restore_qdock_geometry(qdock, ui_state)
-            # 如果之前用户保存的是嵌入状态，再尝试恢复主窗口 dock 布局
             _restore_main_window_state(main_win, ui_state)
 
         # 注册保存钩子
@@ -321,9 +329,11 @@ def show_panel(force=False):
         _DOCK_WIDGET = dock_widget
         _QDOCK_HOLDER = qdock
 
-        # 标记一次"嵌入成功"
+        # 立刻把当前 floating 状态落盘一次，让下次启动恢复到一致的位置
         try:
-            dock_widget.save_ui_state(embedded_ok=True)
+            flusher = getattr(dock_widget, '_flush_qdock_state', None)
+            if callable(flusher):
+                flusher()
         except Exception:  # pylint: disable=broad-except
             pass
     else:
