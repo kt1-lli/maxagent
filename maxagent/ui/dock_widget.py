@@ -90,6 +90,9 @@ QPushButton {
     border-radius: 4px;
     padding: 4px 12px;
     min-height: 24px;
+    font-family: 'Microsoft YaHei UI', 'Microsoft YaHei',
+                 'Segoe UI', 'Segoe UI Emoji', 'Segoe UI Symbol',
+                 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
 }
 QPushButton:hover { background-color: #5a5a5a; }
 QPushButton:disabled { background-color: #333; color: #777; }
@@ -106,6 +109,9 @@ QToolButton.iconBtn {
     border: 1px solid #555;
     border-radius: 4px;
     text-align: center;
+    font-family: 'Microsoft YaHei UI', 'Microsoft YaHei',
+                 'Segoe UI', 'Segoe UI Emoji', 'Segoe UI Symbol',
+                 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
 }
 QToolButton.iconBtn:hover { background-color: #5a5a5a; }
 QPushButton#sendBtn {
