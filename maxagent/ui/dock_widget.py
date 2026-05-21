@@ -344,6 +344,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         top.addWidget(self.profile_combo)
         top.addStretch(1)
+        self.reload_btn = QtWidgets.QPushButton('🔄 重加载')
+        self.reload_btn.setToolTip(
+            '热重载整个 MaxAgent 包（开发态便利）。\n'
+            '会保存当前会话与 UI 状态、关闭面板、清空模块缓存后重新加载。\n'
+            '修改 .py 文件后无需重启 3ds Max。',
+        )
+        self.reload_btn.clicked.connect(self._on_reload_clicked)
+        top.addWidget(self.reload_btn)
         self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -862,6 +870,43 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._renderer.add_status('设置已保存')
             self._refresh_context_label()
 
+    def _on_reload_clicked(self):
+        """触发整个 maxagent 包热重载。
+
+        在 reload 真正执行前给用户一次确认机会；用户在长任务中误点不会
+        丢工作。reload 自身会先 flush 状态再卸载模块。
+        """
+        if getattr(self, '_running', False):
+            QtWidgets.QMessageBox.information(
+                self, '请稍候',
+                '当前有任务正在运行，请先停止或等待完成再重加载。',
+            )
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '确认重加载',
+            ('热重载会关闭并重建 MaxAgent 面板，'
+             '当前会话和 UI 状态会先保存到磁盘。\n\n是否继续？'),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if ret != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        # 延迟执行：避免在按钮 clicked 槽里同步销毁自己
+        QtCore.QTimer.singleShot(0, self._do_reload)
+
+    def _do_reload(self):
+        """实际执行热重载（在事件循环下一拍调用，安全销毁自己）。"""
+        try:
+            from ..reload import reload_maxagent
+            reload_maxagent(reshow=True)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                None, 'MaxAgent 重加载失败',
+                '重加载过程中出错：{}\n\n'
+                '建议重启 3ds Max 后重试。'.format(exc),
+            )
+
     def _clear_history(self):
         self._conv.clear()
         self._renderer.clear()
@@ -1173,6 +1218,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.send_btn.style().polish(self.send_btn)
         self.profile_combo.setEnabled(not running)
         self.settings_btn.setEnabled(not running)
+        if hasattr(self, 'reload_btn'):
+            self.reload_btn.setEnabled(not running)
 
     # ------------------------------------------------------------------ #
     # 槽：worker 信号

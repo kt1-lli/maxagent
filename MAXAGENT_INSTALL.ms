@@ -69,7 +69,8 @@ fn _maxagent_ensure_path = (
 
 fn g_show_max_agent = (
     if not _maxagent_ensure_path() do return false
-    _maxagent_safe_call_python "import maxagent; maxagent.show()"
+    -- 用户主动触发（拖入、菜单、宏脚本），强制显示
+    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=True)"
 )
 
 fn g_hide_max_agent = (
@@ -80,6 +81,15 @@ fn g_hide_max_agent = (
 fn g_toggle_max_agent = (
     if not _maxagent_ensure_path() do return false
     _maxagent_safe_call_python "import maxagent; maxagent.toggle()"
+)
+
+-- 自动启动入口（脚本被拖到视口或 Run Script 加载时执行）
+-- 注意：这里走 force=False，让 AppConfig.auto_show_on_startup 真正生效。
+-- 用户在设置里关闭"启动自动显示"后，重新拖动 ms 不会再强制弹窗，
+-- 仍然可以通过菜单 / g_show_max_agent() 手动显示。
+fn g_autostart_max_agent = (
+    if not _maxagent_ensure_path() do return false
+    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=False)"
 )
 
 -- 注册菜单项 / 宏脚本（出现在 Customize > Action 列表中）
@@ -98,5 +108,5 @@ macroScript MaxAgent_Toggle
     g_toggle_max_agent()
 )
 
--- 拖到视口或 Run Script 时立即显示
-g_show_max_agent()
+-- 拖到视口或 Run Script 时按配置决定是否显示（非 force）
+g_autostart_max_agent()

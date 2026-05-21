@@ -164,7 +164,8 @@ def show_panel(force=False):
     """显示 MaxAgent 面板（在 Max 内或独立窗口模式）。
 
     :param force: True 时即便配置里关闭了 ``auto_show_on_startup`` 也强制显示
-                  （供用户从菜单 / 快捷键调用时使用）
+                  （供用户从菜单 / 快捷键调用时使用）；False 时遵守配置。
+    :returns: 面板实例；若被配置抑制则返回 ``None``
     """
     _ensure_package_path()
 
@@ -176,6 +177,23 @@ def show_panel(force=False):
     from maxagent.ui.dock_widget import MaxAgentDockWidget
 
     global _DOCK_WIDGET, _QDOCK_HOLDER  # pylint: disable=global-statement
+
+    # 0. 配置门控：非 force 模式必须尊重 auto_show_on_startup
+    #    这样无论调用方是 _auto_register、ms 启动器还是其他入口，
+    #    只要不显式 force=True，关闭"自动显示"开关都能真正生效。
+    if not force:
+        try:
+            cfg_mgr = ConfigManager()
+            if not bool(cfg_mgr.config.auto_show_on_startup):
+                print(
+                    '[MaxAgent] auto_show_on_startup=False，'
+                    '本次启动跳过自动显示。'
+                    '可执行 g_show_max_agent() 手动显示。',
+                )
+                return None
+        except Exception:  # pylint: disable=broad-except
+            # 配置读不到不应阻塞显示，按默认开启处理
+            pass
 
     # 1. 加载工具
     n = load_all_tools(include_escape_hatch=True)
@@ -294,18 +312,10 @@ def flush_state():
 def _auto_register():
     """注册菜单 / 快捷键到 Max。失败不影响功能（用户手动调 show_panel 也行）。
 
-    是否自动弹出面板由 ``AppConfig.auto_show_on_startup`` 决定。
+    是否自动弹出面板由 ``show_panel`` 内部根据 ``AppConfig.auto_show_on_startup``
+    门控，这里不再重复判断，避免两处行为不一致。
     """
     _ensure_package_path()
-
-    auto_show = True
-    try:
-        from maxagent.config import ConfigManager
-        cfg_mgr = ConfigManager()
-        auto_show = bool(cfg_mgr.config.auto_show_on_startup)
-    except Exception:  # pylint: disable=broad-except
-        # 配置读不到时按 True 处理（首次安装的兼容默认）
-        auto_show = True
 
     try:
         # Max 2018+ 走 pymxs
@@ -326,15 +336,18 @@ def _auto_register():
     except Exception:  # pylint: disable=broad-except
         traceback.print_exc()
 
-    # 根据配置决定是否自动嵌入
-    if auto_show:
-        try:
-            show_panel()
-        except Exception:  # pylint: disable=broad-except
-            traceback.print_exc()
-    else:
-        print('[MaxAgent] auto_show_on_startup=False，未自动弹出面板。'
-              '可在 MAXScript Listener 中执行 g_show_max_agent() 显示。')
+    # 同步注册热重载钩子（开发态便利，非 Max 环境会静默跳过）
+    try:
+        from maxagent.reload import register_maxscript_hook
+        register_maxscript_hook()
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
+
+    # 非强制：让 show_panel 自己决定是否显示
+    try:
+        show_panel(force=False)
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
 
 
 # ---------------------------------------------------------------------- #

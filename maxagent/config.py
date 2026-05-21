@@ -185,10 +185,13 @@ class AppConfig:
     def from_dict(cls, data: Dict) -> "AppConfig":
         cfg = cls()
         cfg.version = int(data.get("version", CONFIG_VERSION))
-        cfg.active_profile = data.get("active_profile", "Default")
         cfg.profiles = [
             LLMProfile.from_dict(p) for p in data.get("profiles", [])
         ]
+        # active_profile 默认值用第一个 profile 名而不是硬编码 "Default"，
+        # 避免老数据缺失字段时指向不存在的 profile
+        fallback_active = cfg.profiles[0].name if cfg.profiles else "Default"
+        cfg.active_profile = data.get("active_profile") or fallback_active
         cfg.allow_escape_hatch = bool(data.get("allow_escape_hatch", True))
         cfg.confirm_before_exec = bool(data.get("confirm_before_exec", True))
         cfg.wrap_undo = bool(data.get("wrap_undo", True))
@@ -232,9 +235,22 @@ def load_config() -> AppConfig:
     except (OSError, ValueError, KeyError) as exc:
         # 配置损坏时回退到默认值，避免插件起不来
         print("[maxagent] 配置加载失败，使用默认: {}".format(exc))
+        # 备份损坏文件，方便用户事后排查
+        try:
+            if os.path.exists(path):
+                bak = path + ".corrupt"
+                os.replace(path, bak)
+                print("[maxagent] 损坏配置已备份到: {}".format(bak))
+        except OSError:
+            pass
         cfg = AppConfig()
         cfg.profiles = [LLMProfile.from_dict(p) for p in BUILTIN_PROFILES]
         cfg.active_profile = cfg.profiles[0].name
+        # 立刻把默认值写回磁盘，避免下次启动还是损坏状态
+        try:
+            save_config(cfg)
+        except OSError as save_exc:
+            print("[maxagent] 默认配置写盘失败: {}".format(save_exc))
         return cfg
 
 
@@ -286,11 +302,28 @@ class ConfigManager:
             return AppConfig.from_dict(raw)
         except (OSError, ValueError, KeyError) as exc:
             print("[maxagent] 配置加载失败，使用默认: {}".format(exc))
+            # 备份损坏文件，避免覆盖丢失现场
+            try:
+                if os.path.exists(path):
+                    bak = path + ".corrupt"
+                    os.replace(path, bak)
+                    print(
+                        "[maxagent] 损坏配置已备份到: {}".format(bak),
+                    )
+            except OSError:
+                pass
             cfg = AppConfig()
             cfg.profiles = [
                 LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
             ]
             cfg.active_profile = cfg.profiles[0].name
+            # 立即把默认值写回磁盘，对齐正常首次启动路径行为
+            try:
+                self._save(cfg)
+            except OSError as save_exc:
+                print(
+                    "[maxagent] 默认配置写盘失败: {}".format(save_exc),
+                )
             return cfg
 
     def _save(self, cfg: AppConfig) -> None:
@@ -335,19 +368,27 @@ class ConfigManager:
         self.save()
 
     def upsert_profile(self, profile: LLMProfile) -> None:
-        """新增或就地更新 profile（按 name 匹配）。"""
+        """新增或就地更新 profile（按 name 匹配），并立即落盘。
+
+        与 ``set_active_profile`` 行为对齐：所有变更类 API 都自动持久化，
+        避免外部调用方忘记 ``save()`` 导致重启丢配置。
+        """
         for i, p in enumerate(self._cfg.profiles):
             if p.name == profile.name:
                 self._cfg.profiles[i] = profile
+                self.save()
                 return
         self._cfg.profiles.append(profile)
+        self.save()
 
     def delete_profile(self, name: str) -> None:
+        """删除 profile（不允许删除当前激活的），并立即落盘。"""
         if name == self._cfg.active_profile:
             raise ValueError("不能删除当前激活的 Profile")
         self._cfg.profiles = [
             p for p in self._cfg.profiles if p.name != name
         ]
+        self.save()
 
 
 if __name__ == "__main__":
