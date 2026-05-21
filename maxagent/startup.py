@@ -214,24 +214,10 @@ def show_panel(force=False):
     from maxagent.config import ConfigManager
     from maxagent.qt_compat import QtCore
     from maxagent.qt_compat import QtWidgets
-    from maxagent.qt_compat import install_emoji_font_fallback
     from maxagent.tools import load_all_tools
     from maxagent.ui.dock_widget import MaxAgentDockWidget
 
     global _DOCK_WIDGET, _QDOCK_HOLDER  # pylint: disable=global-statement
-
-    # ------------------------------------------------------------------ #
-    # 字体回退：让按钮文字含 emoji + 中文/英文混合时也能完整渲染。
-    #
-    # 必须在创建任何 widget 之前调用，否则部分已实例化的 widget 仍会
-    # 缓存旧字体（QApplication.setFont 触发的样式刷新对大部分 widget
-    # 有效，但 stylesheet 已 polish 过的按钮可能不重算）。
-    # ------------------------------------------------------------------ #
-    try:
-        install_emoji_font_fallback()
-    except Exception:  # pylint: disable=broad-except
-        # 字体回退失败不应阻塞启动，按钮显示问题降级为 A 方案再处理
-        traceback.print_exc()
 
     # 0. 配置门控：非 force 模式必须尊重 auto_show_on_startup
     #    这样无论调用方是 _auto_register、ms 启动器还是其他入口，

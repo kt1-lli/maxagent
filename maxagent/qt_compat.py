@@ -278,68 +278,6 @@ def msgbox_no():
     return QtWidgets.QMessageBox.No
 
 
-# ---------------------------------------------------------------------- #
-# emoji 字体回退（修复"中文+emoji 混合时按钮文字被裁切"的问题）
-#
-# 现象：Max 内嵌 PySide 默认主字体（如 Microsoft YaHei UI）不含 emoji 字形，
-# 当 QPushButton 文本同时含 emoji + 中文/英文时，Qt 渲染引擎会触发字体
-# fallback：emoji 走 Segoe UI Emoji，中文走主字体。两套字体的 metric
-# （字符高度 / 行距）不一致，渲染对齐时整段文字会被压缩，最后 1~2 个字
-# 被挤出按钮，导致"🚀  发送" → "发"、"⚙ 设置" → "⚙"。
-#
-# 解决方案：QFont.setFamilies(['MainFont', 'Segoe UI Emoji', 'Segoe UI Symbol'])
-# 让 Qt 在 fallback 时走"声明过的同一 QFont 内的次选 family"，metric 来自
-# 主 family 不会被覆盖，emoji 会以主字体的 metric 缩放渲染，整段对齐。
-#
-# 该函数不在 import 时自动调用；由 startup 在确保 QApplication 实例存在
-# 之后显式 install，避免在测试 / 离屏 / 非 Max 场景误触。
-# ---------------------------------------------------------------------- #
-
-# Windows / macOS / Linux 各自常见的 emoji 字体候选（按优先级），
-# 任意一个被系统识别就生效，不存在的 family 名 Qt 会自动忽略。
-_EMOJI_FAMILY_CANDIDATES = (
-    'Segoe UI Emoji',     # Windows 10/11 默认 emoji 字体（覆盖最全）
-    'Segoe UI Symbol',    # 早期 Windows 兜底
-    'Apple Color Emoji',  # macOS
-    'Noto Color Emoji',   # Linux 常见
-    'EmojiOne Color',     # 部分 Linux 发行版
-    'Twemoji Mozilla',    # Firefox 自带
-)
-
-
-def install_emoji_font_fallback():
-    """为 ``QApplication`` 默认字体安装 emoji fallback 列表。
-
-    :returns: ``True`` 表示已安装；``False`` 表示无 QApplication / 不支持。
-
-    幂等：重复调用不会叠加多次 fallback。
-    """
-    app = QtWidgets.QApplication.instance()
-    if app is None:
-        return False
-
-    base_font = app.font()
-    main_family = base_font.family() or 'Microsoft YaHei UI'
-
-    families = [main_family]
-    for fam in _EMOJI_FAMILY_CANDIDATES:
-        if fam not in families:
-            families.append(fam)
-
-    # PySide6 / PySide2 (Qt 5.13+) 都支持 setFamilies；
-    # 对极老的 PySide2 fallback 到 CSS-like family 字符串。
-    try:
-        if hasattr(base_font, 'setFamilies'):
-            base_font.setFamilies(families)
-        else:  # pragma: no cover - 仅在极老的 Qt5 走这里
-            base_font.setFamily(', '.join(families))
-        app.setFont(base_font)
-        return True
-    except Exception:  # pylint: disable=broad-except
-        # 字体安装失败不能让 UI 起不来，安静失败
-        return False
-
-
 __all__ = [
     "QtCore",
     "QtGui",
@@ -359,5 +297,4 @@ __all__ = [
     "dock_area_right",
     "msgbox_yes",
     "msgbox_no",
-    "install_emoji_font_fallback",
 ]
