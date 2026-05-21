@@ -127,6 +127,10 @@ class AgentWorker(QObject):
         self._chunk_flush_chars = 256
         self._chunk_flush_interval = 0.15  # 150ms
 
+        # _start_requested 信号是否已经 connect 过 _qt_entry
+        # 用标志位避免重复 connect 报 warning，也避免首次 disconnect 报 warning
+        self._started_connected = False
+
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
@@ -155,8 +159,54 @@ class AgentWorker(QObject):
         self._cancel_event.clear()
 
     # ------------------------------------------------------------------ #
-    # 启动入口
+    # 启动入口（标准 Qt worker pattern）
     # ------------------------------------------------------------------ #
+    # 内部信号：从主线程跨线程触发 _qt_entry（worker 已 moveToThread 后，
+    # 这种 signal->slot 一定走 QueuedConnection，slot 必然在子线程跑）。
+    _start_requested = Signal()
+
+    @QtCore.Slot()
+    def _qt_entry(self):
+        """真正的子线程入口（被 _start_requested 触发）。
+
+        必须用 @Slot 装饰，让 Qt 通过 metaobject 识别，确保 signal->slot
+        走 QueuedConnection。普通 Python 闭包/未装饰方法在某些 PySide
+        版本里会被当作 DirectConnection，导致 _run_loop 仍然在主线程跑，
+        进而把 LLM HTTP 流式调用阻塞到 Max 主线程上 —— 这是"等 LLM 时
+        整个 Max UI 卡住"的根因。
+        """
+        # 诊断埋点：明确告知 _run_loop 跑在哪个线程，方便定位卡顿根因。
+        # 上线稳定后可以删除。
+        try:
+            app = QtCore.QCoreApplication.instance()
+            cur = QtCore.QThread.currentThread()
+            main = app.thread() if app is not None else None
+            in_main = (main is not None and cur is main)
+            print(
+                '[maxagent.worker] _qt_entry running in {} thread '
+                '(tid={}, qthread={})'.format(
+                    'MAIN' if in_main else 'WORKER',
+                    threading.get_ident(),
+                    int(id(cur)),
+                ),
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        try:
+            self._run_loop()
+        except Exception as exc:  # pylint: disable=broad-except
+            tb = traceback.format_exc()
+            self.failed.emit('Worker 异常: {}\n{}'.format(exc, tb))
+        finally:
+            # 通知 thread 退出事件循环（thread.quit 是线程安全的）
+            t = self._thread
+            if t is not None:
+                try:
+                    t.quit()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
     def run_in_thread(self, user_input):
         """启动一个子线程跑 LLM 对话循环。
 
@@ -168,26 +218,25 @@ class AgentWorker(QObject):
         self._conv.add_user(user_input)
 
         thread = QThread()
-        # 用闭包跑入口函数
-        def _entry():
-            try:
-                self._run_loop()
-            except Exception as exc:  # pylint: disable=broad-except
-                tb = traceback.format_exc()
-                self.failed.emit('Worker 异常: {}\n{}'.format(exc, tb))
-            finally:
-                # 子线程退出
-                try:
-                    thread.quit()
-                except Exception:  # pylint: disable=broad-except
-                    pass
-
-        # 把 worker 移到子线程
+        # 1. worker 移到子线程：之后 worker 的 @Slot 在 QueuedConnection 下
+        #    会被 thread 的事件循环调度执行
         self.moveToThread(thread)
-        thread.started.connect(_entry)
+        # 2. thread 的 finished 自清理；不要 connect started 到普通 callable，
+        #    那样在某些 PySide 版本里会变成 DirectConnection（主线程跑）
         thread.finished.connect(thread.deleteLater)
+        # 3. _start_requested 是 worker 自己的 signal，emit 时 worker 已经
+        #    属于子线程，slot 又是 worker 自己的 @Slot，必走 QueuedConnection，
+        #    在子线程事件循环里调度。只 connect 一次，后续复用。
+        if not self._started_connected:
+            self._start_requested.connect(
+                self._qt_entry, QtCore.Qt.QueuedConnection,
+            )
+            self._started_connected = True
         self._thread = thread
         thread.start()
+        # 4. thread 启动后才能 emit；emit 时 worker 的 affinity 已是子线程，
+        #    Qt 会把这次调用排到子线程事件循环
+        self._start_requested.emit()
 
     # ------------------------------------------------------------------ #
     # 子线程：核心 LLM + 工具循环
