@@ -216,6 +216,29 @@ class SettingsDialog(QtWidgets.QDialog):
         self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
         right.addRow('', self.wrap_undo_chk)
 
+        # 日志级别下拉：DEBUG / INFO / WARNING / ERROR
+        # currentTextChanged 而不是 currentIndexChanged，方便直接拿到字符串
+        # 写入 cfg.log_level，无需再做 index→str 映射
+        self.log_level_combo = QtWidgets.QComboBox()
+        self.log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+        self.log_level_combo.setToolTip(
+            '日志级别（仅控制台输出粒度，文件日志固定为 DEBUG 全量）。\n'
+            '排查偶发问题时调成 DEBUG 抓现场，正常使用 INFO 即可。',
+        )
+        self.log_level_combo.currentTextChanged.connect(
+            self._on_log_level_changed,
+        )
+        right.addRow('日志级别:', self.log_level_combo)
+
+        # 打开日志目录按钮：跨平台用 QDesktopServices.openUrl
+        self.open_log_dir_btn = QtWidgets.QPushButton('打开日志目录')
+        self.open_log_dir_btn.setToolTip(
+            '在系统文件管理器中打开 maxagent 日志目录\n'
+            '（包含 maxagent.log 主文件 + 滚动归档）',
+        )
+        self.open_log_dir_btn.clicked.connect(self._open_log_dir)
+        right.addRow('', self.open_log_dir_btn)
+
         # 测试连接结果
         self.test_label = QtWidgets.QLabel('')
         self.test_label.setStyleSheet('color:#888;')
@@ -323,6 +346,17 @@ class SettingsDialog(QtWidgets.QDialog):
             chk.setChecked(bool(val))
             chk.blockSignals(False)
 
+        # 日志级别下拉：找到与 cfg.log_level 匹配的项；非法值回落 INFO。
+        # blockSignals 防止初始化触发 currentTextChanged → 无意义写盘。
+        level_text = str(getattr(cfg, 'log_level', 'INFO') or 'INFO').upper()
+        if level_text not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
+            level_text = 'INFO'
+        self.log_level_combo.blockSignals(True)
+        idx = self.log_level_combo.findText(level_text)
+        if idx >= 0:
+            self.log_level_combo.setCurrentIndex(idx)
+        self.log_level_combo.blockSignals(False)
+
     def _on_app_setting_changed(self, _checked):
         """任一全局开关变化时立刻保存到 AppConfig（不需要点应用）。
 
@@ -339,6 +373,73 @@ class SettingsDialog(QtWidgets.QDialog):
         except Exception as exc:  # pylint: disable=broad-except
             QtWidgets.QMessageBox.warning(
                 self, '保存失败', '应用设置写盘失败: {}'.format(exc),
+            )
+
+    def _on_log_level_changed(self, level_text):
+        """日志级别下拉变化：写盘 + 实时调整运行中 logger 级别。
+
+        实时调整意味着当前 Max 会话内立即生效，不必重启。
+        """
+        cfg = self._config.config
+        new_level = str(level_text or 'INFO').upper()
+        if new_level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
+            new_level = 'INFO'
+        cfg.log_level = new_level
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '日志级别写盘失败: {}'.format(exc),
+            )
+            return
+        # 实时调整正在运行的 logger
+        try:
+            import logging
+            from ..logger import ROOT_NAME
+            logging.getLogger(ROOT_NAME).setLevel(
+                getattr(logging, new_level, logging.INFO),
+            )
+        except Exception:  # pylint: disable=broad-except
+            # 调整失败不阻塞 UI，重启后会按新配置生效
+            pass
+
+    def _open_log_dir(self):
+        """在系统文件管理器中打开日志目录。
+
+        优先用 QDesktopServices.openUrl 跨平台调起；目录不存在时尝试创建，
+        创建失败再降级提示路径。
+        """
+        import os
+
+        try:
+            from ..config import get_config_dir
+            log_dir = os.path.join(get_config_dir(), 'logs')
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '打开失败', '无法定位日志目录: {}'.format(exc),
+            )
+            return
+        # 不存在就建一个，避免首次启动还没产生日志时点按钮报错
+        if not os.path.isdir(log_dir):
+            try:
+                os.makedirs(log_dir)
+            except OSError as exc:
+                QtWidgets.QMessageBox.warning(
+                    self, '打开失败',
+                    '日志目录不存在且无法创建:\n{}\n{}'.format(log_dir, exc),
+                )
+                return
+        url = QtCore.QUrl.fromLocalFile(log_dir)
+        opened = False
+        try:
+            opened = QtGui.QDesktopServices.openUrl(url)
+        except Exception:  # pylint: disable=broad-except
+            opened = False
+        if not opened:
+            # 降级：提示用户复制路径自己打开
+            QtWidgets.QMessageBox.information(
+                self, '日志目录',
+                '请手动打开以下目录:\n{}'.format(log_dir),
             )
 
     def _load_to_form(self, profile_name):
@@ -656,6 +757,10 @@ class SettingsDialog(QtWidgets.QDialog):
             '工具集，关闭则退化为纯聊天。</p>'
             '<p><b>自定义 Header</b>：用于网关或代理需要的额外 HTTP 头，'
             '格式为 <code>KEY=VALUE</code>，每行一个。</p>'
+            '<p><b>日志级别</b>：控制台输出的日志粒度（DEBUG/INFO/'
+            'WARNING/ERROR）；文件日志固定为 DEBUG 全量，便于事后回溯。'
+            '<br><b>打开日志目录</b>：在系统文件管理器中打开日志文件'
+            '所在目录，日志按 2MB 滚动归档，最多保留 5 份。</p>'
             '<hr>'
             '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
             '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
