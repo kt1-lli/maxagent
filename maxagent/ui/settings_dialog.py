@@ -600,3 +600,59 @@ class SettingsDialog(QtWidgets.QDialog):
         else:
             self.base_url_hint.clear()
             self.base_url_hint.hide()
+
+    # ------------------------------------------------------------------ #
+    # 帮助 (?) 按钮
+    # ------------------------------------------------------------------ #
+    def event(self, ev):
+        """拦截标题栏 ? 按钮的 WhatsThis 模式触发，改为弹出帮助对话框。
+
+        Qt 给 QDialog 默认带 WindowContextHelpButtonHint，点击 ? 会进入
+        WhatsThis 模式（光标变成问号）。该模式需要为每个控件 setWhatsThis
+        才有反馈，对当前对话框场景过度复杂；改为直接弹出帮助说明更直观。
+        """
+        try:
+            enter_whats_this = QtCore.QEvent.Type.EnterWhatsThisMode
+        except AttributeError:
+            # PySide2 兼容
+            enter_whats_this = QtCore.QEvent.EnterWhatsThisMode
+        if ev.type() == enter_whats_this:
+            self._show_help()
+            ev.accept()
+            return True
+        return super(SettingsDialog, self).event(ev)
+
+    def _show_help(self):
+        """弹出帮助说明，介绍各字段含义与常见配置。"""
+        text = (
+            '<h3>MaxAgent 设置帮助</h3>'
+            '<p><b>Profile 列表</b>：可配置多套大模型连接，常用于切换'
+            ' Ollama / LM Studio / OpenAI / DeepSeek。</p>'
+            '<p><b>Base URL</b>：OpenAI 兼容 API 的根地址，多数服务'
+            '需要带 <code>/v1</code> 后缀。'
+            '<br>· Ollama：<code>http://localhost:11434/v1</code>'
+            '<br>· LM Studio：<code>http://localhost:1234/v1</code>'
+            '<br>· OpenAI：<code>https://api.openai.com/v1</code>'
+            '<br>· DeepSeek：<code>https://api.deepseek.com/v1</code></p>'
+            '<p><b>API Key</b>：本地模型可留空或填占位符；商用 API 必填。</p>'
+            '<p><b>模型</b>：模型名称需与服务端实际可用模型完全一致。</p>'
+            '<p><b>温度</b>：0.0~2.0，越高越发散；建议 0.2 ~ 0.7。</p>'
+            '<p><b>最大输出 token</b>：单次回复的硬上限，避免无限生成。</p>'
+            '<p><b>请求超时</b>：单次请求等待秒数，长上下文/慢模型可调大。</p>'
+            '<p><b>工具调用上限</b>：单轮对话内 LLM 可触发的工具调用次数上限，'
+            '防止无限循环。</p>'
+            '<p><b>历史 token 预算</b>：发送给 LLM 时携带的对话历史 token 上限，'
+            '超出会自动裁剪最早消息。</p>'
+            '<p><b>启用流式输出</b>：勾选后逐字输出，体验更流畅。</p>'
+            '<p><b>启用 Function Calling</b>：勾选后允许模型调用 3ds Max '
+            '工具集，关闭则退化为纯聊天。</p>'
+            '<p><b>自定义 Header</b>：用于网关或代理需要的额外 HTTP 头，'
+            '格式为 <code>KEY=VALUE</code>，每行一个。</p>'
+            '<hr>'
+            '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
+            '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
+            '用于排查 “测试连接通过但实际对话失败” 类问题。'
+            '<br><b>应用</b>：保存当前 Profile 修改。</p>'
+        )
+        QtWidgets.QMessageBox.information(self, 'MaxAgent 设置帮助', text)
+
