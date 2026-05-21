@@ -357,36 +357,53 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         outer.addStretch(1)
         self._buffer = ''
         self._closed = False
+        # 已应用的行数；只在行数发生变化时才 setFixedHeight，
+        # 避免每个 chunk 都触发外层 QScrollArea 重新 layout（卡顿主因）
+        self._last_lines = 1
+        # 60Hz 节流定时器：合并多个 chunk 内的高度调整请求
+        self._height_timer = QtCore.QTimer()
+        self._height_timer.setSingleShot(True)
+        self._height_timer.setInterval(33)  # 约 30Hz，足够流畅
+        self._height_timer.timeout.connect(self._grow_height)
 
     def append_chunk(self, chunk):
         # type: (str) -> None
-        """O(chunk_len) 增量追加，不再 rebuild 整个 buffer。"""
+        """O(chunk_len) 增量追加，不在主线程做 layout 计算。
+
+        关键优化：
+        - 高度调整通过 33ms 定时器节流，不每 chunk 一次
+        - 用行数估算高度，不调用 documentLayout().documentSize()
+          （后者会强制同步 layout，是卡顿主因）
+        - ensureCursorVisible 让 editor 内部处理光标跟随，
+          外层不需要每 chunk 滚一次
+        """
         if not chunk or self._closed:
             return
         self._buffer += chunk
-        # insertPlainText 在光标处插入；先把光标移到末尾
+        # insertText 是 O(chunk_len)：只在末尾追加，不重排版历史文本
         cursor = self._editor.textCursor()
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         cursor.insertText(chunk)
         self._editor.setTextCursor(cursor)
-        # 自适应高度（不超过上限），按行数估算
-        self._grow_height()
+        # 让 editor 自己保证光标可见（不影响外层滚动条）
+        self._editor.ensureCursorVisible()
+        # 节流触发高度调整
+        if not self._height_timer.isActive():
+            self._height_timer.start()
 
     def _grow_height(self):
-        """根据当前内容行数把 editor 撑到合适高度，封顶 _MAX_HEIGHT。"""
-        try:
-            # documentLayout 反映已排版的真实高度
-            h = int(
-                self._editor.document()
-                .documentLayout()
-                .documentSize()
-                .height()
-            ) + 12
-        except Exception:  # pylint: disable=broad-except
-            # 兜底：行数 * 行高估算
-            fm = QtGui.QFontMetrics(self._editor.font())
-            line_count = max(1, self._buffer.count('\n') + 1)
-            h = line_count * fm.lineSpacing() + 12
+        """根据行数估算 editor 高度。
+
+        用行数 * 行高估算，避免触发 documentLayout 同步 layout。
+        只在行数变化时才 setFixedHeight，最大限度减少外层 relayout。
+        """
+        # 用 newline 数量估算（不强求精确，估高一点也没关系）
+        line_count = max(1, self._buffer.count('\n') + 1)
+        if line_count == self._last_lines:
+            return
+        self._last_lines = line_count
+        fm = QtGui.QFontMetrics(self._editor.font())
+        h = line_count * fm.lineSpacing() + 16
         if h > self._MAX_HEIGHT:
             h = self._MAX_HEIGHT
         if h < 28:
@@ -399,6 +416,10 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         """流式结束，返回最终 buffer。调用方负责把这个 bubble 替换为
         最终的 markdown 渲染版本。"""
         self._closed = True
+        # 收尾时强制刷一次高度
+        if self._height_timer.isActive():
+            self._height_timer.stop()
+        self._grow_height()
         return self._buffer
 
     def is_empty(self):

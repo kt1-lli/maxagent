@@ -178,6 +178,8 @@ class _ChatRenderer(QtCore.QObject):
         # 末尾 stretch，让消息从顶部开始堆
         self._layout.addStretch(1)
         self._streaming = None  # type: Optional[_StreamingAssistantBubble]
+        # 流式期间的滚动节流标志：避免每个 chunk 都派 timer
+        self._scroll_pending = False
 
     # ------------------------------------------------------------------ #
     # 底部追加（在 stretch 之前）
@@ -202,6 +204,11 @@ class _ChatRenderer(QtCore.QObject):
     def _scroll_to_bottom(self):
         bar = self._scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def _scroll_to_bottom_pending(self):
+        """节流版：被多次 schedule 时只执行一次。"""
+        self._scroll_pending = False
+        self._scroll_to_bottom()
 
     def scroll_to_bottom_force(self):
         """对外强制滚动到底（供切换会话时调用）。
@@ -231,9 +238,12 @@ class _ChatRenderer(QtCore.QObject):
         if self._streaming is None:
             self.add_assistant_start()
         self._streaming.append_chunk(chunk)
-        # 流式过程也要跟随滚动（如果用户在底部）
-        if self._is_at_bottom():
-            QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+        # 流式期间的滚动节流：避免每个 chunk 都派一个 0ms timer，
+        # 否则一秒 ~10 次 chunk = 10 个 timer + 10 次 layout 重算，
+        # 是新的卡顿源。改为合并到下一帧只触发一次。
+        if self._is_at_bottom() and not self._scroll_pending:
+            self._scroll_pending = True
+            QtCore.QTimer.singleShot(0, self._scroll_to_bottom_pending)
 
     def end_turn(self):
         """一次流式段落结束：把 streaming bubble 替换成 markdown 渲染版本。"""

@@ -617,7 +617,15 @@ class SettingsDialog(QtWidgets.QDialog):
             # PySide2 兼容
             enter_whats_this = QtCore.QEvent.EnterWhatsThisMode
         if ev.type() == enter_whats_this:
-            self._show_help()
+            # 立刻退出 WhatsThis 模式，否则 Qt 已经把光标改成 🚫(问号箭头)
+            # 状态，弹完帮助框光标也不会自动复位。
+            try:
+                QtWidgets.QWhatsThis.leaveWhatsThisMode()
+            except Exception:  # pylint: disable=broad-except
+                pass
+            # 用 0ms 延后弹出帮助，让 Qt 完成 mode 切换后再展示对话框，
+            # 避免帮助框是模态时再次进入 WhatsThis 状态。
+            QtCore.QTimer.singleShot(0, self._show_help)
             ev.accept()
             return True
         return super(SettingsDialog, self).event(ev)

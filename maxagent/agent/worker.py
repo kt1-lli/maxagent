@@ -119,13 +119,13 @@ class AgentWorker(QObject):
         # LLM 流式每个 token 一个 chunk，在子线程里先攒到 buffer，
         # 满足任一条件再 emit：累计字节 >= _chunk_flush_chars
         # 或距离上次 flush 时间 >= _chunk_flush_interval 秒。
-        # 现在的阈值（128 字符 / 100ms）配合 UI 端 QPlainTextEdit
-        # 的 O(chunk) 增量追加，每秒 ≤10 次 emit，主线程几乎无感。
+        # 配合 UI 端 QPlainTextEdit 的 O(chunk) 增量追加 + 高度调整 30Hz
+        # 节流，每秒 emit ≤7 次，主线程几乎无感。
         self._chunk_buf = []  # type: list
         self._chunk_buf_lock = threading.Lock()
         self._chunk_last_flush = 0.0
-        self._chunk_flush_chars = 128
-        self._chunk_flush_interval = 0.1  # 100ms
+        self._chunk_flush_chars = 256
+        self._chunk_flush_interval = 0.15  # 150ms
 
     # ------------------------------------------------------------------ #
     # 主线程辅助
