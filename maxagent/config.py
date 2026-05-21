@@ -203,15 +203,55 @@ class AppConfig:
 
 
 def get_config_dir() -> str:
-    """获取配置目录。优先用 Max 的 Documents/3dsMax 目录，其次 ~/.maxagent。"""
-    user_profile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    max_doc_dir = os.path.join(user_profile, "Documents", "3dsMax")
-    if os.path.isdir(max_doc_dir):
-        cfg_dir = os.path.join(max_doc_dir, "maxagent")
-    else:
-        cfg_dir = os.path.join(os.path.expanduser("~"), ".maxagent")
-    os.makedirs(cfg_dir, exist_ok=True)
-    return cfg_dir
+    """获取配置目录。
+
+    优先级：
+    1. ``MAXAGENT_DATA_DIR`` 环境变量（用户显式覆盖，最高优先级，便于测试）
+    2. **插件包同级的 ``_userdata`` 目录**（默认，配置跟着插件走，
+       拷贝 / 拖动 ms 启动器到不同 Max 版本，配置自动跟随）
+
+    包同级目录不可写时（极少数把插件放到 Program Files 的场景）才退到
+    ``~/.maxagent``，避免插件起不来。
+    """
+    # 1. 环境变量覆盖
+    env_dir = os.environ.get("MAXAGENT_DATA_DIR")
+    if env_dir:
+        try:
+            os.makedirs(env_dir, exist_ok=True)
+            return env_dir
+        except OSError:
+            pass
+
+    # 2. 插件包同级 _userdata 目录（默认）
+    #    __file__ 指向 maxagent/config.py，包目录是 dirname(__file__)，
+    #    再向上一级是包的父目录（ms 启动器与 maxagent 包并列摆放）。
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(pkg_dir)
+    local_dir = os.path.join(parent_dir, "_userdata")
+    if _is_writable(parent_dir):
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+            return local_dir
+        except OSError:
+            pass
+
+    # 3. 兜底：~/.maxagent（包目录只读时才走这里）
+    fallback = os.path.join(os.path.expanduser("~"), ".maxagent")
+    os.makedirs(fallback, exist_ok=True)
+    print(
+        "[maxagent] 包目录不可写，配置已回退到: {}".format(fallback),
+    )
+    return fallback
+
+
+def _is_writable(path: str) -> bool:
+    """判断目录是否存在且可写。不存在的尝试创建一次，仍失败视为不可写。"""
+    try:
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
+        return os.access(path, os.W_OK)
+    except OSError:
+        return False
 
 
 def get_config_path() -> str:

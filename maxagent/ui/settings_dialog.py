@@ -224,25 +224,44 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label.setStyleSheet('color:#888;')
         right.addRow('', self.test_label)
 
-        # 操作按钮
+        # 操作按钮：每个按钮设最小宽度并固定 SizePolicy，避免左侧 Profile 列表
+        # 撑大时把按钮文字（"测试连接"、"完整测试"、"应用"）压到只剩前两个字。
         op_row = QtWidgets.QHBoxLayout()
+        op_row.setSpacing(6)
         op_row.addStretch(1)
+
+        def _shape_btn(btn, min_w=92):
+            btn.setMinimumWidth(min_w)
+            btn.setMinimumHeight(28)
+            btn.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Fixed,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
+
         self.test_btn = QtWidgets.QPushButton('🧪 测试连接')
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
+        _shape_btn(self.test_btn, 110)
         op_row.addWidget(self.test_btn)
+
         self.test_full_btn = QtWidgets.QPushButton('🔬 完整测试')
         self.test_full_btn.setToolTip(
             '复刻真实对话的请求：开启流式 + 携带全部工具 schema。\n'
             '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
         )
         self.test_full_btn.clicked.connect(self._test_connection_full)
+        _shape_btn(self.test_full_btn, 110)
         op_row.addWidget(self.test_full_btn)
+
         self.apply_btn = QtWidgets.QPushButton('💾 应用')
+        self.apply_btn.setToolTip('保存当前 Profile 修改')
         self.apply_btn.clicked.connect(self._apply)
+        _shape_btn(self.apply_btn, 80)
         op_row.addWidget(self.apply_btn)
+
         self.close_btn = QtWidgets.QPushButton('关闭')
         self.close_btn.clicked.connect(self.accept)
+        _shape_btn(self.close_btn, 70)
         op_row.addWidget(self.close_btn)
 
         right_box = QtWidgets.QVBoxLayout()

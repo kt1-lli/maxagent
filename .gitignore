@@ -1,3 +1,10 @@
 .agent
 *.pyc
 __pycache__
+
+# 用户数据目录（运行时由 maxagent.config 创建在包同级位置）
+# 包含 config.json / sessions/ / skills/ / user_tools/ / ui_state.json 等
+_userdata/
+
+# 旧版用户数据残留（兼容老分支，避免误提交个人 API Key）
+.maxagent/

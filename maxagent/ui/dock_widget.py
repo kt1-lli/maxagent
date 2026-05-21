@@ -340,11 +340,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         top.setSpacing(6)
         top.addWidget(QtWidgets.QLabel('Profile:'))
         self.profile_combo = QtWidgets.QComboBox()
-        self.profile_combo.setMinimumWidth(180)
+        self.profile_combo.setMinimumWidth(160)
+        self.profile_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        top.addWidget(self.profile_combo)
-        top.addStretch(1)
-        self.reload_btn = QtWidgets.QPushButton('🔄 重加载')
+        top.addWidget(self.profile_combo, 1)
+        # 重加载用纯图标 + tooltip，避免在窄面板下被截断
+        self.reload_btn = QtWidgets.QPushButton('🔄')
+        self.reload_btn.setFixedSize(30, 26)
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
             '会保存当前会话与 UI 状态、关闭面板、清空模块缓存后重新加载。\n'
@@ -353,6 +358,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
         self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
+        self.settings_btn.setMinimumWidth(72)
+        self.settings_btn.setFixedHeight(26)
+        self.settings_btn.setToolTip('打开设置面板（Profile / API Key / 应用开关）')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
         outer.addLayout(top)
@@ -360,16 +368,23 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # === 顶部条第 2 行：会话管理 ===
         sess_row = QtWidgets.QHBoxLayout()
         sess_row.setSpacing(4)
-        self.new_session_btn = QtWidgets.QPushButton('➕ 新对话')
+        # 新对话按钮：纯图标，节省横向空间（图1 中"➕ 新对话"和会话下拉互相挤压）
+        self.new_session_btn = QtWidgets.QPushButton('➕')
         self.new_session_btn.setToolTip('开启一个新的空白对话')
+        self.new_session_btn.setFixedSize(30, 26)
         self.new_session_btn.clicked.connect(self._on_new_session)
         sess_row.addWidget(self.new_session_btn)
 
         sess_row.addWidget(QtWidgets.QLabel('会话:'))
         self.session_combo = QtWidgets.QComboBox()
-        self.session_combo.setMinimumWidth(220)
+        self.session_combo.setMinimumWidth(160)
+        # 不再 AdjustToContents——避免长会话名把整行撑爆挤掉 ⋯ 按钮
         self.session_combo.setSizeAdjustPolicy(
-            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents,
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon,
+        )
+        self.session_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.session_combo.currentIndexChanged.connect(
             self._on_session_combo_changed,
@@ -381,7 +396,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.session_menu_btn = QtWidgets.QToolButton()
         self.session_menu_btn.setText('⋯')
         self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
-        self.session_menu_btn.setFixedWidth(28)
+        self.session_menu_btn.setFixedSize(30, 26)
         self.session_menu_btn.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
         )
@@ -428,9 +443,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         ctx_row.addStretch(1)
 
-        self.compress_btn = QtWidgets.QPushButton('🗜 压缩对话')
+        # 压缩按钮：纯图标，避免把"📊 上下文"/"💰 用量"挤到换行
+        self.compress_btn = QtWidgets.QPushButton('🗜')
+        self.compress_btn.setFixedSize(30, 24)
         self.compress_btn.setToolTip(
-            '让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
+            '压缩对话：让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
             '适合长对话节省 token，但会失去早期细节。',
         )
         self.compress_btn.clicked.connect(self._on_compress_history)
@@ -479,23 +496,27 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit.send_requested.connect(self._on_send)
         input_layout.addWidget(self.input_edit, 1)
 
-        # 底部操作行：左侧留白（未来可放输入辅助按钮），右侧 发送/停止 合一按钮
+        # 底部操作行：发送/停止 合一按钮占满整行，文字在窄面板下也不会被截断
         action_row = QtWidgets.QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(6)
-        action_row.addStretch(1)
 
         # 发送/停止 合一：未运行时为发送（绿色），运行时切换为停止（红色）
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
         self.send_btn = QtWidgets.QPushButton('🚀  发送')
         self.send_btn.setObjectName('sendBtn')
-        self.send_btn.setMinimumWidth(110)
-        self.send_btn.setMinimumHeight(30)
+        self.send_btn.setMinimumWidth(120)
+        self.send_btn.setMinimumHeight(32)
+        # 占满整行，避免窄面板下被父布局压缩成"发"
+        self.send_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.send_btn.setToolTip('发送消息（Enter 或 Ctrl+Enter）')
         self.send_btn.clicked.connect(self._on_send_or_stop)
         # 兼容代码：保留 stop_btn 字段指向同一按钮，避免外部引用炸掉
         self.stop_btn = self.send_btn
-        action_row.addWidget(self.send_btn)
+        action_row.addWidget(self.send_btn, 1)
         input_layout.addLayout(action_row)
 
         input_container.setMinimumHeight(self._MIN_INPUT_HEIGHT + 8)
