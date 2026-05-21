@@ -497,7 +497,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit = _SmartInput(self)
         self.input_edit.setMinimumHeight(self._MIN_INPUT_HEIGHT)
         self.input_edit.setPlaceholderText(
-            '在这里输入指令...\n'
+            '✏️ 在这里输入指令...\n'
             'Enter 发送 / Shift+Enter 换行 / Ctrl+Enter 发送（拖动上方分割条可调整大小）',
         )
         self.input_edit.send_requested.connect(self._on_send)
@@ -534,7 +534,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         outer.addWidget(self.splitter, 1)
 
         # === 底部状态栏 ===
-        self.status_label = QtWidgets.QLabel('准备就绪')
+        self.status_label = QtWidgets.QLabel('🟢 准备就绪')
         self.status_label.setStyleSheet('color:#888;')
         outer.addWidget(self.status_label)
 
@@ -816,7 +816,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             return
 
         self._set_running(True)
-        self.status_label.setText('正在生成历史摘要...')
+        self.status_label.setText('📝 正在生成历史摘要...')
         self._renderer.add_status('正在压缩对话历史，请稍候...')
         # 同步在后台线程跑摘要请求，避免冻结 UI
         from ..qt_compat import QtCore as _QtCore
@@ -847,7 +847,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         def _on_done():
             self._set_running(False)
-            self.status_label.setText('准备就绪')
+            self.status_label.setText('🟢 准备就绪')
             if worker_holder['err']:
                 self._renderer.add_error(
                     '压缩失败: {}'.format(worker_holder['err']),
@@ -1016,7 +1016,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 回放历史消息
         if not conv.messages:
             self._renderer.add_welcome(
-                '你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
+                '👋 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
                 '点击下方任一示例快速开始：'
             )
         else:
@@ -1220,7 +1220,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _on_stop(self):
         if self._worker is not None:
             self._worker.cancel()
-            self.status_label.setText('正在停止...')
+            self.status_label.setText('⏸ 正在停止...')
 
     def _on_send_or_stop(self):
         """合一按钮的入口：根据当前运行状态分发到 _on_send 或 _on_stop。"""
@@ -1287,14 +1287,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _on_finished(self):
         self._renderer.end_turn()
-        self.status_label.setText('完成')
+        self.status_label.setText('✅ 完成')
         self._set_running(False)
         self._save_current_session()
         self._refresh_context_label()
 
     def _on_failed(self, err):
         self._renderer.add_error(err)
-        self.status_label.setText('失败')
+        self.status_label.setText('❌ 失败')
         self._set_running(False)
         # 失败也保存：用户能在历史里看到失败原因
         self._save_current_session()
