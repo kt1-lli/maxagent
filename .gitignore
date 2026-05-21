@@ -8,3 +8,6 @@ _userdata/
 
 # 旧版用户数据残留（兼容老分支，避免误提交个人 API Key）
 .maxagent/
+
+# 对话上传的临时图片（用户问问题附带的截图，非项目资产）
+chat_uploads/
