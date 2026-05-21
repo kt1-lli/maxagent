@@ -30,10 +30,13 @@ from typing import Optional
 
 from .agent.conversation import Conversation
 from .config import get_config_dir
+from .logger import get_logger
 
 
 SESSIONS_DIRNAME = 'sessions'
 INDEX_FILENAME = '_index.json'
+
+logger = get_logger(__name__)
 
 # 会话标题最大长度（字符）
 MAX_TITLE_LEN = 30
@@ -161,7 +164,7 @@ class SessionManager(object):
                 if m.file_path and os.path.exists(m.file_path)
             ]
         except (OSError, ValueError, KeyError) as exc:
-            print('[maxagent] sessions 索引损坏，重建: {}'.format(exc))
+            logger.warning('sessions 索引损坏，重建: %s', exc)
             return self._rebuild_index()
 
     def _save_index(self, metas):
@@ -201,9 +204,9 @@ class SessionManager(object):
                 meta.message_count = len(msgs)
                 metas.append(meta)
             except (OSError, ValueError) as exc:
-                print('[maxagent] 跳过损坏的会话文件 {}: {}'.format(
-                    fname, exc,
-                ))
+                logger.warning(
+                    '跳过损坏的会话文件 %s: %s', fname, exc,
+                )
                 continue
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         try:
@@ -300,7 +303,7 @@ class SessionManager(object):
             try:
                 os.remove(target.file_path)
             except OSError as exc:
-                print('[maxagent] 删除会话文件失败: {}'.format(exc))
+                logger.warning('删除会话文件失败: %s', exc)
         metas = [m for m in metas if m.sid != sid]
         self._save_index(metas)
         return True

@@ -11,6 +11,7 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+from ..logger import get_logger
 from .dispatcher import ToolDispatcher
 from .dispatcher import ToolExecutionError
 from .registry import build_openai_tools_schema
@@ -20,6 +21,7 @@ from .registry import tool
 
 
 _LOADED = False
+logger = get_logger(__name__)
 
 
 def load_all_tools(include_escape_hatch=True, load_user_tools=True):
@@ -57,9 +59,9 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
             r = _lu()
             if r.get('errors'):
                 for k, v in r['errors'].items():
-                    print('[maxagent] user tool {} 加载失败: {}'.format(k, v))
+                    logger.warning('user tool %s 加载失败: %s', k, v)
         except Exception as exc:  # pylint: disable=broad-except
-            print('[maxagent] 用户工具扫描异常: {}'.format(exc))
+            logger.warning('用户工具扫描异常: %s', exc)
 
     _LOADED = True
     return len(list_tools())

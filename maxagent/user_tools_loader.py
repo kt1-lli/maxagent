@@ -52,6 +52,10 @@ from typing import List
 from typing import Optional
 
 from .config import get_config_dir
+from .logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 USER_TOOLS_DIRNAME = 'user_tools'
@@ -232,7 +236,7 @@ def delete_user_tool(name):
                 os.remove(p)
                 found = True
             except OSError as exc:
-                print('[maxagent] 删除 {} 失败: {}'.format(p, exc))
+                logger.warning('删除 %s 失败: %s', p, exc)
     # 从 registry 移除
     from .tools.registry import _REGISTRY
     if name in _REGISTRY:

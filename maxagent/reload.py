@@ -160,6 +160,16 @@ def reload_maxagent(reshow=True):
     # 1. 先把状态落盘 + 关旧 UI
     _close_existing_panel()
 
+    # 1.5 关闭旧的 logging handler，避免重新 import 后旧文件句柄泄露
+    try:
+        logger_mod = sys.modules.get(_PACKAGE_PREFIX + '.logger')
+        if logger_mod is not None:
+            shutdown = getattr(logger_mod, 'shutdown_logging', None)
+            if callable(shutdown):
+                shutdown()
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
+
     # 2. 清掉模块缓存
     n = _purge_modules(skip_self=True)
     print('[MaxAgent] reload: 已卸载 {} 个模块'.format(n))

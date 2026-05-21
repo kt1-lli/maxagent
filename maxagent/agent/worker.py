@@ -34,6 +34,7 @@ from typing import Optional
 
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import Signal
 from ..tools import build_openai_tools_schema
@@ -44,6 +45,8 @@ from .conversation import Conversation
 
 QObject = QtCore.QObject
 QThread = QtCore.QThread
+
+logger = get_logger(__name__)
 
 
 # 工具调用循环的默认最大轮数。批量场景（如"测试所有工具"）可能调用
@@ -185,13 +188,11 @@ class AgentWorker(QObject):
             cur = QtCore.QThread.currentThread()
             main = app.thread() if app is not None else None
             in_main = (main is not None and cur is main)
-            print(
-                '[maxagent.worker] _qt_entry running in {} thread '
-                '(tid={}, qthread={})'.format(
-                    'MAIN' if in_main else 'WORKER',
-                    threading.get_ident(),
-                    int(id(cur)),
-                ),
+            logger.info(
+                '_qt_entry running in %s thread (tid=%s, qthread=%s)',
+                'MAIN' if in_main else 'WORKER',
+                threading.get_ident(),
+                int(id(cur)),
             )
         except Exception:  # pylint: disable=broad-except
             pass
@@ -200,6 +201,7 @@ class AgentWorker(QObject):
             self._run_loop()
         except Exception as exc:  # pylint: disable=broad-except
             tb = traceback.format_exc()
+            logger.exception('Worker 异常: %s', exc)
             self.failed.emit('Worker 异常: {}\n{}'.format(exc, tb))
         finally:
             # 通知 thread 退出事件循环（thread.quit 是线程安全的）
@@ -299,9 +301,7 @@ class AgentWorker(QObject):
                             cut, cur_tokens, self._max_history_tokens,
                         )
                 except Exception as exc:  # pylint: disable=broad-except
-                    print(
-                        '[maxagent] trim_to_token_budget 异常: {}'.format(exc),
-                    )
+                    logger.warning('trim_to_token_budget 异常: %s', exc)
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
                 try:
@@ -309,7 +309,7 @@ class AgentWorker(QObject):
                         self._current_user_input,
                     )
                 except Exception as exc:  # pylint: disable=broad-except
-                    print('[maxagent] sys_addon_provider 异常: {}'.format(exc))
+                    logger.warning('sys_addon_provider 异常: %s', exc)
                     addon = ''
                 if addon and messages and messages[0].get('role') == 'system':
                     base = messages[0].get('content') or ''

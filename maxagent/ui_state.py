@@ -39,6 +39,10 @@ from dataclasses import field
 from typing import List
 from typing import Optional
 
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
 
 UI_STATE_VERSION = 1
 
@@ -141,7 +145,7 @@ class UIStateManager:
                 raw = json.load(fh)
             return UIState.from_dict(raw)
         except (OSError, ValueError) as exc:
-            print('[maxagent] UI 状态加载失败，使用默认: {}'.format(exc))
+            logger.warning('UI 状态加载失败，使用默认: %s', exc)
             return UIState()
 
     def save(self, state):
@@ -159,7 +163,7 @@ class UIStateManager:
                 os.rename(tmp, self._path)
         except OSError as exc:
             # 写盘失败不影响主流程，仅打日志
-            print('[maxagent] UI 状态保存失败: {}'.format(exc))
+            logger.warning('UI 状态保存失败: %s', exc)
 
     def update(self, **kwargs):
         # type: (...) -> UIState

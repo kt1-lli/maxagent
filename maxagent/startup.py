@@ -212,10 +212,16 @@ def show_panel(force=False):
 
     # 延迟 import 让 sys.path 先生效
     from maxagent.config import ConfigManager
+    from maxagent.logger import get_logger
+    from maxagent.logger import setup_logging
     from maxagent.qt_compat import QtCore
     from maxagent.qt_compat import QtWidgets
     from maxagent.tools import load_all_tools
     from maxagent.ui.dock_widget import MaxAgentDockWidget
+
+    # 启动日志系统（幂等，重复调用安全）
+    setup_logging()
+    logger = get_logger(__name__)
 
     global _DOCK_WIDGET, _QDOCK_HOLDER  # pylint: disable=global-statement
 
@@ -226,9 +232,8 @@ def show_panel(force=False):
         try:
             cfg_mgr = ConfigManager()
             if not bool(cfg_mgr.config.auto_show_on_startup):
-                print(
-                    '[MaxAgent] auto_show_on_startup=False，'
-                    '本次启动跳过自动显示。'
+                logger.info(
+                    'auto_show_on_startup=False，本次启动跳过自动显示。'
                     '可执行 g_show_max_agent() 手动显示。',
                 )
                 return None
@@ -238,7 +243,7 @@ def show_panel(force=False):
 
     # 1. 加载工具
     n = load_all_tools(include_escape_hatch=True)
-    print('[MaxAgent] 已加载 {} 个工具'.format(n))
+    logger.info('已加载 %d 个工具', n)
 
     # 2. 复用单例
     if _DOCK_WIDGET is not None:

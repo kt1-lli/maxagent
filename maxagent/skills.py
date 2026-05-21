@@ -45,10 +45,13 @@ from typing import List
 from typing import Optional
 
 from .config import get_config_dir
+from .logger import get_logger
 
 
 SKILLS_DIRNAME = 'skills'
 INDEX_FILENAME = '_index.json'
+
+logger = get_logger(__name__)
 
 # Skill 名字校验：只允许中英文 + 数字 + 下划线 + 短横线 + 空格
 _NAME_RE = re.compile(r'^[\w\u4e00-\u9fa5\- ]{1,32}$')
@@ -174,9 +177,9 @@ class SkillManager(object):
                 s.file_path = full
                 out.append(s)
             except (OSError, ValueError) as exc:
-                print('[maxagent] skip 损坏的 skill 文件 {}: {}'.format(
-                    fname, exc,
-                ))
+                logger.warning(
+                    'skip 损坏的 skill 文件 %s: %s', fname, exc,
+                )
         out.sort(key=lambda s: s.updated_at, reverse=True)
         return out
 
@@ -240,7 +243,7 @@ class SkillManager(object):
             try:
                 os.remove(s.file_path)
             except OSError as exc:
-                print('[maxagent] 删除 skill 失败: {}'.format(exc))
+                logger.warning('删除 skill 失败: %s', exc)
                 return False
         return True
 

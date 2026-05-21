@@ -18,6 +18,10 @@ from typing import Any
 from typing import Callable
 from typing import Optional
 
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
 
 # ---------------------------------------------------------------------- #
 # pymxs 引用（在 Max 之外运行时延迟导入失败）
@@ -147,7 +151,7 @@ class _MainThreadDispatcher(object):
         if not task["done"].wait(timeout=timeout):
             raise TimeoutError("主线程派发超时（{} 秒）".format(timeout))
         if task["error"] is not None:
-            print("[maxagent] 主线程执行异常:\n" + task["traceback"])
+            logger.error("主线程执行异常:\n%s", task["traceback"])
             raise task["error"]
         return task["result"]
 

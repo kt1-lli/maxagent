@@ -162,6 +162,10 @@ class AppConfig:
     # 启动 Max 时是否自动显示 MaxAgent 面板。False 时用户需手动调用
     # ``maxagent.startup.show_panel()`` 或 MaxScript ``g_show_max_agent()``
     auto_show_on_startup: bool = True
+    # 日志级别。可选 ``DEBUG`` / ``INFO`` / ``WARNING`` / ``ERROR``。
+    # 文件日志固定写 DEBUG 以上（最详细，方便事后回溯），控制台只输出
+    # 这里配置的级别。出问题时调成 ``DEBUG`` 抓现场即可。
+    log_level: str = "INFO"
 
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
@@ -179,6 +183,7 @@ class AppConfig:
             "wrap_undo": self.wrap_undo,
             "max_context_chars": self.max_context_chars,
             "auto_show_on_startup": self.auto_show_on_startup,
+            "log_level": self.log_level,
         }
 
     @classmethod
@@ -198,6 +203,12 @@ class AppConfig:
         cfg.max_context_chars = int(data.get("max_context_chars", 4000))
         cfg.auto_show_on_startup = bool(
             data.get("auto_show_on_startup", True)
+        )
+        # log_level 兼容老配置：缺失或非法值时回落 INFO
+        raw_level = str(data.get("log_level", "INFO") or "INFO").upper()
+        cfg.log_level = (
+            raw_level if raw_level in ("DEBUG", "INFO", "WARNING", "ERROR")
+            else "INFO"
         )
         return cfg
 

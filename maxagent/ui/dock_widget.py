@@ -39,6 +39,7 @@ from ..agent import AgentWorker
 from ..agent import Conversation
 from ..config import ConfigManager
 from ..llm_client import build_client_from_profile
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
@@ -57,6 +58,8 @@ from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
 from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .tool_block import ToolCallBlock as _ToolCallBlock
+
+logger = get_logger(__name__)
 
 QApplication = QtWidgets.QApplication
 
@@ -1024,7 +1027,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                     # 立刻持久化，避免下次启动重复注入
                     self._save_current_session(force=True)
         except Exception as exc:  # pylint: disable=broad-except
-            print('[maxagent] inject_restored_notice 异常: {}'.format(exc))
+            logger.warning('inject_restored_notice 异常: %s', exc)
         # 持久化最近一次会话 ID 到 ui_state
         try:
             self._ui_state.last_session_sid = sid
@@ -1106,7 +1109,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         try:
             self._session_mgr.save(self._current_session, self._conv)
         except OSError as exc:
-            print('[maxagent] 保存会话失败: {}'.format(exc))
+            logger.warning('保存会话失败: %s', exc)
             return
         # 刷新下拉但保持当前选中
         self._refresh_sessions_combo(select_sid=self._current_session.sid)
@@ -1195,7 +1198,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             from ..tools.learn_tools import set_approval_callback
             set_approval_callback(make_approval_callback(parent_widget=self))
         except Exception as exc:  # pylint: disable=broad-except
-            print('[maxagent] 注册学习审批回调失败: {}'.format(exc))
+            logger.warning('注册学习审批回调失败: %s', exc)
 
     def _on_example_picked(self, text):
         # 把示例文本填入输入框，让用户可以编辑后再发

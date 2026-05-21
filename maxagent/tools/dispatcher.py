@@ -23,11 +23,13 @@ from typing import Optional
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import run_on_main
 from ..runtime_helpers import undo_block
+from ..logger import get_logger
 from .registry import get_tool
-
 
 class ToolExecutionError(Exception):
     """工具执行异常。"""
+
+logger = get_logger(__name__)
 
 
 # 工具结果序列化后超过这个字节数时，会自动截断后再回灌给 LLM，
@@ -100,7 +102,7 @@ class ToolDispatcher(object):
             return _err(str(exc), "timeout")
         except Exception as exc:  # pylint: disable=broad-except
             tb = traceback.format_exc()
-            print("[maxagent] 工具 {} 执行异常:\n{}".format(tool_name, tb))
+            logger.error("工具 %s 执行异常:\n%s", tool_name, tb)
             return _err(
                 "{}: {}".format(type(exc).__name__, exc),
                 "exec_error",
