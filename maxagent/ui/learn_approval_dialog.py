@@ -33,13 +33,9 @@ QDialog#LearnApprovalDialog QLineEdit,
 QDialog#LearnApprovalDialog QPlainTextEdit,
 QDialog#LearnApprovalDialog QTextEdit {
     background-color:#252525; color:#d4d4d4;
-    border:1px solid #3c3c3c; border-radius:3px;
-    padding:4px;
 }
 QDialog#LearnApprovalDialog QPushButton {
     background-color:#4a4a4a; color:#fff;
-    border:1px solid #555; border-radius:4px;
-    padding:6px 14px; min-height:24px;
 }
 QDialog#LearnApprovalDialog QPushButton:hover { background-color:#5a5a5a; }
 QDialog#LearnApprovalDialog QPushButton#approveBtn {
@@ -121,7 +117,6 @@ class LearnApprovalDialog(QtWidgets.QDialog):
             ra_label.setWordWrap(True)
             ra_label.setStyleSheet(
                 'background:#252525;color:#bbb;'
-                'padding:6px;border-radius:3px;'
             )
             v.addWidget(ra_label)
 

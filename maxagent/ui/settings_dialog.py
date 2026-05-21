@@ -90,7 +90,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # base_url 静态体检提示（路径错填等常见问题）
         self.base_url_hint = QtWidgets.QLabel('')
-        self.base_url_hint.setStyleSheet('color:#b8923a; font-size:11px;')
+        self.base_url_hint.setStyleSheet('color:#b8923a;')
         self.base_url_hint.setWordWrap(True)
         self.base_url_hint.hide()
         right.addRow('', self.base_url_hint)
@@ -185,7 +185,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # === 全局应用设置（与 Profile 无关，作用于整个 MaxAgent）===
         sep_label = QtWidgets.QLabel('— 应用设置 —')
-        sep_label.setStyleSheet('color:#888; padding-top:6px;')
+        sep_label.setStyleSheet('color:#888;')
         right.addRow('', sep_label)
 
         self.auto_show_chk = QtWidgets.QCheckBox(

@@ -28,9 +28,7 @@ QApplication = QtWidgets.QApplication
 def _mini_btn_style():
     """所有"复制"等小辅助按钮统一用这个样式。"""
     return (
-        'QPushButton { background:transparent; color:#888;'
-        'border:1px solid #444; border-radius:3px;'
-        'padding:1px 6px; min-height:18px; font-size:9pt; }'
+        'QPushButton { background:transparent; color:#888; }'
         'QPushButton:hover { background:#333; color:#ddd; }'
     )
 
@@ -57,8 +55,7 @@ class BubbleFrame(QtWidgets.QFrame):
         self._bg = bg
         self._fg = fg
         self.setStyleSheet(
-            'QFrame {{ background:{bg}; color:{fg};'
-            'border-radius:10px; padding:0; }}'.format(bg=bg, fg=fg)
+            'QFrame {{ background:{bg}; color:{fg}; }}'.format(bg=bg, fg=fg)
         )
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Maximum,
@@ -298,11 +295,8 @@ class WelcomeBlock(QtWidgets.QWidget):
         for ex in self._EXAMPLES:
             btn = QtWidgets.QPushButton('💡 ' + ex)
             btn.setStyleSheet(
-                'QPushButton { background:#252525; color:#a0a0a0;'
-                'border:1px dashed #444; border-radius:4px;'
-                'padding:6px 10px; font-size:10pt; text-align:left; }'
-                'QPushButton:hover { background:#2d3d2d; color:#ddd;'
-                'border-color:#5a8a5a; }'
+                'QPushButton { background:#252525; color:#a0a0a0; }'
+                'QPushButton:hover { background:#2d3d2d; color:#ddd; }'
             )
             btn.clicked.connect(
                 lambda _checked=False, t=ex: self.example_picked.emit(t)

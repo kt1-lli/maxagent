@@ -40,9 +40,7 @@ class ToolCallBlock(QtWidgets.QWidget):
 
         container = QtWidgets.QFrame()
         container.setStyleSheet(
-            'QFrame { background:#252525; border-left:3px solid '
-            + ('#ffaa66' if dangerous else '#7fb3d5') + ';'
-            'border-radius:3px; }'
+            'QFrame { background:#252525; }'
         )
         cv = QtWidgets.QVBoxLayout(container)
         cv.setContentsMargins(8, 4, 8, 4)
@@ -60,8 +58,7 @@ class ToolCallBlock(QtWidgets.QWidget):
         self._head_btn.setFixedWidth(18)
         self._head_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._head_btn.setStyleSheet(
-            'QToolButton { background:transparent; color:#aaa;'
-            'border:none; padding:0; font-size:10pt; }'
+            'QToolButton { background:transparent; color:#aaa; }'
             'QToolButton:hover { color:#fff; }'
         )
         self._head_btn.clicked.connect(self._toggle)
@@ -71,8 +68,6 @@ class ToolCallBlock(QtWidgets.QWidget):
         self._head_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._head_label.setStyleSheet(
             'background:transparent; color:#d0d0d0;'
-            'font-family:Consolas,\'Courier New\',monospace;'
-            'font-size:10pt;'
         )
         self._head_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._head_label.mousePressEvent = self._on_label_clicked
@@ -91,8 +86,6 @@ class ToolCallBlock(QtWidgets.QWidget):
         self._args_label = ChatLabel(self._format_args_html(args_str))
         self._args_label.setStyleSheet(
             'background:#1a1a1a; color:#bbb;'
-            'font-family:Consolas,monospace; font-size:10pt;'
-            'padding:4px 8px; border-radius:3px;'
         )
         dv.addWidget(QtWidgets.QLabel(
             '<span style="color:#7fb3d5;font-size:9pt;">参数:</span>'
@@ -107,8 +100,6 @@ class ToolCallBlock(QtWidgets.QWidget):
         self._result_label = ChatLabel('')
         self._result_label.setStyleSheet(
             'background:#1a1a1a; color:#bbb;'
-            'font-family:Consolas,monospace; font-size:10pt;'
-            'padding:4px 8px; border-radius:3px;'
         )
         dv.addWidget(self._result_title)
         dv.addWidget(self._result_label)

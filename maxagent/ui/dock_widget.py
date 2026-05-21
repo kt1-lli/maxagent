@@ -68,109 +68,50 @@ QApplication = QtWidgets.QApplication
 # ---------------------------------------------------------------------- #
 _STYLE = """
 QWidget#MaxAgentDockWidget { background-color: #1e1e1e; }
-QScrollArea#chatScroll {
-    background-color: #1e1e1e;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-}
+QScrollArea#chatScroll { background-color: #1e1e1e; }
 QWidget#chatContent { background-color: #1e1e1e; }
 QPlainTextEdit, QTextEdit {
     background-color: #2b2b2b;
     color: #d4d4d4;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-    font-size: 11pt;
-    padding: 4px;
 }
 QPushButton {
     background-color: #4a4a4a;
     color: #ffffff;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 4px 12px;
-    min-height: 24px;
 }
 QPushButton:hover { background-color: #5a5a5a; }
 QPushButton:disabled { background-color: #333; color: #777; }
-/* 图标按钮：去掉横向 padding，让 emoji 完整显示 */
-QPushButton.iconBtn {
-    padding: 2px 4px;
-    min-height: 26px;
-}
 QToolButton.iconBtn {
-    padding: 2px 4px;
-    min-height: 26px;
     background-color: #4a4a4a;
     color: #ffffff;
-    border: 1px solid #555;
-    border-radius: 4px;
-    text-align: center;
 }
 QToolButton.iconBtn:hover { background-color: #5a5a5a; }
-QPushButton#sendBtn {
-    background-color: #2d7d46;
-    padding: 6px 8px;
-    min-height: 32px;
-}
+QPushButton#sendBtn { background-color: #2d7d46; }
 QPushButton#sendBtn:hover { background-color: #3a9c5a; }
-QPushButton#stopBtn {
-    background-color: #a93232;
-    padding: 6px 8px;
-    min-height: 32px;
-}
+QPushButton#stopBtn { background-color: #a93232; }
 QPushButton#stopBtn:hover { background-color: #c44040; }
 QPushButton.miniBtn {
     background-color: transparent;
     color: #888;
-    border: 1px solid #444;
-    border-radius: 3px;
-    padding: 1px 6px;
-    min-height: 18px;
-    font-size: 9pt;
 }
 QPushButton.miniBtn:hover { background-color: #333; color: #ddd; }
 QToolButton {
     background-color: transparent;
     color: #d0d0d0;
-    border: none;
-    text-align: left;
-    padding: 2px 4px;
-    font-family: Consolas, 'Courier New', monospace;
-    font-size: 10pt;
 }
 QToolButton:hover { color: #ffffff; }
 QComboBox {
     background-color: #3c3c3c;
     color: #d4d4d4;
-    border: 1px solid #555;
-    border-radius: 4px;
-    padding: 2px 8px;
-    min-height: 22px;
 }
 QLabel { color: #d4d4d4; }
 
-QSplitter::handle:vertical {
-    background-color: #3c3c3c;
-    height: 6px;
-    border-top: 1px solid #2a2a2a;
-    border-bottom: 1px solid #2a2a2a;
-}
+QSplitter::handle:vertical { background-color: #3c3c3c; }
 QSplitter::handle:vertical:hover { background-color: #5a8ab8; }
 QSplitter::handle:vertical:pressed { background-color: #6ba3d4; }
 
-QScrollBar:vertical {
-    background: #1e1e1e;
-    width: 10px;
-    margin: 0;
-}
-QScrollBar::handle:vertical {
-    background: #4a4a4a;
-    border-radius: 4px;
-    min-height: 30px;
-}
+QScrollBar:vertical { background: #1e1e1e; }
+QScrollBar::handle:vertical { background: #4a4a4a; }
 QScrollBar::handle:vertical:hover { background: #5a5a5a; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 """
 
 
@@ -497,9 +438,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             '超过上限时会自动裁剪最早的消息（保护 tool_call 配对与最近 4 条）。\n'
             '上限可在「设置」中按 Profile 调整。',
         )
-        self.context_label.setStyleSheet(
-            'color:#aaa;font-size:9pt;padding:0 4px;',
-        )
+        self.context_label.setStyleSheet('color:#aaa;')
         ctx_row.addWidget(self.context_label)
 
         # 累计用量（实际 LLM usage 反馈）
@@ -510,9 +449,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             '价格可在「设置」→ Profile 中按 USD/1M tokens 配置。\n'
             '点击复位累计值。',
         )
-        self.usage_label.setStyleSheet(
-            'color:#aaa;font-size:9pt;padding:0 8px;',
-        )
+        self.usage_label.setStyleSheet('color:#aaa;')
         self.usage_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.usage_label.mousePressEvent = self._on_usage_label_clicked
         ctx_row.addWidget(self.usage_label)
@@ -613,7 +550,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         # === 底部状态栏 ===
         self.status_label = QtWidgets.QLabel('准备就绪')
-        self.status_label.setStyleSheet('color:#888;font-size:10pt;')
+        self.status_label.setStyleSheet('color:#888;')
         outer.addWidget(self.status_label)
 
         # 欢迎语 / 历史回放由 _bootstrap_session() 在 __init__ 末尾负责
@@ -799,9 +736,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             _fmt(cur), _fmt(budget), msgs,
         )
         self.context_label.setText(text)
-        self.context_label.setStyleSheet(
-            'color:{};font-size:9pt;padding:0 4px;'.format(color),
-        )
+        self.context_label.setStyleSheet('color:{};'.format(color))
 
     def _on_history_trimmed(self, removed, current_tokens, budget_tokens):
         """worker 通知"已自动裁剪 N 条早期消息"。"""
