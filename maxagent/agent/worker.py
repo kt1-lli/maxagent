@@ -131,6 +131,9 @@ class AgentWorker(QObject):
         # 用标志位避免重复 connect 报 warning，也避免首次 disconnect 报 warning
         self._started_connected = False
 
+        # 首个流式 chunk 是否已到达：用于切换 UI 状态文本
+        self._first_chunk_seen = False
+
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
@@ -319,6 +322,11 @@ class AgentWorker(QObject):
                         0, {'role': 'system', 'content': addon},
                     )
             try:
+                self.status_changed.emit(
+                    '正在请求 LLM 推理…（流式输出，首字可能需几秒）',
+                )
+                # 首个 chunk 到达时再切换状态文本
+                self._first_chunk_seen = False
                 resp = self._llm.chat(
                     messages=messages,
                     tools=tools_schema,
@@ -494,6 +502,13 @@ class AgentWorker(QObject):
         """
         if not chunk:
             return
+        # 首字到达：通知 UI 切到"生成中"状态，让用户看到推理已开始
+        if not getattr(self, '_first_chunk_seen', False):
+            self._first_chunk_seen = True
+            try:
+                self.status_changed.emit('生成回复中…')
+            except Exception:  # pylint: disable=broad-except
+                pass
         with self._chunk_buf_lock:
             self._chunk_buf.append(chunk)
             total = sum(len(c) for c in self._chunk_buf)

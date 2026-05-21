@@ -1326,24 +1326,38 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _run_tool_sync(self, tool_name, arguments):
         """Worker 子线程通过此函数同步派回主线程执行 pymxs。
 
-        关键设计（优化C - 可重入安全）：
+        关键设计:
 
-        1. 主线程嵌套调用直接同步执行——避免 QTimer.singleShot 入队
+        1. **尊重 ``run_on_main_thread`` 标志**：纯 Python 工具
+           （如 ``list_skills`` / ``propose_new_tool``）声明
+           ``run_on_main_thread=False``，直接在子线程跑，不走主线程
+           marshal —— 这能避免主线程繁忙时这类轻量工具假装"超时"。
+        2. **主线程嵌套调用直接同步执行**——避免 QTimer.singleShot 入队
            导致的"主线程 → 等主线程"自死锁。
-        2. 子线程等待时**分片轮询**（每 100ms 醒一次），同时检查
-           ``self._worker._cancel_event``——这样用户点击"停止"按钮
-           能在 100ms 内中断等待，而不是傻等 300s 超时。
-        3. 超时从 300s 降到 120s。pymxs 单次工具执行如果真的超过
-           120s，多半已经卡死或陷入死循环，与其继续等不如尽早
-           ``raise``、把控制权还给用户。
-        4. 错误信息带上工具名 + 参数预览，方便定位是哪个调用阻塞。
+        3. **动态心跳超时**：子线程等待时分片轮询（每 100ms 醒一次），
+           除了检查取消标志，还会观察 ``done`` 信号。基础窗口 60s，
+           触发后自动延期一次（最多 5 次 = 累计 5 分钟），同时把
+           "等待中…X s" 心跳通过 ``status_changed`` 反馈给 UI，
+           让用户看到工具还在跑而不是卡死。LLM 推理时长本就不可控，
+           这套机制让超时不再是"要么误杀 list_skills、要么干等 5 分钟"
+           的二选一。
+        4. **错误信息**带上工具名 + 参数预览 + 累计等待时长，方便定位。
         """
-        # 分片等待参数
-        # - poll_interval: 100ms，平衡 CPU 占用和取消响应延迟
-        # - max_wait: 120s，工具单次执行硬上限
-        poll_interval = 0.1
-        max_wait = 120.0
+        from ..tools.registry import get_tool
 
+        # 0. 先看工具规格：不需要主线程的工具直接子线程跑
+        spec = get_tool(tool_name)
+        if spec is not None and not spec.run_on_main_thread:
+            return self._dispatcher.dispatch(tool_name, arguments)
+
+        # 1. 当前已在主线程：直接同步执行（嵌套调用安全路径）
+        cur_thread = QtCore.QThread.currentThread()
+        app = QApplication.instance()
+        main_thread = app.thread() if app is not None else None
+        if main_thread is None or cur_thread is main_thread:
+            return self._dispatcher.dispatch(tool_name, arguments)
+
+        # 2. 子线程 → 主线程派发
         result_box = {}
         done = threading.Event()
 
@@ -1357,37 +1371,73 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             finally:
                 done.set()
 
-        cur_thread = QtCore.QThread.currentThread()
-        app = QApplication.instance()
-        main_thread = app.thread() if app is not None else None
+        QtCore.QTimer.singleShot(0, _run_in_main)
 
-        if main_thread is None or cur_thread is main_thread:
-            # 当前已经在主线程：直接同步执行，避免事件队列嵌套死锁
-            _run_in_main()
-        else:
-            QtCore.QTimer.singleShot(0, _run_in_main)
-            # 分片等待：每个 poll_interval 醒一次，检查取消标志
-            cancel_event = getattr(self._worker, '_cancel_event', None)
-            elapsed = 0.0
-            while elapsed < max_wait:
+        # 3. 动态心跳等待
+        # 单次窗口 60s，累计上限 = 60s × (1 + max_extensions)
+        poll_interval = 0.1
+        base_window = 60.0
+        max_extensions = 5
+        cancel_event = getattr(self._worker, '_cancel_event', None)
+        worker = self._worker
+
+        def _emit_status(text):
+            """通过 worker 把心跳状态发到 UI（worker 在子线程，
+            status_changed 是 QueuedConnection 自动 marshal）。"""
+            if worker is None:
+                return
+            try:
+                worker.status_changed.emit(text)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+        extensions_used = 0
+        total_elapsed = 0.0
+        last_status_at = 0.0
+        while True:
+            window_elapsed = 0.0
+            while window_elapsed < base_window:
                 if done.wait(timeout=poll_interval):
                     break
-                # 用户点了"停止"——立刻 raise 让 worker 跳出工具循环
                 if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError(
                         '用户取消了工具 {} 的执行'.format(tool_name),
                     )
-                elapsed += poll_interval
-            if not done.is_set():
-                # 真正超时：给出可定位的错误
-                arg_preview = repr(arguments)
-                if len(arg_preview) > 120:
-                    arg_preview = arg_preview[:120] + '...'
-                raise RuntimeError(
-                    '工具 {} 在主线程执行超时（>{:.0f}s），参数: {}'.format(
-                        tool_name, max_wait, arg_preview,
+                window_elapsed += poll_interval
+                total_elapsed += poll_interval
+                # 每 5 秒推一次心跳给 UI（避免信号风暴）
+                if total_elapsed - last_status_at >= 5.0:
+                    last_status_at = total_elapsed
+                    _emit_status(
+                        '工具 {} 执行中…已用 {:.0f}s'.format(
+                            tool_name, total_elapsed,
+                        ),
+                    )
+
+            if done.is_set():
+                break
+
+            # 本轮窗口耗尽，决定是否延期
+            if extensions_used < max_extensions:
+                extensions_used += 1
+                _emit_status(
+                    '工具 {} 已运行 {:.0f}s，自动延期 ({}/{})…'.format(
+                        tool_name, total_elapsed,
+                        extensions_used, max_extensions,
                     ),
                 )
+                continue
+
+            # 真正超时：给出可定位错误
+            arg_preview = repr(arguments)
+            if len(arg_preview) > 120:
+                arg_preview = arg_preview[:120] + '...'
+            raise RuntimeError(
+                '工具 {} 在主线程执行超时（累计 {:.0f}s，已延期 {} 次），'
+                '参数: {}'.format(
+                    tool_name, total_elapsed, extensions_used, arg_preview,
+                ),
+            )
 
         if 'error' in result_box:
             raise result_box['error']
