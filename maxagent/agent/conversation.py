@@ -26,6 +26,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from .coding_rules import get_coding_rules
+
 
 # 默认系统提示词，告诉模型自己是 Max agent，使用工具
 DEFAULT_SYSTEM_PROMPT = """\
@@ -42,7 +44,7 @@ DEFAULT_SYSTEM_PROMPT = """\
 5. 工具调用失败时，根据返回的错误信息修正参数后重试，最多重试 2 次仍失败时\
    告知用户具体原因。
 6. 回答使用简体中文。涉及具体数值（位置 / 尺寸）时，注明单位（Max system unit）。
-"""
+""" + "\n" + get_coding_rules()
 
 
 # 跨语言字符 → token 的粗略系数（OpenAI tiktoken 实测均值）：
