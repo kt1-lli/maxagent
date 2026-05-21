@@ -191,11 +191,25 @@ def render_markdown(text):
             _flush_list()
             list_kind = None
             level = len(m.group(1))
-            content = _render_inline(html_escape(m.group(2)))
-            size_pt = max(11, 18 - (level - 1) * 2)
+            raw_content = m.group(2)
+            # 在 Unicode 圈圈数字 / 方块数字（① ② ❶ ⑴ 等）后面如果直接接
+            # CJK 文字，Qt RichText 在大字号 + 加粗时会把圈圈字符渲染成
+            # 偏大的方框，与下一个汉字重叠。统一在两类字符之间补一个
+            # 半角空格，避免视觉粘连。
+            raw_content = re.sub(
+                r'([\u2460-\u24FF\u2776-\u2793\u3251-\u32BF])'
+                r'([\u4e00-\u9fff])',
+                r'\1 \2',
+                raw_content,
+            )
+            content = _render_inline(html_escape(raw_content))
+            # 字号收敛：h1=14, h2=13, h3=12, h4+=11，避免大字号引起 emoji
+            # / 圈圈字符的方块外溢。line-height 给行高留呼吸空间。
+            size_pt = max(11, 15 - level)
             out.append(
                 '<div style="font-size:{sz}pt;font-weight:bold;'
-                'margin:8px 0 4px 0;color:#ffffff;">{c}</div>'.format(
+                'margin:8px 0 4px 0;line-height:1.5;color:#ffffff;">'
+                '{c}</div>'.format(
                     sz=size_pt, c=content,
                 )
             )
