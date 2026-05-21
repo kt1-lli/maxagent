@@ -62,7 +62,6 @@ class LearnApprovalDialog(QtWidgets.QDialog):
         self.setObjectName('LearnApprovalDialog')
         self.setWindowTitle('🧠 MaxAgent · 工具学习审批')
         self.setStyleSheet(_DIALOG_STYLE)
-        self.setMinimumSize(680, 560)
         self._proposal = proposal or {}
         self._original_code = proposal.get('code', '') or ''
         self._verdict = {

@@ -40,7 +40,6 @@ class SettingsDialog(QtWidgets.QDialog):
         super(SettingsDialog, self).__init__(parent)
         self._config = config_manager
         self.setWindowTitle('MaxAgent 设置')
-        self.setMinimumSize(720, 460)
         self._build_ui()
         self._reload_profiles()
         self._dirty = False
@@ -106,7 +105,6 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         key_row.addWidget(self.api_key_edit, 1)
         self.show_key_btn = QtWidgets.QPushButton('👁')
-        self.show_key_btn.setFixedWidth(28)
         self.show_key_btn.setCheckable(True)
         self.show_key_btn.toggled.connect(self._toggle_key_visible)
         key_row.addWidget(self.show_key_btn)
@@ -177,7 +175,6 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # 高级：自定义 header
         self.headers_edit = QtWidgets.QPlainTextEdit()
-        self.headers_edit.setFixedHeight(60)
         self.headers_edit.setPlaceholderText(
             '可选：每行一个 KEY=VALUE，例如\nX-Org-Id=foo\n',
         )

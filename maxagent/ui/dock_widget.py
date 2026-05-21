@@ -118,44 +118,6 @@ QScrollBar::handle:vertical:hover { background: #5a5a5a; }
 # ---------------------------------------------------------------------- #
 # UI 适配辅助
 # ---------------------------------------------------------------------- #
-def _fit_button_to_text(btn, extra_padding=32, min_width=36, height=28):
-    """根据按钮当前文字 + 字体度量动态设置最小宽高，避免被 stylesheet padding 裁切。
-
-    Max 内嵌 PySide 在不同 DPI / 中文字体环境下，emoji 和中文的字体度量
-    与桌面 PySide 差异很大，硬编码 ``setMinimumWidth`` 在某些机器上会
-    出现"🚀 发送" → "发"的截断现象。这里用 ``QFontMetrics.horizontalAdvance``
-    实测当前字体下的文字宽度，再叠加 stylesheet 的 padding 与一个安全
-    余量，得到真正不会被裁的最小宽度。
-
-    :param btn: ``QPushButton`` 或 ``QToolButton``
-    :param extra_padding: 横向额外预留量（含 stylesheet padding + 边框 + 安全余量）
-    :param min_width: 即使文字很短也至少这么宽（用于纯图标按钮）
-    :param height: 按钮最小高度，统一视觉
-    """
-    text = btn.text() or ''
-    # 按字符数估算下限：中文/emoji 14px，ASCII 7px。这是兜底，
-    # 防止某些字体度量异常返回过小值导致按钮被裁。
-    char_lower = sum(14 if ord(c) > 127 else 7 for c in text) + extra_padding
-    measured = 0
-    try:
-        fm = btn.fontMetrics()
-        if hasattr(fm, 'horizontalAdvance'):
-            text_w = fm.horizontalAdvance(text)
-        else:  # pragma: no cover - 仅老 PySide2 走这里
-            text_w = fm.width(text)
-        # emoji 字形在某些 Max 字体里实际渲染宽度比度量值大 ~30%，再放大一点
-        measured = int(text_w * 1.15) + extra_padding
-    except Exception:  # pylint: disable=broad-except
-        # 辅助函数永远不应让 UI 构造崩溃，失败时用字符估算兜底
-        measured = 0
-    target_w = max(min_width, char_lower, measured)
-    try:
-        btn.setMinimumWidth(target_w)
-        btn.setMinimumHeight(height)
-    except Exception:  # pylint: disable=broad-except
-        pass
-
-
 # ---------------------------------------------------------------------- #
 class _ChatRenderer(QtCore.QObject):
     """管理消息列表区的所有气泡 widget。
@@ -359,11 +321,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         top.addWidget(self.profile_combo, 1)
         # 重加载用纯图标 + tooltip，避免在窄面板下被截断
         self.reload_btn = QtWidgets.QPushButton('🔄')
-        # 加 iconBtn class 让 stylesheet 走零横向 padding 分支，
-        # 再用 _fit_button_to_text 实测字体度量得到真正不会裁切的宽度
         self.reload_btn.setProperty('class', 'iconBtn')
-        _fit_button_to_text(self.reload_btn, extra_padding=20, min_width=40)
-        self.reload_btn.setMaximumWidth(56)
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
             '会保存当前会话与 UI 状态、关闭面板、清空模块缓存后重新加载。\n'
@@ -372,7 +330,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
         self.settings_btn = QtWidgets.QPushButton('⚙ 设置')
-        _fit_button_to_text(self.settings_btn, extra_padding=36, min_width=84)
         self.settings_btn.setToolTip('打开设置面板（Profile / API Key / 应用开关）')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -385,8 +342,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.new_session_btn = QtWidgets.QPushButton('➕')
         self.new_session_btn.setProperty('class', 'iconBtn')
         self.new_session_btn.setToolTip('开启一个新的空白对话')
-        _fit_button_to_text(self.new_session_btn, extra_padding=20, min_width=40)
-        self.new_session_btn.setMaximumWidth(56)
         self.new_session_btn.clicked.connect(self._on_new_session)
         sess_row.addWidget(self.new_session_btn)
 
@@ -412,8 +367,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.session_menu_btn.setText('⋯')
         self.session_menu_btn.setProperty('class', 'iconBtn')
         self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
-        _fit_button_to_text(self.session_menu_btn, extra_padding=24, min_width=44)
-        self.session_menu_btn.setMaximumWidth(56)
         self.session_menu_btn.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
         )
@@ -459,8 +412,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 压缩按钮：纯图标，避免把"📊 上下文"/"💰 用量"挤到换行
         self.compress_btn = QtWidgets.QPushButton('🗜')
         self.compress_btn.setProperty('class', 'iconBtn')
-        _fit_button_to_text(self.compress_btn, extra_padding=20, min_width=40)
-        self.compress_btn.setMaximumWidth(56)
         self.compress_btn.setToolTip(
             '压缩对话：让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
             '适合长对话节省 token，但会失去早期细节。',
@@ -520,13 +471,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
         self.send_btn = QtWidgets.QPushButton('🚀  发送')
         self.send_btn.setObjectName('sendBtn')
-        # Max 高 DPI 下中文+emoji 字体度量偏大，给足空间避免文字被裁。
-        # extra_padding 取 60 是 sendBtn 自带 padding:6px 8px + emoji 与中文
-        # 字符在 Max 内嵌字体下的额外渲染余量；min_width 160 保证窄面板下
-        # 也不会被父布局压缩到无法容纳"🚀  发送"四字 + emoji。
-        _fit_button_to_text(
-            self.send_btn, extra_padding=60, min_width=160, height=36,
-        )
         # 占满整行，避免窄面板下被父布局压缩成"发"
         self.send_btn.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,

@@ -55,7 +55,6 @@ class ToolCallBlock(QtWidgets.QWidget):
         self._head_btn.setCheckable(True)
         self._head_btn.setChecked(False)
         self._head_btn.setText('▶')
-        self._head_btn.setFixedWidth(18)
         self._head_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._head_btn.setStyleSheet(
             'QToolButton { background:transparent; color:#aaa; }'
