@@ -110,14 +110,12 @@ QToolButton.iconBtn {
 QToolButton.iconBtn:hover { background-color: #5a5a5a; }
 QPushButton#sendBtn {
     background-color: #2d7d46;
-    font-weight: bold;
     padding: 6px 8px;
     min-height: 32px;
 }
 QPushButton#sendBtn:hover { background-color: #3a9c5a; }
 QPushButton#stopBtn {
     background-color: #a93232;
-    font-weight: bold;
     padding: 6px 8px;
     min-height: 32px;
 }
@@ -585,8 +583,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
         self.send_btn = QtWidgets.QPushButton('🚀  发送')
         self.send_btn.setObjectName('sendBtn')
-        # Max 高 DPI 下中文+emoji+粗体字体度量偏大，给足空间避免文字被裁
-        # extra_padding 取 60 是因为 sendBtn 自带 padding:6px 8px 与粗体增宽
+        # Max 高 DPI 下中文+emoji 字体度量偏大，给足空间避免文字被裁。
+        # extra_padding 取 60 是 sendBtn 自带 padding:6px 8px + emoji 与中文
+        # 字符在 Max 内嵌字体下的额外渲染余量；min_width 160 保证窄面板下
+        # 也不会被父布局压缩到无法容纳"🚀  发送"四字 + emoji。
         _fit_button_to_text(
             self.send_btn, extra_padding=60, min_width=160, height=36,
         )
