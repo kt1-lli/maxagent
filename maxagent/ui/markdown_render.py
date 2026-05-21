@@ -329,3 +329,56 @@ def extract_code_blocks(text):
             i += 1
         blocks.append((lang.strip(), '\n'.join(buf)))
     return blocks
+
+
+# ---------------------------------------------------------------------- #
+# 段落切分：把 markdown 文本切成 [('text', md), ('code', lang, code), ...]
+# 用途：UI 把代码块渲染为独立 widget，方便用户精确选中、复制
+# ---------------------------------------------------------------------- #
+def split_into_segments(text):
+    # type: (str) -> List[Tuple]
+    """把 markdown 文本按代码块切分。
+
+    返回列表，每项是：
+    - ``('text', md_string)``  普通文本段（含其他 markdown 元素）
+    - ``('code', lang, code)`` 围栏代码块
+
+    切分原则：保留原始顺序；普通文本段交给 render_markdown 渲染；
+    代码段交给上层独立 widget 处理（不再 HTML 化）。
+
+    :param text: 原始 LLM 输出
+    :return: 段落序列
+    """
+    if not text:
+        return []
+    segments = []  # type: List[Tuple]
+    lines = text.split('\n')
+    i = 0
+    n = len(lines)
+    text_buf = []  # type: List[str]
+
+    def _flush_text():
+        if text_buf:
+            segments.append(('text', '\n'.join(text_buf)))
+            del text_buf[:]
+
+    while i < n:
+        m = _RE_FENCE_OPEN.match(lines[i])
+        if not m:
+            text_buf.append(lines[i])
+            i += 1
+            continue
+        # 遇到代码块开围栏
+        _flush_text()
+        lang = (m.group(1) or '').strip()
+        i += 1
+        code_lines = []
+        while i < n and not _RE_FENCE_CLOSE.match(lines[i]):
+            code_lines.append(lines[i])
+            i += 1
+        if i < n:
+            i += 1
+        segments.append(('code', lang, '\n'.join(code_lines)))
+
+    _flush_text()
+    return segments

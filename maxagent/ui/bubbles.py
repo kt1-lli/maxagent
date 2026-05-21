@@ -16,10 +16,12 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from ..qt_compat import QtCore
+from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
 from .markdown_render import render_markdown
+from .markdown_render import split_into_segments
 
 
 QApplication = QtWidgets.QApplication
@@ -204,14 +206,119 @@ class ChatLabel(QtWidgets.QLabel):
 
 
 # ---------------------------------------------------------------------- #
+# 代码块独立 widget（问题 3）
+# 让代码与正文分离，方便用户精确选中、整块复制、避免被 RichText 噪音干扰
+# ---------------------------------------------------------------------- #
+class _CodeBlockWidget(QtWidgets.QWidget):
+    """单个代码块的独立组件。
+
+    设计：
+    - 顶部条：语言标签 + 复制按钮
+    - 主体：QPlainTextEdit 只读模式，等宽字体，纯文本（无 HTML 噪音），
+      用户三击全选、Ctrl+C 复制都按代码编辑器习惯响应
+    - 自动撑高：根据行数计算高度，不出滚动条（除非超过上限）
+
+    与原 <pre> 内嵌方案对比：
+    - 原方案：整段被当作 RichText 渲染，选中代码会带上前后正文文本
+    - 现方案：QPlainTextEdit 是独立焦点单元，只能选中代码本身
+    """
+
+    # 单个代码块在气泡内最大显示高度（超出走滚动条），单位像素
+    _MAX_HEIGHT = 360
+
+    def __init__(self, lang, code, parent=None):
+        # type: (str, str, QtWidgets.QWidget) -> None
+        super(_CodeBlockWidget, self).__init__(parent)
+        self._code = code or ''
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.setSpacing(0)
+
+        # 顶部条：语言名称 + 复制按钮
+        head = QtWidgets.QWidget(self)
+        head.setStyleSheet(
+            'QWidget { background:#252525; }'
+        )
+        head_h = QtWidgets.QHBoxLayout(head)
+        head_h.setContentsMargins(8, 2, 4, 2)
+        head_h.setSpacing(6)
+
+        lang_label = (lang or '').strip() or 'code'
+        lbl = QtWidgets.QLabel('⌨ {}'.format(lang_label))
+        lbl.setStyleSheet(
+            'QLabel { color:#888; background:transparent; }'
+        )
+        head_h.addWidget(lbl)
+        head_h.addStretch(1)
+
+        copy_btn = QtWidgets.QPushButton('复制代码')
+        copy_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        copy_btn.setStyleSheet(_mini_btn_style())
+        # 用 default arg 锁定当前 code，避免 lambda 闭包陷阱
+        copy_btn.clicked.connect(
+            lambda _checked=False, c=self._code: _copy_to_clipboard(c)
+        )
+        head_h.addWidget(copy_btn)
+
+        outer.addWidget(head)
+
+        # 主体：QPlainTextEdit 只读纯文本
+        editor = QtWidgets.QPlainTextEdit(self)
+        editor.setReadOnly(True)
+        editor.setPlainText(self._code)
+        editor.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap
+        )
+        # 等宽字体；不同平台 fallback
+        font = QtGui.QFont('Consolas')
+        font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        font.setPointSize(10)
+        editor.setFont(font)
+        editor.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        editor.setStyleSheet(
+            'QPlainTextEdit { background:#1a1a1a; color:#e0e0e0; }'
+        )
+        editor.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        editor.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        # 自适应高度：行数 * 行高 + padding，超过 _MAX_HEIGHT 出滚动条
+        self._auto_resize_editor(editor)
+        outer.addWidget(editor)
+        self._editor = editor
+
+    def _auto_resize_editor(self, editor):
+        """根据代码行数估算一个合理高度，避免每个代码块占满屏。"""
+        line_count = max(1, self._code.count('\n') + 1)
+        fm = QtGui.QFontMetrics(editor.font())
+        line_h = fm.lineSpacing()
+        # 代码 padding 上下 6 + 6，再加 4 像素余量
+        total = line_count * line_h + 16
+        if total > self._MAX_HEIGHT:
+            total = self._MAX_HEIGHT
+        editor.setFixedHeight(total)
+
+
+# ---------------------------------------------------------------------- #
 # 流式助手气泡：chunk 增量 append，结束后 markdown 重渲染
 # ---------------------------------------------------------------------- #
 class StreamingAssistantBubble(QtWidgets.QWidget):
     """正在流式接收的助手气泡。
 
-    流式过程中显示 plain text（避免 markdown 半截解析的闪烁），
-    end_streaming() 时一次性切换到 markdown 渲染的 HTML。
+    性能要点（问题 1 根因修复）：
+    - 旧版用 QLabel + 每次 setText(整个 buffer)，是 O(N²) 的：
+      回复越长，每个 chunk 重排版越久，主线程被持续打断 → 卡顿。
+    - 新版用 QPlainTextEdit.appendPlainText，每个 chunk 只追加新增
+      字符（O(chunk_len)），不再重渲染历史文本。
+    - 流式期间不做 markdown 解析，end_streaming() 时上层会用
+      _AssistantBubble 重渲染，那时才做一次性的 markdown / 代码块拆分。
     """
+
+    # 自适应高度上限：超过则出滚动条；保证单次 LLM 长回复不撑爆面板
+    _MAX_HEIGHT = 480
 
     def __init__(self, parent=None):
         super(StreamingAssistantBubble, self).__init__(parent)
@@ -225,8 +332,27 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         )
         head.setStyleSheet('background:transparent;')
         self._bubble.add_widget(head)
-        self._label = ChatLabel('')
-        self._bubble.add_widget(self._label)
+
+        # 用 QPlainTextEdit 替代 QLabel：appendPlainText 是 O(chunk)
+        self._editor = QtWidgets.QPlainTextEdit()
+        self._editor.setReadOnly(True)
+        self._editor.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._editor.setStyleSheet(
+            'QPlainTextEdit { background:transparent; color:#d4ead4; }'
+        )
+        self._editor.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
+        self._editor.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._editor.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        # 初始高度先小一点，等内容多了再 _grow_height
+        self._editor.setFixedHeight(28)
+        self._bubble.add_widget(self._editor)
+
         outer.addWidget(self._bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         outer.addStretch(1)
         self._buffer = ''
@@ -234,11 +360,39 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
 
     def append_chunk(self, chunk):
         # type: (str) -> None
+        """O(chunk_len) 增量追加，不再 rebuild 整个 buffer。"""
         if not chunk or self._closed:
             return
         self._buffer += chunk
-        body = html_escape(self._buffer).replace('\n', '<br>')
-        self._label.setText(body)
+        # insertPlainText 在光标处插入；先把光标移到末尾
+        cursor = self._editor.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        cursor.insertText(chunk)
+        self._editor.setTextCursor(cursor)
+        # 自适应高度（不超过上限），按行数估算
+        self._grow_height()
+
+    def _grow_height(self):
+        """根据当前内容行数把 editor 撑到合适高度，封顶 _MAX_HEIGHT。"""
+        try:
+            # documentLayout 反映已排版的真实高度
+            h = int(
+                self._editor.document()
+                .documentLayout()
+                .documentSize()
+                .height()
+            ) + 12
+        except Exception:  # pylint: disable=broad-except
+            # 兜底：行数 * 行高估算
+            fm = QtGui.QFontMetrics(self._editor.font())
+            line_count = max(1, self._buffer.count('\n') + 1)
+            h = line_count * fm.lineSpacing() + 12
+        if h > self._MAX_HEIGHT:
+            h = self._MAX_HEIGHT
+        if h < 28:
+            h = 28
+        if self._editor.height() != h:
+            self._editor.setFixedHeight(h)
 
     def end_streaming(self):
         # type: () -> str
@@ -264,7 +418,10 @@ class AssistantBubble(QtWidgets.QWidget):
 
         bubble = BubbleFrame(align='left', bg='#2d3d2d', fg='#d4ead4')
 
-        # 标题行：[🤖 助手]  [复制] [复制代码]
+        # 标题行：[🤖 助手]  [复制全部]
+        # 注：代码块的复制按钮挂在每个 _CodeBlockWidget 自己头上，
+        # 这里只保留"复制全部回复"一个全局按钮，避免标题栏被一堆
+        # "代码1/代码2/..." 按钮挤爆。
         title_row = QtWidgets.QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
@@ -275,35 +432,31 @@ class AssistantBubble(QtWidgets.QWidget):
         title_row.addWidget(head)
         title_row.addStretch(1)
 
-        copy_btn = QtWidgets.QPushButton('复制')
+        copy_btn = QtWidgets.QPushButton('复制全部')
         copy_btn.setStyleSheet(_mini_btn_style())
         copy_btn.clicked.connect(lambda: _copy_to_clipboard(text))
         title_row.addWidget(copy_btn)
 
-        # 如果包含代码块，加"复制代码"按钮
-        code_blocks = extract_code_blocks(text)
-        if len(code_blocks) == 1:
-            code_btn = QtWidgets.QPushButton('复制代码')
-            code_btn.setStyleSheet(_mini_btn_style())
-            code_btn.clicked.connect(
-                lambda: _copy_to_clipboard(code_blocks[0][1])
-            )
-            title_row.addWidget(code_btn)
-        elif len(code_blocks) > 1:
-            for idx, (_lang, _code) in enumerate(code_blocks):
-                btn = QtWidgets.QPushButton('代码{}'.format(idx + 1))
-                btn.setStyleSheet(_mini_btn_style())
-                btn.clicked.connect(
-                    lambda _checked=False, c=_code: _copy_to_clipboard(c)
-                )
-                title_row.addWidget(btn)
-
         bubble.add_layout(title_row)
 
-        # 正文：markdown 渲染
-        body = render_markdown(text)
-        label = ChatLabel(body)
-        bubble.add_widget(label)
+        # 正文：按 markdown 切分段落，代码块独立成 widget（问题 3）
+        # 这样用户能精确选中代码而不会带上前后正文。
+        segments = split_into_segments(text)
+        if not segments:
+            # 兜底：空回复也至少显示一个空 label，保持气泡布局稳定
+            bubble.add_widget(ChatLabel(''))
+        else:
+            for seg in segments:
+                if seg[0] == 'code':
+                    _, lang, code = seg
+                    bubble.add_widget(_CodeBlockWidget(lang, code))
+                else:
+                    _, md_text = seg
+                    md_text = md_text.strip('\n')
+                    if not md_text:
+                        continue
+                    body = render_markdown(md_text)
+                    bubble.add_widget(ChatLabel(body))
 
         outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         outer.addStretch(1)

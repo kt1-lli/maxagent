@@ -47,9 +47,7 @@ from ..sessions import SessionMeta
 from ..skills import SkillManager
 from ..tools import ToolDispatcher
 from ..ui_state import UIStateManager
-from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
-from .markdown_render import render_markdown
 from .bubbles import AssistantBubble as _AssistantBubble
 from .bubbles import BubbleFrame as _BubbleFrame  # noqa: F401
 from .bubbles import ChatLabel as _ChatLabel  # noqa: F401
@@ -204,6 +202,16 @@ class _ChatRenderer(QtCore.QObject):
     def _scroll_to_bottom(self):
         bar = self._scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def scroll_to_bottom_force(self):
+        """对外强制滚动到底（供切换会话时调用）。
+
+        与内部 _scroll_to_bottom 区别：
+        - 不依赖 _is_at_bottom 判定，无条件跳到最新一条；
+        - 用 0ms QTimer 延迟一帧，等所有 widget 完成 layout
+          后再设置 scrollbar，否则 maximum 还未刷新会跳错位置。
+        """
+        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
     # ------------------------------------------------------------------ #
     # 消息接口
@@ -1023,6 +1031,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._replay_messages(conv)
         # 刷新 token 状态显示
         self._refresh_context_label()
+        # 切会话后无条件跳到最新一条（问题 4）
+        self._renderer.scroll_to_bottom_force()
         return True
 
     def _replay_messages(self, conv):

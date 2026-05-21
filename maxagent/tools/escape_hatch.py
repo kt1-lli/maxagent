@@ -34,6 +34,10 @@ from .registry import tool
         "适用于预定义工具未覆盖的场景，例如复杂的修改器栈操作、特殊插件调用、"
         "查询冷门属性等。注意：写出的代码会作为 rt.execute() 的字符串执行，"
         "请注意 MaxScript 字符串转义。"
+        "\n⚠️ 生成 MaxScript 必须遵守系统提示词【MaxScript 专用规则】："
+        "所有变量用 local/global 显式声明；函数用 return 显式返回；"
+        "if 有 else 用 then/else，无 else 用 do；for 用 in/=...to/collect；"
+        "数组索引从 1 开始；标识符用英文 camelCase；注释用中文。"
     ),
     category="escape_hatch",
     dangerous=True,
@@ -78,6 +82,12 @@ def run_maxscript(code):
         "执行环境中已可用：pymxs、rt（=pymxs.runtime）。"
         "可以通过 print() 输出，所有 stdout 会被捕获并返回。"
         "若需要返回值，请把结果赋给变量 result。"
+        "\n⚠️ 生成 Python 必须遵守系统提示词【Python+pymxs 专用规则】："
+        "from pymxs import runtime as rt（无需重新写，已注入）；"
+        "比较 pymxs 对象用 == 不用 is；访问 pymxs 数组用 0-based、"
+        "传索引给 MaxScript 函数用 1-based；MaxScript Name 写成 rt.Name('xxx')；"
+        "动画/撤销上下文用 with pymxs.animate(True): / with pymxs.undo(True):；"
+        "标识符用英文 camelCase；注释用中文。"
     ),
     category="escape_hatch",
     dangerous=True,
