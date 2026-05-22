@@ -321,18 +321,18 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
     # 自适应高度上限：超过则出滚动条；保证单次 LLM 长回复不撑爆面板
     _MAX_HEIGHT = 480
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, employee=None):
         super(StreamingAssistantBubble, self).__init__(parent)
         outer = QtWidgets.QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._bubble = BubbleFrame(
             align='left', bg='#2d3d2d', fg='#d4ead4',
         )
-        head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">{} 助手</span>'.format(
-                _ee('🤖'),
-            )
-        )
+        # 助手头部：员工档案（名字 + 头像）。employee=None 时用默认值，
+        # 实现"换皮"——LLM 行为完全不动，只改 UI 视觉。
+        from .employee import Employee as _Employee
+        emp = employee if employee is not None else _Employee()
+        head = QtWidgets.QLabel(emp.display_html())
         head.setStyleSheet('background:transparent;')
         self._bubble.add_widget(head)
 
@@ -435,25 +435,25 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
 class AssistantBubble(QtWidgets.QWidget):
     """已完成的助手回复气泡，渲染 markdown，并附带复制按钮。"""
 
-    def __init__(self, text, parent=None):
+    def __init__(self, text, parent=None, employee=None):
         super(AssistantBubble, self).__init__(parent)
         outer = QtWidgets.QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
         bubble = BubbleFrame(align='left', bg='#2d3d2d', fg='#d4ead4')
 
-        # 标题行：[🤖 助手]  [复制全部]
+        # 标题行：[头像 员工名]  [复制全部]
         # 注：代码块的复制按钮挂在每个 _CodeBlockWidget 自己头上，
         # 这里只保留"复制全部回复"一个全局按钮，避免标题栏被一堆
         # "代码1/代码2/..." 按钮挤爆。
         title_row = QtWidgets.QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
-        head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">{} 助手</span>'.format(
-                _ee('🤖'),
-            )
-        )
+        # 助手头部：员工档案（名字 + 头像）。employee=None 时用默认值，
+        # 实现"换皮"——LLM 行为完全不动，只改 UI 视觉。
+        from .employee import Employee as _Employee
+        emp = employee if employee is not None else _Employee()
+        head = QtWidgets.QLabel(emp.display_html())
         head.setStyleSheet('background:transparent;')
         title_row.addWidget(head)
         title_row.addStretch(1)

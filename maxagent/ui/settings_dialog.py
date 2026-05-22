@@ -86,6 +86,7 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('🤖') + '  模型', 'model'),
         (_ee('🌐') + '  联网', 'network'),
         (_ee('🎨') + '  应用', 'app'),
+        (_ee('👤') + '  助手形象', 'employee'),
         (_ee('📋') + '  我的规则', 'rules'),
         (_ee('📜') + '  日志', 'log'),
         (_ee('❓') + '  帮助', 'help'),
@@ -134,6 +135,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_model())
         self.stack.addWidget(self._build_page_network())
         self.stack.addWidget(self._build_page_app())
+        self.stack.addWidget(self._build_page_employee())
         self.stack.addWidget(self._build_page_rules())
         self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_help())
@@ -572,7 +574,17 @@ class SettingsDialog(QtWidgets.QDialog):
         return page
 
     # ================================================================== #
-    # Page 4: 日志
+    # Page 4: 助手形象（员工档案——纯 UI 皮肤）
+    # ================================================================== #
+    def _build_page_employee(self):
+        # type: () -> QtWidgets.QWidget
+        from .employee_tab import EmployeeTab
+        # 把整个 Tab 实现委托给独立模块，保持 settings_dialog 不膨胀
+        tab = EmployeeTab(self._config, parent=self)
+        return tab
+
+    # ================================================================== #
+    # Page 5: 日志
     # ================================================================== #
     def _build_page_log(self):
         # type: () -> QtWidgets.QWidget

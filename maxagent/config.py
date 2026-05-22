@@ -183,6 +183,20 @@ class AppConfig:
     # Bing API Key（仅 backend=bing_api 时需要）
     bing_api_key: str = ""
 
+    # ---------- 员工档案（纯 UI 皮肤，不影响 LLM）---------- #
+    # "岗位"是 MaxAgent（写死在 system prompt，不可改）；
+    # "员工"是用户自定义的对外形象——名字 + 头像。
+    # 这些字段只影响对话气泡的视觉表达，LLM 完全不知情。
+    # 默认 employee_name = "助手"（保持现状的视觉语义）。
+    employee_name: str = "助手"
+    # 头像类型："emoji" 用 emoji 字符，"image" 用上传的 PNG 图片
+    employee_avatar_kind: str = "emoji"
+    # emoji 模式时使用的字符（兼容 _ee() 兜底）
+    employee_avatar_emoji: str = "🤖"
+    # image 模式时存的相对文件名，固定为 "avatar.png"，
+    # 实际路径 = config_dir + filename
+    employee_avatar_image: str = ""
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -205,6 +219,10 @@ class AppConfig:
             "web_search_max_results": self.web_search_max_results,
             "web_fetch_page_text": self.web_fetch_page_text,
             "bing_api_key": self.bing_api_key,
+            "employee_name": self.employee_name,
+            "employee_avatar_kind": self.employee_avatar_kind,
+            "employee_avatar_emoji": self.employee_avatar_emoji,
+            "employee_avatar_image": self.employee_avatar_image,
         }
 
     @classmethod
@@ -253,6 +271,22 @@ class AppConfig:
             data.get("web_fetch_page_text", True),
         )
         cfg.bing_api_key = str(data.get("bing_api_key", "") or "")
+        # ---- 员工档案（纯 UI 皮肤）---- #
+        cfg.employee_name = str(
+            data.get("employee_name", "助手") or "助手",
+        ).strip() or "助手"
+        kind = str(
+            data.get("employee_avatar_kind", "emoji") or "emoji",
+        ).lower()
+        cfg.employee_avatar_kind = (
+            kind if kind in ("emoji", "image") else "emoji"
+        )
+        cfg.employee_avatar_emoji = str(
+            data.get("employee_avatar_emoji", "🤖") or "🤖",
+        )
+        cfg.employee_avatar_image = str(
+            data.get("employee_avatar_image", "") or "",
+        )
         return cfg
 
 

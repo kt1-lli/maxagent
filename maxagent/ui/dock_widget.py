@@ -178,7 +178,7 @@ class _ChatRenderer(QtCore.QObject):
     example_picked = QtCore.Signal(str)
 
     def __init__(self, scroll_area, content_widget, content_layout,
-                 parent=None):
+                 parent=None, employee_provider=None):
         super(_ChatRenderer, self).__init__(parent)
         self._scroll = scroll_area
         self._content = content_widget
@@ -188,6 +188,10 @@ class _ChatRenderer(QtCore.QObject):
         self._streaming = None  # type: Optional[_StreamingAssistantBubble]
         # 流式期间的滚动节流标志：避免每个 chunk 都派 timer
         self._scroll_pending = False
+        # 员工档案 provider：每次创建助手气泡时调用，得到当前最新的
+        # Employee 视图。这样改完员工设置后，下一条新气泡立即生效，
+        # 已渲染的旧气泡保持原状（避免遍历刷新带来的复杂度）。
+        self._employee_provider = employee_provider
 
     # ------------------------------------------------------------------ #
     # 底部追加（在 stretch 之前）
@@ -228,6 +232,21 @@ class _ChatRenderer(QtCore.QObject):
         """
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
+    def _current_employee(self):
+        """返回当前的员工档案视图。
+
+        provider 为 None 或返回异常时回落到默认 Employee（"助手" + 🤖），
+        确保气泡渲染永不因配置异常而崩。
+        """
+        from .employee import Employee as _Employee
+        if self._employee_provider is None:
+            return _Employee()
+        try:
+            emp = self._employee_provider()
+        except Exception:  # pylint: disable=broad-except
+            return _Employee()
+        return emp if emp is not None else _Employee()
+
     # ------------------------------------------------------------------ #
     # 消息接口
     # ------------------------------------------------------------------ #
@@ -238,7 +257,7 @@ class _ChatRenderer(QtCore.QObject):
     def add_assistant_start(self):
         """开始一段助手回复气泡，后续 chunk 会增量追加。"""
         self._close_streaming_if_any()
-        bubble = _StreamingAssistantBubble()
+        bubble = _StreamingAssistantBubble(employee=self._current_employee())
         self._streaming = bubble
         self._append(bubble)
 
@@ -272,7 +291,7 @@ class _ChatRenderer(QtCore.QObject):
         bubble.setParent(None)
         bubble.deleteLater()
         if text.strip():
-            final = _AssistantBubble(text)
+            final = _AssistantBubble(text, employee=self._current_employee())
             self._layout.insertWidget(idx, final)
 
     def add_tool_call(self, name, args_str, dangerous=False):
@@ -535,6 +554,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         self._renderer = _ChatRenderer(
             self.chat_scroll, chat_content, self._messages_layout,
+            employee_provider=self._make_employee,
         )
         self._renderer.example_picked.connect(self._on_example_picked)
 
@@ -1119,7 +1139,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 if m.content:
                     # 直接渲染最终版（不走流式）
                     self._renderer._close_streaming_if_any()  # noqa: SLF001
-                    bubble = _AssistantBubble(m.content)
+                    bubble = _AssistantBubble(
+                        m.content,
+                        employee=self._renderer._current_employee(),  # noqa: SLF001
+                    )
                     self._renderer._append(bubble)  # noqa: SLF001
                 if m.tool_calls:
                     for tc in m.tool_calls:
@@ -1259,6 +1282,15 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             )
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning('注册规则审批回调失败: %s', exc)
+
+    def _make_employee(self):
+        """构造当前员工档案视图，供气泡渲染使用。
+
+        每次调用都从 ConfigManager 读最新值——这样用户在"助手形象"
+        Tab 改完保存后，下一条新气泡立即按新形象渲染，无需重启面板。
+        """
+        from .employee import Employee
+        return Employee.from_config(self._config)
 
     def _build_system_prompt_addon(self, user_input=None):
         """合并 skills 和用户规则两个 system prompt 附加段。
