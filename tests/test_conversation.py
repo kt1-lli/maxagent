@@ -279,3 +279,81 @@ class TestSystemPromptRules:
         # 抽 CODING_RULES 的标志性子串验证
         assert '代码生成硬性规则' in prompt
         assert CODING_RULES.strip() in prompt
+
+
+class TestValidateMaxscriptSyntax:
+    """覆盖 validate_maxscript_syntax 工具入口校验器。
+
+    校验器是工具入口的兜底拦截：哪怕 LLM 没遵守 system prompt 里的 if 规则，
+    工具也会把 if-do-else 等硬性错误挡回去，并向 LLM 返回修复提示。
+    """
+
+    def _validator(self):
+        from maxagent.agent.coding_rules import validate_maxscript_syntax
+        return validate_maxscript_syntax
+
+    def test_rejects_if_do_else(self):
+        # 用户实测里 LLM 写出的错误模板：if cond do (...) else (...)
+        validate = self._validator()
+        code = (
+            'if x > 0 do (\n'
+            '    print "yes"\n'
+            ') else (\n'
+            '    print "no"\n'
+            ')\n'
+        )
+        ok, hint = validate(code)
+        assert ok is False
+        assert hint is not None
+        assert 'do' in hint and 'else' in hint
+        # 错误提示必须含纠正模板，方便 LLM 自动修复
+        assert 'then' in hint
+
+    def test_accepts_if_then_else(self):
+        # 正确模板：if c then (...) else (...)
+        validate = self._validator()
+        code = (
+            'if x > 0 then (\n'
+            '    print "yes"\n'
+            ') else (\n'
+            '    print "no"\n'
+            ')\n'
+        )
+        ok, hint = validate(code)
+        assert ok is True
+        assert hint is None
+
+    def test_accepts_if_do_only(self):
+        # 正确模板：无 else 时用 if c do (...)
+        validate = self._validator()
+        code = 'if x > 0 do (print "yes")\n'
+        ok, hint = validate(code)
+        assert ok is True
+        assert hint is None
+
+    def test_accepts_single_line_if_then_else(self):
+        # 正确模板：单行 if c then a else b
+        validate = self._validator()
+        code = 'result = if x > 0 then 1 else -1\n'
+        ok, hint = validate(code)
+        assert ok is True
+        assert hint is None
+
+    def test_accepts_for_do_with_else_in_body(self):
+        # for ... do ( ... ) 不应被误伤；body 内的 if-then-else 是合法的
+        validate = self._validator()
+        code = (
+            'for o in objects do (\n'
+            '    if o.isHidden then o.isFrozen = true else o.isFrozen = false\n'
+            ')\n'
+        )
+        ok, hint = validate(code)
+        assert ok is True, '正确写法不应被拦截，hint={}'.format(hint)
+
+    def test_empty_or_irrelevant_code(self):
+        validate = self._validator()
+        # 空字符串 / None / 不含 if-else 的代码应直接放行
+        assert validate('')[0] is True
+        assert validate(None)[0] is True
+        assert validate('print "hello"')[0] is True
+        assert validate('local a = 1; a + 2')[0] is True

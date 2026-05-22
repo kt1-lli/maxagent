@@ -36,8 +36,11 @@ from .registry import tool
         "请注意 MaxScript 字符串转义。"
         "\n⚠️ 生成 MaxScript 必须遵守系统提示词【MaxScript 专用规则】："
         "所有变量用 local/global 显式声明；函数用 return 显式返回；"
-        "if 有 else 用 then/else，无 else 用 do；for 用 in/=...to/collect；"
-        "数组索引从 1 开始；标识符用英文 camelCase；注释用中文。"
+        "if 控制流模板：有 else 用 `if c then (...) else (...)`；"
+        "无 else 用 `if c do (...)`；**严禁** `if c do (...) else (...)`，"
+        "do 永远不配 else，本工具入口会拦截并拒绝执行；"
+        "for 用 in/=...to/collect；数组索引从 1 开始；"
+        "标识符用英文 camelCase；注释用中文。"
     ),
     category="escape_hatch",
     dangerous=True,
@@ -54,6 +57,22 @@ def run_maxscript(code):
     """
     if not IN_MAX:
         return {"success": False, "error": "非 3ds Max 环境"}
+
+    # 入口校验：拦截已知硬性语法错误（如 if-do-else），让 LLM 自纠
+    # 校验器位于 agent 层，避免 tools 反向依赖，这里就近导入
+    try:
+        from ..agent.coding_rules import validate_maxscript_syntax  # noqa: WPS433
+    except ImportError:
+        validate_maxscript_syntax = None  # 极端情况下放行，不阻断业务
+    if validate_maxscript_syntax is not None:
+        ok, hint = validate_maxscript_syntax(code)
+        if not ok:
+            return {
+                "success": False,
+                "error": hint,
+                "rejected_by_validator": True,
+            }
+
     try:
         result = rt.execute(code)
     except Exception as exc:  # pylint: disable=broad-except

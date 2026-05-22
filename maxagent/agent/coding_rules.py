@@ -31,7 +31,36 @@ CODING_RULES = """\
 使用 run_maxscript / run_python 工具时，必须 100% 遵守以下规则。
 ==============================================================
 
-【🔴 反幻觉铁律 - 最高优先级】
+【🔥🔥🔥 MaxScript if 控制流模板 - 最高优先级，必须按模板填空 🔥🔥🔥】
+
+只允许以下三种模板，任何偏离都会被工具入口直接拒绝执行：
+
+模板 1（有 else，必须 then + else 配对）：
+  if <条件> then (
+      -- 真分支代码
+  ) else (
+      -- 假分支代码
+  )
+
+模板 2（无 else，用 do）：
+  if <条件> do (
+      -- 真分支代码
+  )
+
+模板 3（单行表达式）：
+  if <条件> then <表达式真> else <表达式假>
+  if <条件> do <表达式真>
+
+❌ 永远禁止的写法（本工具入口会扫描并拒绝执行，下例完全等价于语法错误）：
+  if <条件> do ( ... ) else ( ... )      ← do 配 else 是错的
+  if <条件> ( ... ) else ( ... )         ← 缺 then 关键字
+  if <条件> then ( ... )                 ← 既无 else 又用了 then（应改 do）
+
+记住口诀：
+  "有 else 一定 then；只一支一定 do；do 永不配 else。"
+
+
+【🔴 反幻觉铁律 - 优先级仅次于 if 模板】
 - 严禁捏造任何 API：函数名 / 方法名 / 属性名 / 参数签名 / 修改器名 /
   全局变量名都必须是 3ds Max 官方文档中真实存在的；不确定就不写。
 - 不确定 API 是否存在时，必须按以下顺序处理：
@@ -62,12 +91,7 @@ CODING_RULES = """\
   * 顶层脚本想要跨块共享变量必须用 global / persistent global，不能用 local。
   * 错误示范：`( local a = 1 ) ( print a )` —— 第二个括号里 a 已经不存在。
   * 正确示范：`( local a = 1; print a )` —— 同一括号块内使用。
-- ⚠️ if 控制流必须严格遵守：
-  * 有 else 时：`if cond then expr1 else expr2`  —— `then` 关键字不可省略。
-  * 无 else 时：`if cond do expr`               —— 用 do，不用 then。
-  * 严禁出现 `if cond expr1 else expr2`（缺 then）或
-    `if cond then expr` 后面没有 else 也没有 do（语法错误）。
-  * 多行写法：`if cond then ( ... ) else ( ... )`，括号里多条语句用分号或换行分隔。
+- if 控制流：见顶部【if 控制流模板】，必须按模板填空。
 - 函数必须使用 return 显式返回值，不依赖最后一行隐式返回。
 - for 循环：遍历用 `for x in coll do ...`；计数用 `for i = 1 to N do ...`；
   收集用 `result = for x in coll collect expr`。
@@ -103,6 +127,7 @@ CODING_RULES = """\
 - 禁止把 0-based / 1-based 索引混用。
 - 禁止用 `is` 比较 pymxs 对象。
 - 禁止在不确认 DLL 是否加载、文件是否存在的情况下直接调用外部资源。
+- 禁止 MaxScript 中出现 `if ... do ... else ...`（do 不能配 else）。
 - 禁止 MaxScript 中出现 `if ... else` 而缺少 `then`。
 - 禁止把 local 声明放在与使用处不同的括号块。
 ==============================================================
@@ -118,3 +143,86 @@ def get_coding_rules():
     :returns: 规则文本（多行字符串）
     """
     return CODING_RULES
+
+
+# ---------------------------------------------------------------------- #
+# 入口端轻量校验：在 run_maxscript 真正执行前，扫描代码里的硬性语法错误。
+# 与"硬规则文本"双管齐下：规则文本约束 LLM 自觉，校验器兜底拦截 LLM 偏差。
+# ---------------------------------------------------------------------- #
+
+import re  # noqa: E402  本文件其它部分本来就是纯 Python，无 std 依赖
+
+# if-do-else 反模式：do 子句后又出现 else，等价于语法错误
+# 用正则匹配 "if ... do ... else"，跨行（DOTALL）。
+# 为了避免把 `for ... do ... else` 之类用法误伤，限定 if 起头。
+_RE_IF_DO_ELSE = re.compile(
+    r"\bif\b[^\n]*?\bdo\b[\s\S]+?\belse\b",
+    re.IGNORECASE,
+)
+
+# if 缺 then：形如 `if cond ( ... ) else` —— 在 cond 与括号 / else 之间没有 then 关键字
+# 该模式较保守，只标志最常见的 `if <表达式> ( ... ) else` 误用
+_RE_IF_MISSING_THEN = re.compile(
+    r"\bif\b\s+[^\n()]+?\(\s*[\s\S]+?\)\s*else\b",
+    re.IGNORECASE,
+)
+
+
+def validate_maxscript_syntax(code):
+    """在执行前扫描 MaxScript 代码，拦截已知硬性语法错误。
+
+    设计目标：哪怕 LLM 没遵守 system prompt 里的规则，工具入口也要把
+    "肯定跑不通"的代码挡回去，附带改写建议，让 LLM 下一轮自动修正。
+
+    :param code: 待执行的 MaxScript 源码字符串
+    :returns: 二元组 ``(ok, error_msg)``：
+              - ok=True, error_msg=None  —— 通过校验，可以执行
+              - ok=False, error_msg=str  —— 命中硬性错误，给 LLM 的修复建议
+    """
+    if not isinstance(code, str) or not code.strip():
+        return True, None
+
+    # 同时包含 if 与 else 的代码才需要细查；否则直接放行（避免无意义遍历）
+    has_if = re.search(r"\bif\b", code, re.IGNORECASE)
+    has_else = re.search(r"\belse\b", code, re.IGNORECASE)
+    if not (has_if and has_else):
+        return True, None
+
+    # ---- 检查 1：if-do-else 反模式 ----
+    # 找到第一段疑似命中的子串（DOTALL），用于精准报错
+    if _RE_IF_DO_ELSE.search(code):
+        # 进一步降误判：确认 do 与 else 之间不存在另一个 if-then-else
+        # （多层嵌套时 outer if 用 do、inner if 用 then-else 会误伤）。
+        # 实测 MaxScript 中 do 子句已被消费，外层 do 后再接 else 一定是错的；
+        # 这里保留简化判定，直接报错。
+        return (
+            False,
+            (
+                "MaxScript 语法错误：检测到 `if ... do ... else ...` 写法。\n"
+                "在 MaxScript 中 `do` 子句不能配 `else`。请改写为：\n"
+                "  if <条件> then (\n"
+                "      -- 真分支\n"
+                "  ) else (\n"
+                "      -- 假分支\n"
+                "  )\n"
+                "（即把 `do` 替换为 `then`，与下方的 `else` 配对。）\n"
+                "请按上述模板重新生成代码后再次调用 run_maxscript。"
+            ),
+        )
+
+    # ---- 检查 2：if 缺 then 关键字（与 else 同时出现时才查） ----
+    if _RE_IF_MISSING_THEN.search(code) and not re.search(
+        r"\bif\b[^\n]*?\bthen\b",
+        code,
+        re.IGNORECASE,
+    ):
+        return (
+            False,
+            (
+                "MaxScript 语法错误：if/else 之间缺少 `then` 关键字。\n"
+                "正确模板：`if <条件> then (...) else (...)`。\n"
+                "请补上 `then` 后再次调用 run_maxscript。"
+            ),
+        )
+
+    return True, None
