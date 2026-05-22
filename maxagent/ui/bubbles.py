@@ -18,6 +18,7 @@ from __future__ import print_function
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from .emoji_compat import ee as _ee
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
 from .markdown_render import render_markdown
@@ -328,7 +329,9 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
             align='left', bg='#2d3d2d', fg='#d4ead4',
         )
         head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">🤖 助手</span>'
+            '<span style="color:#a8e6a8;font-size:9pt;">{} 助手</span>'.format(
+                _ee('🤖'),
+            )
         )
         head.setStyleSheet('background:transparent;')
         self._bubble.add_widget(head)
@@ -447,7 +450,9 @@ class AssistantBubble(QtWidgets.QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
         head = QtWidgets.QLabel(
-            '<span style="color:#a8e6a8;font-size:9pt;">🤖 助手</span>'
+            '<span style="color:#a8e6a8;font-size:9pt;">{} 助手</span>'.format(
+                _ee('🤖'),
+            )
         )
         head.setStyleSheet('background:transparent;')
         title_row.addWidget(head)
@@ -497,7 +502,9 @@ class UserBubble(QtWidgets.QWidget):
 
         bubble = BubbleFrame(align='right', bg='#2c5d8f', fg='#ffffff')
         head = QtWidgets.QLabel(
-            '<span style="color:#bbd9f5;font-size:9pt;">👤 你</span>'
+            '<span style="color:#bbd9f5;font-size:9pt;">{} 你</span>'.format(
+                _ee('👤'),
+            )
         )
         head.setStyleSheet('background:transparent; color:#bbd9f5;')
         bubble.add_widget(head)
@@ -539,7 +546,7 @@ class ErrorBubble(QtWidgets.QWidget):
         outer.setContentsMargins(0, 2, 0, 2)
         bubble = BubbleFrame(align='left', bg='#4a2a2a', fg='#ffaaaa')
         head = QtWidgets.QLabel(
-            '<b style="color:#ffaaaa;">⚠ 错误</b>'
+            '<b style="color:#ffaaaa;">{} 错误</b>'.format(_ee('⚠'))
         )
         head.setStyleSheet('background:transparent;')
         bubble.add_widget(head)

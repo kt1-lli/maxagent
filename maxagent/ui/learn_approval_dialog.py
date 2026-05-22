@@ -24,6 +24,7 @@ from typing import Optional
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from .emoji_compat import ee as _ee
 
 
 _DIALOG_STYLE = """
@@ -82,10 +83,10 @@ class LearnApprovalDialog(QtWidgets.QDialog):
 
         # 头部说明
         head = QtWidgets.QLabel(
-            '<b style="color:#ffaa66;">⚠ AI 想要学习一个新工具</b><br>'
-            '<span style="color:#aaa;">'
-            '请仔细阅读下面的代码。批准后，这个工具会被永久保存到你的电脑，'
-            '下次启动也会自动加载。</span>'
+            ('<b style="color:#ffaa66;">{} AI 想要学习一个新工具</b><br>'
+             '<span style="color:#aaa;">'
+             '请仔细阅读下面的代码。批准后，这个工具会被永久保存到你的电脑，'
+             '下次启动也会自动加载。</span>').format(_ee('⚠'))
         )
         head.setWordWrap(True)
         head.setStyleSheet('background:transparent;')

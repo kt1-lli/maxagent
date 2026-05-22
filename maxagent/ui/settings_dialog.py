@@ -38,6 +38,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import e as _e
+from .emoji_compat import ee as _ee
 
 
 logger = get_logger(__name__)
@@ -76,14 +77,15 @@ class SettingsDialog(QtWidgets.QDialog):
     """
 
     # 左侧导航条目：(显示名, 内部 key)。key 用于程序化跳转。
-    # emoji 走 _e() 兜底：PySide2 + Win 上 emoji 与中文混排可能导致整行
-    # 字体异常，因此提供 ASCII / BMP 符号兜底，确保按钮文字可读。
+    # emoji 走 _ee() 兜底：PySide2 + Win 上 emoji 与中文混排可能导致整行
+    # 字体异常，因此提供 BMP 单字符兜底（参见 emoji_compat.EMOJI_FALLBACK_TABLE），
+    # 确保按钮文字可读。
     _NAV_ITEMS = [
-        (_e('🤖', '◆') + '  模型', 'model'),
-        (_e('🌐', '※') + '  联网', 'network'),
-        (_e('🎨', '★') + '  应用', 'app'),
-        (_e('📜', '▶') + '  日志', 'log'),
-        (_e('❓', '?') + '  帮助', 'help'),
+        (_ee('🤖') + '  模型', 'model'),
+        (_ee('🌐') + '  联网', 'network'),
+        (_ee('🎨') + '  应用', 'app'),
+        (_ee('📜') + '  日志', 'log'),
+        (_ee('❓') + '  帮助', 'help'),
     ]
 
     def __init__(self, config_manager, parent=None):
@@ -377,7 +379,7 @@ class SettingsDialog(QtWidgets.QDialog):
         outer = QtWidgets.QVBoxLayout(page)
         outer.setSpacing(10)
 
-        title = QtWidgets.QLabel(_e('🌐', '※') + '  联网搜索')
+        title = QtWidgets.QLabel(_ee('🌐') + '  联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
@@ -395,9 +397,10 @@ class SettingsDialog(QtWidgets.QDialog):
         for label, _v in self._web_mode_options:
             self.web_mode_combo.addItem(label)
         self.web_mode_combo.setToolTip(
-            '关闭：永远不联网，主 UI 按钮置灰\n'
-            '自动：在主 UI 通过 🌐 按钮按需开关本轮对话\n'
-            '强制：每轮对话都允许 LLM 联网，主 UI 按钮强制亮起',
+            ('关闭：永远不联网，主 UI 按钮置灰\n'
+             '自动：在主 UI 通过 {} 按钮按需开关本轮对话\n'
+             '强制：每轮对话都允许 LLM 联网，主 UI 按钮强制亮起'
+             ).format(_ee('🌐')),
         )
         self.web_mode_combo.currentIndexChanged.connect(
             self._on_web_settings_changed,
@@ -523,7 +526,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
-        title = QtWidgets.QLabel(_e('🎨', '★') + '  应用全局设置')
+        title = QtWidgets.QLabel(_ee('🎨') + '  应用全局设置')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         form.addRow(title)
 
@@ -568,7 +571,7 @@ class SettingsDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(12)
 
-        title = QtWidgets.QLabel(_e('📜', '▶') + '  日志')
+        title = QtWidgets.QLabel(_ee('📜') + '  日志')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -621,7 +624,7 @@ class SettingsDialog(QtWidgets.QDialog):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
 
-        title = QtWidgets.QLabel(_e('❓', '?') + '  使用帮助')
+        title = QtWidgets.QLabel(_ee('❓') + '  使用帮助')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -1038,8 +1041,8 @@ class SettingsDialog(QtWidgets.QDialog):
         prov = reg.get(pid)
         if prov is None:
             return
-        self.web_test_label.setText('⏳ 正在用 {} 搜索...'.format(
-            prov.get('name') or pid,
+        self.web_test_label.setText('{} 正在用 {} 搜索...'.format(
+            _ee('⏳'), prov.get('name') or pid,
         ))
         self.web_test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
@@ -1054,22 +1057,25 @@ class SettingsDialog(QtWidgets.QDialog):
                 provider=prov,
             )
         except SearchError as exc:
-            self.web_test_label.setText('❌ 搜索失败: {}'.format(exc))
+            self.web_test_label.setText('{} 搜索失败: {}'.format(_ee('❌'), exc))
             self.web_test_label.setStyleSheet('color:#e57373;')
             return
         except Exception as exc:  # pylint: disable=broad-except
-            self.web_test_label.setText('❌ 异常: {}'.format(exc))
+            self.web_test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
             self.web_test_label.setStyleSheet('color:#e57373;')
             return
         if not results:
             self.web_test_label.setText(
-                '⚠ 没返回结果（可能被反爬、网络受限或字段映射不对）',
+                '{} 没返回结果（可能被反爬、网络受限或字段映射不对）'.format(
+                    _ee('⚠'),
+                ),
             )
             self.web_test_label.setStyleSheet('color:#b8923a;')
             return
         first = results[0]
         self.web_test_label.setText(
-            '✅ {} 命中 {} 条；首条: {}'.format(
+            '{} {} 命中 {} 条；首条: {}'.format(
+                _ee('✅'),
                 prov.get('id') or pid, len(results),
                 first.title[:60] or first.url[:60],
             ),
@@ -1391,7 +1397,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._config.upsert_profile(prof)
         self._config.save()
         self._dirty = False
-        self.test_label.setText('✅ 已保存')
+        self.test_label.setText('{} 已保存'.format(_ee('✅')))
         self.test_label.setStyleSheet('color:#8fce8f;')
         self._reload_profiles()
 
@@ -1399,7 +1405,7 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 表单错误: {}'.format(exc))
+            self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
         self.test_label.setText('⏳ 测试中...')
@@ -1417,24 +1423,26 @@ class SettingsDialog(QtWidgets.QDialog):
             content = (resp.get('content') or '').strip()
             if content:
                 self.test_label.setText(
-                    '✅ 连接成功，模型回复: "{}"'.format(content[:40]),
+                    '{} 连接成功，模型回复: "{}"'.format(
+                        _ee('✅'), content[:40],
+                    ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
-                self.test_label.setText('✅ 连接成功（响应为空）')
+                self.test_label.setText('{} 连接成功（响应为空）'.format(_ee('✅')))
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('❌ 连接失败: {}'.format(exc))
+            self.test_label.setText('{} 连接失败: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 异常: {}'.format(exc))
+            self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _test_connection_full(self):
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 表单错误: {}'.format(exc))
+            self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
         self.test_label.setText('⏳ 完整测试中（流式+tools）...')
@@ -1445,7 +1453,7 @@ class SettingsDialog(QtWidgets.QDialog):
             from ..tools import build_openai_tools_schema
             tools_schema = build_openai_tools_schema()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 加载工具 schema 失败: {}'.format(exc))
+            self.test_label.setText('{} 加载工具 schema 失败: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
 
@@ -1468,19 +1476,23 @@ class SettingsDialog(QtWidgets.QDialog):
             content = (resp.get('content') or ''.join(chunks)).strip()
             if content:
                 self.test_label.setText(
-                    '✅ 完整测试通过，模型回复: "{}"'.format(content[:40]),
+                    '{} 完整测试通过，模型回复: "{}"'.format(
+                        _ee('✅'), content[:40],
+                    ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
                 self.test_label.setText(
-                    '✅ 完整测试通过（响应为空，但握手成功）',
+                    '{} 完整测试通过（响应为空，但握手成功）'.format(
+                        _ee('✅'),
+                    ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('❌ 完整测试失败: {}'.format(exc))
+            self.test_label.setText('{} 完整测试失败: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 异常: {}'.format(exc))
+            self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _refresh_base_url_hint(self, text):

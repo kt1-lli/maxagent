@@ -60,6 +60,7 @@ from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import e as _e
+from .emoji_compat import ee as _ee
 from .tool_block import ToolCallBlock as _ToolCallBlock
 
 logger = get_logger(__name__)
@@ -544,7 +545,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit = _SmartInput(self)
         self.input_edit.setMinimumHeight(self._MIN_INPUT_HEIGHT)
         self.input_edit.setPlaceholderText(
-            '✏️ 在这里输入指令...\n'
+            _ee('✏️') + ' 在这里输入指令...\n'
             'Enter 发送 / Shift+Enter 换行 / Ctrl+Enter 发送（拖动上方分割条可调整大小）',
         )
         self.input_edit.send_requested.connect(self._on_send)
@@ -560,7 +561,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         #   off    -> 按钮置灰不可点，hover 提示"全局已禁用"
         #   auto   -> 按钮可点，亮起=本轮联网/熄灭=本轮关闭
         #   force  -> 按钮强制亮起且不可点，hover 提示"全局已强制开启"
-        self.web_btn = QtWidgets.QPushButton(_e('🌐', '[网]'))
+        self.web_btn = QtWidgets.QPushButton(_ee('🌐'))
         self.web_btn.setCheckable(True)
         self.web_btn.setFixedWidth(40)
         self.web_btn.setSizePolicy(
@@ -602,7 +603,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         outer.addWidget(self.splitter, 1)
 
         # === 底部状态栏 ===
-        self.status_label = QtWidgets.QLabel('🟢 准备就绪')
+        self.status_label = QtWidgets.QLabel(_ee('🟢') + ' 准备就绪')
         self.status_label.setStyleSheet('color:#888;')
         outer.addWidget(self.status_label)
 
@@ -794,7 +795,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _on_history_trimmed(self, removed, current_tokens, budget_tokens):
         """worker 通知"已自动裁剪 N 条早期消息"。"""
         self._renderer.add_status(
-            '🧹 历史已自动裁剪 {} 条早期消息以适配 token 预算 '
+                _ee('🧹') + ' 历史已自动裁剪 {} 条早期消息以适配 token 预算 '
             '({}/{})'.format(removed, current_tokens, budget_tokens),
         )
         self._refresh_context_label()
@@ -875,8 +876,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             '将让 LLM 阅读并总结当前对话历史，然后用一段摘要替换早期消息，'
             '只保留最近 2 轮。\n\n'
             '节省 token、加速后续对话\n'
-            '⚠️ 早期细节将不可恢复\n\n'
-            '是否继续？',
+            '{} 早期细节将不可恢复\n\n'
+            '是否继续？'.format(_ee('⚠️')),
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,
         )
@@ -884,7 +885,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             return
 
         self._set_running(True)
-        self.status_label.setText('📝 正在生成历史摘要...')
+        self.status_label.setText(_ee('📝') + ' 正在生成历史摘要...')
         self._renderer.add_status('正在压缩对话历史，请稍候...')
         # 同步在后台线程跑摘要请求，避免冻结 UI
         from ..qt_compat import QtCore as _QtCore
@@ -915,7 +916,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         def _on_done():
             self._set_running(False)
-            self.status_label.setText('🟢 准备就绪')
+            self.status_label.setText(_ee('🟢') + ' 准备就绪')
             if worker_holder['err']:
                 self._renderer.add_error(
                     '压缩失败: {}'.format(worker_holder['err']),
@@ -1084,8 +1085,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 回放历史消息
         if not conv.messages:
             self._renderer.add_welcome(
-                '👋 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
-                '点击下方任一示例快速开始：'
+                '{} 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
+                '点击下方任一示例快速开始：'.format(_ee('👋'))
             )
         else:
             self._replay_messages(conv)
@@ -1318,8 +1319,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         """
         try:
             self.status_label.setText(
-                (_e('🌐', '[网]') + ' 本轮联网：开启') if checked
-                else (_e('🌐', '[网]') + ' 本轮联网：关闭'),
+                (_ee('🌐') + ' 本轮联网：开启') if checked
+                else (_ee('🌐') + ' 本轮联网：关闭'),
             )
         except Exception:  # pylint: disable=broad-except
             pass
@@ -1455,14 +1456,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _on_finished(self):
         self._renderer.end_turn()
-        self.status_label.setText('✅ 完成')
+        self.status_label.setText(_ee('✅') + ' 完成')
         self._set_running(False)
         self._save_current_session()
         self._refresh_context_label()
 
     def _on_failed(self, err):
         self._renderer.add_error(err)
-        self.status_label.setText('❌ 失败')
+        self.status_label.setText(_ee('❌') + ' 失败')
         self._set_running(False)
         # 失败也保存：用户能在历史里看到失败原因
         self._save_current_session()
