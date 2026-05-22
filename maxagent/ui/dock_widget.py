@@ -1259,8 +1259,26 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         backend = str(
             getattr(cfg, 'web_search_backend', 'duckduckgo') or 'duckduckgo',
         ).lower()
-        # 后端为 disabled 视同 mode=off
-        effective_off = (mode == 'off' or backend == 'disabled')
+
+        # 解析当前激活 provider，获取展示名 + 是否真正可用
+        active_name = ''
+        provider_usable = True
+        try:
+            from ..web_providers import ProviderRegistry
+            reg = ProviderRegistry()
+            mapped = reg.get(backend) if backend != 'disabled' else None
+            if mapped is None:
+                mapped = reg.get_active()
+            if mapped is not None:
+                active_name = mapped.get('name') or mapped.get('id') or ''
+                provider_usable = bool(mapped.get('enabled', True))
+        except Exception:  # pylint: disable=broad-except
+            provider_usable = (backend != 'disabled')
+
+        # 后端为 disabled 或 provider 已禁用都视同 mode=off
+        effective_off = (
+            mode == 'off' or backend == 'disabled' or not provider_usable
+        )
         # 阻塞 toggle 信号避免触发副作用
         self.web_btn.blockSignals(True)
         if effective_off:
@@ -1271,15 +1289,17 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self.web_btn.setEnabled(False)
             self.web_btn.setChecked(True)
             self.web_btn.setToolTip(
-                '联网为强制开启（设置 → 联网）；本按钮不可关闭',
+                '联网为强制开启（设置 → 联网）；本按钮不可关闭\n'
+                '当前后端：{}'.format(active_name or backend),
             )
         else:  # auto
             self.web_btn.setEnabled(True)
-            # 默认每次刷新不动当前 checked 状态——除非按钮原本就关闭则保持关闭，
-            # 但首次进入时根据 backend 是否可用启用
             self.web_btn.setToolTip(
                 '本轮对话允许 LLM 联网搜索\n'
-                '点击切换：亮起=本轮联网；熄灭=本轮关闭',
+                '当前后端：{}\n'
+                '点击切换：亮起=本轮联网；熄灭=本轮关闭'.format(
+                    active_name or backend,
+                ),
             )
         self.web_btn.blockSignals(False)
 

@@ -369,7 +369,7 @@ class SettingsDialog(QtWidgets.QDialog):
         # type: () -> QtWidgets.QWidget
         page = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(page)
-        outer.setSpacing(12)
+        outer.setSpacing(10)
 
         title = QtWidgets.QLabel('🌐  联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
@@ -381,7 +381,6 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # 联网模式
         self.web_mode_combo = QtWidgets.QComboBox()
-        # display ↔ value 一一对应；存到配置时写 value
         self._web_mode_options = [
             ('关闭（全局禁用）', 'off'),
             ('自动（按需在主 UI 切换）', 'auto'),
@@ -399,21 +398,7 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         form.addRow('联网模式:', self.web_mode_combo)
 
-        # 后端
-        self.web_backend_combo = QtWidgets.QComboBox()
-        self._web_backend_options = [
-            ('DuckDuckGo（免费，零依赖）', 'duckduckgo'),
-            ('Bing API（需 Key）', 'bing_api'),
-            ('禁用搜索（仅保留 web_fetch）', 'disabled'),
-        ]
-        for label, _v in self._web_backend_options:
-            self.web_backend_combo.addItem(label)
-        self.web_backend_combo.currentIndexChanged.connect(
-            self._on_web_settings_changed,
-        )
-        form.addRow('搜索后端:', self.web_backend_combo)
-
-        # 结果数
+        # 单次结果数 + 抓正文开关
         self.web_max_results_spin = QtWidgets.QSpinBox()
         self.web_max_results_spin.setRange(1, 10)
         self.web_max_results_spin.setValue(5)
@@ -422,7 +407,6 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         form.addRow('单次结果数:', self.web_max_results_spin)
 
-        # 是否抓正文
         self.web_fetch_chk = QtWidgets.QCheckBox(
             '抓取每条结果的网页正文（推荐开启）',
         )
@@ -433,27 +417,87 @@ class SettingsDialog(QtWidgets.QDialog):
         self.web_fetch_chk.toggled.connect(self._on_web_settings_changed)
         form.addRow('', self.web_fetch_chk)
 
-        # Bing API Key
-        self.bing_key_edit = QtWidgets.QLineEdit()
-        self.bing_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
-        self.bing_key_edit.setPlaceholderText(
-            '仅当后端=Bing API 时需要',
-        )
-        self.bing_key_edit.editingFinished.connect(
-            self._on_web_settings_changed,
-        )
-        form.addRow('Bing API Key:', self.bing_key_edit)
-
         outer.addLayout(form)
 
-        # 测试按钮 + 提示
-        op = QtWidgets.QHBoxLayout()
-        self.web_test_btn = QtWidgets.QPushButton('测试搜索')
-        self.web_test_btn.setToolTip('用上方设置发起一次"3ds Max"的搜索验证可用性')
-        self.web_test_btn.clicked.connect(self._test_web_search)
-        op.addWidget(self.web_test_btn)
-        op.addStretch(1)
-        outer.addLayout(op)
+        # ----- Provider 列表区 -----
+        prov_label = QtWidgets.QLabel('搜索 Provider（可自由扩展）')
+        prov_label.setStyleSheet('color:#bbb; padding-top:6px;')
+        outer.addWidget(prov_label)
+
+        prov_row = QtWidgets.QHBoxLayout()
+        self.web_provider_list = QtWidgets.QListWidget()
+        self.web_provider_list.setAlternatingRowColors(True)
+        self.web_provider_list.setMinimumHeight(160)
+        self.web_provider_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection,
+        )
+        self.web_provider_list.itemSelectionChanged.connect(
+            self._on_provider_selection_changed,
+        )
+        self.web_provider_list.itemDoubleClicked.connect(
+            lambda *_: self._on_provider_edit_clicked(),
+        )
+        prov_row.addWidget(self.web_provider_list, 1)
+
+        # 右侧操作按钮列
+        btn_col = QtWidgets.QVBoxLayout()
+        btn_col.setSpacing(4)
+        self.web_provider_use_btn = QtWidgets.QPushButton('设为默认')
+        self.web_provider_use_btn.setToolTip(
+            '把选中的 Provider 设为搜索默认（main UI 联网按钮也使用它）',
+        )
+        self.web_provider_use_btn.clicked.connect(
+            self._on_provider_set_active,
+        )
+        btn_col.addWidget(self.web_provider_use_btn)
+
+        self.web_provider_edit_btn = QtWidgets.QPushButton('编辑')
+        self.web_provider_edit_btn.clicked.connect(
+            self._on_provider_edit_clicked,
+        )
+        btn_col.addWidget(self.web_provider_edit_btn)
+
+        self.web_provider_add_btn = QtWidgets.QPushButton('新增')
+        self.web_provider_add_btn.setToolTip('添加自定义搜索后端')
+        self.web_provider_add_btn.clicked.connect(
+            self._on_provider_add_clicked,
+        )
+        btn_col.addWidget(self.web_provider_add_btn)
+
+        self.web_provider_dup_btn = QtWidgets.QPushButton('复制')
+        self.web_provider_dup_btn.clicked.connect(
+            self._on_provider_dup_clicked,
+        )
+        btn_col.addWidget(self.web_provider_dup_btn)
+
+        self.web_provider_del_btn = QtWidgets.QPushButton('删除')
+        self.web_provider_del_btn.clicked.connect(
+            self._on_provider_del_clicked,
+        )
+        btn_col.addWidget(self.web_provider_del_btn)
+
+        self.web_provider_test_btn = QtWidgets.QPushButton('测试')
+        self.web_provider_test_btn.setToolTip(
+            '用选中 Provider 发起一次 "3ds Max" 搜索验证可用性',
+        )
+        self.web_provider_test_btn.clicked.connect(
+            self._on_provider_test_clicked,
+        )
+        btn_col.addWidget(self.web_provider_test_btn)
+
+        self.web_provider_reset_btn = QtWidgets.QPushButton('恢复内置')
+        self.web_provider_reset_btn.setToolTip(
+            '把内置 Provider（DuckDuckGo / Bing / Google CSE 等）'
+            '\n字段重置为出厂值，保留你已填的 API Key 和 extra 字段。',
+        )
+        self.web_provider_reset_btn.clicked.connect(
+            self._on_provider_reset_builtins,
+        )
+        btn_col.addWidget(self.web_provider_reset_btn)
+
+        btn_col.addStretch(1)
+        prov_row.addLayout(btn_col)
+        outer.addLayout(prov_row)
 
         self.web_test_label = QtWidgets.QLabel('')
         self.web_test_label.setStyleSheet('color:#888;')
@@ -759,7 +803,7 @@ class SettingsDialog(QtWidgets.QDialog):
     # 联网设置加载 / 写盘
     # ================================================================== #
     def _load_web_settings(self):
-        """把 AppConfig 上的联网字段加载到联网 Tab 控件。"""
+        """把 AppConfig + ProviderRegistry 的联网字段加载到 UI。"""
         cfg = self._config.config
         # 联网模式
         mode = str(getattr(cfg, 'web_search_mode', 'auto') or 'auto').lower()
@@ -768,16 +812,6 @@ class SettingsDialog(QtWidgets.QDialog):
                 self.web_mode_combo.blockSignals(True)
                 self.web_mode_combo.setCurrentIndex(i)
                 self.web_mode_combo.blockSignals(False)
-                break
-        # 后端
-        backend = str(
-            getattr(cfg, 'web_search_backend', 'duckduckgo') or 'duckduckgo',
-        ).lower()
-        for i, (_, v) in enumerate(self._web_backend_options):
-            if v == backend:
-                self.web_backend_combo.blockSignals(True)
-                self.web_backend_combo.setCurrentIndex(i)
-                self.web_backend_combo.blockSignals(False)
                 break
         # 结果数
         self.web_max_results_spin.blockSignals(True)
@@ -791,57 +825,227 @@ class SettingsDialog(QtWidgets.QDialog):
             bool(getattr(cfg, 'web_fetch_page_text', True)),
         )
         self.web_fetch_chk.blockSignals(False)
-        # Bing Key
-        self.bing_key_edit.blockSignals(True)
-        self.bing_key_edit.setText(
-            str(getattr(cfg, 'bing_api_key', '') or ''),
-        )
-        self.bing_key_edit.blockSignals(False)
+        # Provider 列表
+        self._reload_provider_list()
 
-    def _on_web_settings_changed(self, *_args):
-        """任一联网控件变化即写盘 + 通知主窗口刷新 🌐 按钮状态。"""
+    def _get_provider_registry(self):
+        """懒加载 ProviderRegistry，缓存到 self._provider_registry。"""
+        reg = getattr(self, '_provider_registry', None)
+        if reg is None:
+            from ..web_providers import ProviderRegistry
+            reg = ProviderRegistry()
+            self._provider_registry = reg
+        return reg
+
+    def _reload_provider_list(self):
+        """从 ProviderRegistry 重建左侧列表，保留滚动位置。"""
+        reg = self._get_provider_registry()
+        active_id = reg.data.get('active_id') or ''
+        self.web_provider_list.blockSignals(True)
+        self.web_provider_list.clear()
+        for prov in reg.list_providers():
+            label = prov.get('name') or prov.get('id') or '?'
+            tag_parts = []
+            if prov.get('builtin'):
+                tag_parts.append('内置')
+            if not prov.get('enabled', True):
+                tag_parts.append('已禁用')
+            if prov.get('id') == active_id:
+                tag_parts.append('当前')
+            if tag_parts:
+                label = '{}  [{}]'.format(label, ' · '.join(tag_parts))
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, prov.get('id'))
+            tooltip = '{}\nid={}\n{}  {}'.format(
+                prov.get('name') or '', prov.get('id') or '',
+                (prov.get('method') or 'GET'), prov.get('url') or '',
+            )
+            item.setToolTip(tooltip)
+            if prov.get('id') == active_id:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            self.web_provider_list.addItem(item)
+        self.web_provider_list.blockSignals(False)
+        self._on_provider_selection_changed()
+
+    def _selected_provider_id(self):
+        # type: () -> str
+        item = self.web_provider_list.currentItem()
+        if item is None:
+            return ''
+        return str(item.data(QtCore.Qt.UserRole) or '')
+
+    def _on_provider_selection_changed(self, *_args):
+        pid = self._selected_provider_id()
+        reg = self._get_provider_registry()
+        prov = reg.get(pid) if pid else None
+        has = prov is not None
+        is_builtin = bool(prov and prov.get('builtin'))
+        self.web_provider_use_btn.setEnabled(has)
+        self.web_provider_edit_btn.setEnabled(has)
+        self.web_provider_dup_btn.setEnabled(has)
+        self.web_provider_test_btn.setEnabled(has)
+        # 内置 provider 不可删
+        self.web_provider_del_btn.setEnabled(has and not is_builtin)
+
+    def _on_provider_set_active(self):
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        reg = self._get_provider_registry()
+        try:
+            reg.set_active(pid)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, '设置失败', str(exc))
+            return
+        # 同步到 AppConfig 的旧字段（向前兼容老路径）
         cfg = self._config.config
-        mode_idx = self.web_mode_combo.currentIndex()
-        backend_idx = self.web_backend_combo.currentIndex()
-        cfg.web_search_mode = self._web_mode_options[mode_idx][1]
-        cfg.web_search_backend = self._web_backend_options[backend_idx][1]
-        cfg.web_search_max_results = int(self.web_max_results_spin.value())
-        cfg.web_fetch_page_text = bool(self.web_fetch_chk.isChecked())
-        cfg.bing_api_key = str(self.bing_key_edit.text() or '').strip()
+        cfg.web_search_backend = pid
         try:
             self._config.save()
-        except Exception as exc:  # pylint: disable=broad-except
-            QtWidgets.QMessageBox.warning(
-                self, '保存失败', '联网设置写盘失败: {}'.format(exc),
-            )
-            return
-        # 通知主窗口刷新主 UI 联网按钮（如果父窗口实现了该接口）
-        try:
-            parent = self.parent()
-            refresh = getattr(parent, 'refresh_web_button_state', None)
-            if callable(refresh):
-                refresh()
         except Exception:  # pylint: disable=broad-except
             pass
+        self._reload_provider_list()
+        self._notify_dock_refresh()
 
-    def _test_web_search(self):
-        """用当前设置发起一次冒烟搜索，把结果摘要打到提示标签上。"""
-        # 先把当前 UI 的修改写盘，确保后端拿到的是最新值
-        self._on_web_settings_changed()
-        self.web_test_label.setText('⏳ 正在搜索...')
+    def _on_provider_edit_clicked(self):
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        reg = self._get_provider_registry()
+        prov = reg.get(pid)
+        if prov is None:
+            return
+        from .provider_editor import ProviderEditorDialog
+        dlg = ProviderEditorDialog(prov, parent=self, allow_id_edit=False)
+        if dlg.exec_dialog():
+            try:
+                reg.upsert(dlg.result_provider())
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, '保存失败', str(exc))
+                return
+            self._reload_provider_list()
+            self._notify_dock_refresh()
+
+    def _on_provider_add_clicked(self):
+        from .provider_editor import ProviderEditorDialog
+        from ..web_providers import BUILTIN_PROVIDERS
+        # 用 DDG 模板做新 provider 的初值，便于直接修改
+        template = dict(BUILTIN_PROVIDERS[0])
+        template['id'] = ''
+        template['name'] = '新 Provider'
+        template['builtin'] = False
+        template['api_key'] = ''
+        dlg = ProviderEditorDialog(template, parent=self, allow_id_edit=True)
+        if dlg.exec_dialog():
+            reg = self._get_provider_registry()
+            try:
+                reg.upsert(dlg.result_provider())
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, '保存失败', str(exc))
+                return
+            self._reload_provider_list()
+
+    def _on_provider_dup_clicked(self):
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        reg = self._get_provider_registry()
+        src = reg.get(pid)
+        if src is None:
+            return
+        from .provider_editor import ProviderEditorDialog
+        clone = dict(src)
+        clone['id'] = '{}_copy'.format(src.get('id') or 'provider')
+        clone['name'] = '{} (副本)'.format(src.get('name') or '')
+        clone['builtin'] = False
+        # 已有 id 时自加序号避免冲突
+        existing = {p['id'] for p in reg.list_providers()}
+        i = 1
+        base = clone['id']
+        while clone['id'] in existing:
+            i += 1
+            clone['id'] = '{}{}'.format(base, i)
+        dlg = ProviderEditorDialog(clone, parent=self, allow_id_edit=True)
+        if dlg.exec_dialog():
+            try:
+                reg.upsert(dlg.result_provider())
+            except ValueError as exc:
+                QtWidgets.QMessageBox.warning(self, '保存失败', str(exc))
+                return
+            self._reload_provider_list()
+
+    def _on_provider_del_clicked(self):
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        reg = self._get_provider_registry()
+        prov = reg.get(pid)
+        if prov is None:
+            return
+        if prov.get('builtin'):
+            QtWidgets.QMessageBox.information(
+                self, '不能删除', '内置 Provider 不能删除，可在编辑页禁用',
+            )
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '确认删除',
+            '确认删除 Provider "{}"？该操作不可恢复。'.format(
+                prov.get('name') or pid,
+            ),
+        )
+        yes = (
+            getattr(QtWidgets.QMessageBox.StandardButton, 'Yes', None)
+            or QtWidgets.QMessageBox.Yes
+        )
+        if ret != yes:
+            return
+        try:
+            reg.delete(pid)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, '删除失败', str(exc))
+            return
+        self._reload_provider_list()
+
+    def _on_provider_reset_builtins(self):
+        ret = QtWidgets.QMessageBox.question(
+            self, '恢复内置 Provider',
+            '把内置 Provider 的 url / params / 响应路径等字段重置为出厂值'
+            '（保留你已填的 API Key 和 extra 字段）。是否继续？',
+        )
+        yes = (
+            getattr(QtWidgets.QMessageBox.StandardButton, 'Yes', None)
+            or QtWidgets.QMessageBox.Yes
+        )
+        if ret != yes:
+            return
+        reg = self._get_provider_registry()
+        reg.restore_builtins()
+        self._reload_provider_list()
+
+    def _on_provider_test_clicked(self):
+        pid = self._selected_provider_id()
+        if not pid:
+            return
+        reg = self._get_provider_registry()
+        prov = reg.get(pid)
+        if prov is None:
+            return
+        self.web_test_label.setText('⏳ 正在用 {} 搜索...'.format(
+            prov.get('name') or pid,
+        ))
         self.web_test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
         try:
             from ..web_search import search as _do_search
             from ..web_search import SearchError
-            cfg = self._config.config
             results = _do_search(
                 '3ds Max maxscript',
-                max_results=int(cfg.web_search_max_results or 5),
-                backend=cfg.web_search_backend,
-                bing_api_key=cfg.bing_api_key,
+                max_results=int(self.web_max_results_spin.value() or 5),
                 fetch_page=False,
                 use_cache=False,
+                provider=prov,
             )
         except SearchError as exc:
             self.web_test_label.setText('❌ 搜索失败: {}'.format(exc))
@@ -853,17 +1057,44 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         if not results:
             self.web_test_label.setText(
-                '⚠ 后端没返回结果（可能被反爬或网络受限）',
+                '⚠ 没返回结果（可能被反爬、网络受限或字段映射不对）',
             )
             self.web_test_label.setStyleSheet('color:#b8923a;')
             return
         first = results[0]
         self.web_test_label.setText(
-            '✅ 命中 {} 条；首条: {}'.format(
-                len(results), first.title[:60] or first.url[:60],
+            '✅ {} 命中 {} 条；首条: {}'.format(
+                prov.get('id') or pid, len(results),
+                first.title[:60] or first.url[:60],
             ),
         )
         self.web_test_label.setStyleSheet('color:#8fce8f;')
+
+    def _notify_dock_refresh(self):
+        """通知主窗口刷新主 UI 联网按钮状态。"""
+        try:
+            parent = self.parent()
+            refresh = getattr(parent, 'refresh_web_button_state', None)
+            if callable(refresh):
+                refresh()
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _on_web_settings_changed(self, *_args):
+        """全局联网控件（mode/n/抓正文）变化即写盘 + 通知主窗口。"""
+        cfg = self._config.config
+        mode_idx = self.web_mode_combo.currentIndex()
+        cfg.web_search_mode = self._web_mode_options[mode_idx][1]
+        cfg.web_search_max_results = int(self.web_max_results_spin.value())
+        cfg.web_fetch_page_text = bool(self.web_fetch_chk.isChecked())
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '联网设置写盘失败: {}'.format(exc),
+            )
+            return
+        self._notify_dock_refresh()
 
     def _read_form(self):
         headers = {}

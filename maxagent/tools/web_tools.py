@@ -34,25 +34,59 @@ logger = get_logger(__name__)
 
 
 def _resolve_web_settings():
-    """统一取当前 AppConfig 的联网相关字段，便于测试 monkeypatch。"""
+    """统一取当前 AppConfig + ProviderRegistry 联网相关字段。
+
+    返回：
+    - ``mode`` / ``max_results`` / ``fetch_page_text``：来自 AppConfig
+    - ``provider``：当前激活的 provider 配置字典（可能为 None；为兼容
+      老配置或被禁用时）
+    - ``backend`` / ``bing_api_key``：旧路径兜底字段，仅当 provider 为
+      None 且非 disabled 时使用
+
+    便于测试 monkeypatch：测试用例可以替换 ``load_config`` 或
+    ``ProviderRegistry`` 的实现注入 mock。
+    """
+    fallback = {
+        'mode': 'off',
+        'backend': 'duckduckgo',
+        'max_results': 5,
+        'fetch_page_text': True,
+        'bing_api_key': '',
+        'provider': None,
+    }
     try:
         from ..config import load_config
         cfg = load_config()
     except Exception:  # pylint: disable=broad-except
-        return {
-            'mode': 'off',
-            'backend': 'duckduckgo',
-            'max_results': 5,
-            'fetch_page_text': True,
-            'bing_api_key': '',
-        }
-    return {
+        return fallback
+
+    settings = {
         'mode': getattr(cfg, 'web_search_mode', 'auto'),
         'backend': getattr(cfg, 'web_search_backend', 'duckduckgo'),
         'max_results': getattr(cfg, 'web_search_max_results', 5),
         'fetch_page_text': getattr(cfg, 'web_fetch_page_text', True),
         'bing_api_key': getattr(cfg, 'bing_api_key', ''),
+        'provider': None,
     }
+    # 解析当前激活 provider（新路径）。失败时静默回退到旧路径，
+    # 不影响主功能。
+    try:
+        from ..web_providers import ProviderRegistry
+        reg = ProviderRegistry()
+        active = reg.get_active()
+        # 兼容老配置：AppConfig.web_search_backend 可能是 'duckduckgo'
+        # /'bing_api'/'disabled' 字符串。如果用户没显式选过 provider，
+        # 优先按这个字符串映射到对应的内置 provider id。
+        explicit_id = getattr(cfg, 'web_search_backend', '') or ''
+        if explicit_id and explicit_id != 'disabled':
+            mapped = reg.get(explicit_id)
+            if mapped is not None:
+                active = mapped
+        if active and active.get('enabled', True) and explicit_id != 'disabled':
+            settings['provider'] = active
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.debug('ProviderRegistry 加载失败，回退老路径: %s', exc)
+    return settings
 
 
 @tool(
@@ -109,12 +143,17 @@ def web_search(query, max_results=None, fetch_page=None):
             backend=settings['backend'],
             bing_api_key=settings['bing_api_key'] or '',
             fetch_page=fp,
+            provider=settings.get('provider'),
         )
     except SearchError as exc:
         return {'ok': False, 'error': str(exc), 'results': []}
+    backend_label = (
+        (settings.get('provider') or {}).get('id')
+        or settings['backend']
+    )
     return {
         'ok': True,
-        'backend': settings['backend'],
+        'backend': backend_label,
         'query': q,
         'count': len(items),
         'results': [r.to_dict() for r in items],
