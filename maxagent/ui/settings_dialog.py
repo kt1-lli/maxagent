@@ -36,6 +36,8 @@ from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import e as _e
 
 
 logger = get_logger(__name__)
@@ -74,12 +76,14 @@ class SettingsDialog(QtWidgets.QDialog):
     """
 
     # 左侧导航条目：(显示名, 内部 key)。key 用于程序化跳转。
+    # emoji 走 _e() 兜底：PySide2 + Win 上 emoji 与中文混排可能导致整行
+    # 字体异常，因此提供 ASCII / BMP 符号兜底，确保按钮文字可读。
     _NAV_ITEMS = [
-        ('🤖  模型', 'model'),
-        ('🌐  联网', 'network'),
-        ('🎨  应用', 'app'),
-        ('📜  日志', 'log'),
-        ('❓  帮助', 'help'),
+        (_e('🤖', '◆') + '  模型', 'model'),
+        (_e('🌐', '※') + '  联网', 'network'),
+        (_e('🎨', '★') + '  应用', 'app'),
+        (_e('📜', '▶') + '  日志', 'log'),
+        (_e('❓', '?') + '  帮助', 'help'),
     ]
 
     def __init__(self, config_manager, parent=None):
@@ -92,6 +96,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self._dirty = False
         self._build_ui()
         self._reload_profiles()
+        # 字体回退链：让 PySide2 上 emoji + 中文混排正确渲染
+        _apply_font_fallback(self)
 
     # ================================================================== #
     # 顶层 UI 构建
@@ -371,7 +377,7 @@ class SettingsDialog(QtWidgets.QDialog):
         outer = QtWidgets.QVBoxLayout(page)
         outer.setSpacing(10)
 
-        title = QtWidgets.QLabel('🌐  联网搜索')
+        title = QtWidgets.QLabel(_e('🌐', '※') + '  联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
@@ -517,7 +523,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
 
-        title = QtWidgets.QLabel('🎨  应用全局设置')
+        title = QtWidgets.QLabel(_e('🎨', '★') + '  应用全局设置')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         form.addRow(title)
 
@@ -562,7 +568,7 @@ class SettingsDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(12)
 
-        title = QtWidgets.QLabel('📜  日志')
+        title = QtWidgets.QLabel(_e('📜', '▶') + '  日志')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -615,7 +621,7 @@ class SettingsDialog(QtWidgets.QDialog):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
 
-        title = QtWidgets.QLabel('❓  使用帮助')
+        title = QtWidgets.QLabel(_e('❓', '?') + '  使用帮助')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 

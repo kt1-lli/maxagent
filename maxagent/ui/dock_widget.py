@@ -58,6 +58,8 @@ from .bubbles import StatusLine as _StatusLine
 from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
 from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
+from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import e as _e
 from .tool_block import ToolCallBlock as _ToolCallBlock
 
 logger = get_logger(__name__)
@@ -379,6 +381,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             QtCore.Qt.QueuedConnection,
         )
 
+        # 字体回退链：在 PySide2 (Qt5) Windows 上，emoji + 中文混排会触发
+        # 字体回退缺陷（emoji 字体拖累整行汉字渲染）。这里给整个 dock
+        # widget 设一份带 CJK + emoji 回退族的 QFont，让 Qt 按字符级回退。
+        # PySide6 不受影响，但应用同一份字体也不会出问题。
+        _apply_font_fallback(self)
+
     # ------------------------------------------------------------------ #
     # 构建 UI
     # ------------------------------------------------------------------ #
@@ -552,7 +560,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         #   off    -> 按钮置灰不可点，hover 提示"全局已禁用"
         #   auto   -> 按钮可点，亮起=本轮联网/熄灭=本轮关闭
         #   force  -> 按钮强制亮起且不可点，hover 提示"全局已强制开启"
-        self.web_btn = QtWidgets.QPushButton('🌐')
+        self.web_btn = QtWidgets.QPushButton(_e('🌐', '[网]'))
         self.web_btn.setCheckable(True)
         self.web_btn.setFixedWidth(40)
         self.web_btn.setSizePolicy(
@@ -1310,7 +1318,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         """
         try:
             self.status_label.setText(
-                '🌐 本轮联网：开启' if checked else '🌐 本轮联网：关闭',
+                (_e('🌐', '[网]') + ' 本轮联网：开启') if checked
+                else (_e('🌐', '[网]') + ' 本轮联网：关闭'),
             )
         except Exception:  # pylint: disable=broad-except
             pass
