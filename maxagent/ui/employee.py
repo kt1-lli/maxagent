@@ -152,21 +152,26 @@ class Employee(object):
         if self.avatar_kind == 'image':
             img_path = self.avatar_image_path()
             if img_path:
-                # Qt 的富文本支持 file:/// 协议 + 路径分隔符做 ``/`` 处理
-                url = 'file:///' + img_path.replace('\\', '/')
-                return (
-                    '<img src="{url}" width="{w}" height="{w}" '
-                    'style="vertical-align:middle;"> '
-                    '<span style="color:{color};font-size:{sz}pt;">'
-                    '{name}</span>'
-                ).format(
-                    url=url,
-                    w=AVATAR_DISPLAY_SIZE,
-                    color=title_color,
-                    sz=font_size_pt,
-                    name=safe_name,
-                )
-            # 图片丢失：自动回落到 emoji（不弹错，体验顺滑）
+                # 用 base64 data URI 而不是 ``file:///`` 协议——
+                # 原因：PySide6 (Qt6) 的 QLabel/QTextDocument 默认安全
+                # 策略不再去文件系统读 ``file:///`` 资源，导致 PySide2
+                # 正常显示但 PySide6 头像空白。data URI 不依赖 Qt 资源
+                # 解析器，PySide2/6 双版本一致渲染。
+                data_uri = _file_to_data_uri(img_path)
+                if data_uri:
+                    return (
+                        '<img src="{url}" width="{w}" height="{w}" '
+                        'style="vertical-align:middle;"> '
+                        '<span style="color:{color};font-size:{sz}pt;">'
+                        '{name}</span>'
+                    ).format(
+                        url=data_uri,
+                        w=AVATAR_DISPLAY_SIZE,
+                        color=title_color,
+                        sz=font_size_pt,
+                        name=safe_name,
+                    )
+            # 图片丢失或读取失败：自动回落到 emoji（不弹错，体验顺滑）
         # emoji 模式（默认 + image 模式但文件丢失的兜底）
         avatar = _ee(self.avatar_emoji or DEFAULT_EMOJI)
         return (
@@ -194,6 +199,69 @@ def _html_escape(text):
     )
 
 
+# ---------------------------------------------------------------------- #
+# 头像文件 → base64 data URI（PySide2/6 跨版本稳渲染头像图片的关键）
+# ---------------------------------------------------------------------- #
+# 缓存格式: { abs_path: (mtime, size, data_uri) }
+# 只在文件未变化（mtime + size 都一致）时复用——避免每次重绘气泡
+# 都重读磁盘 / 重编码 base64。气泡数量 × 多消息会调用很多次。
+_DATA_URI_CACHE = {}  # type: dict
+
+
+def _file_to_data_uri(abs_path):
+    # type: (str) -> str
+    """把本地图片文件读成 ``data:image/png;base64,...`` URI。
+
+    PySide6 的 QLabel 默认不再加载 ``file:///`` 本地资源，但 ``data:``
+    URI 会被 QTextDocument 直接内嵌解析，PySide2/6 一致工作。
+
+    失败（文件不存在 / 读取异常）时返回空串，调用方应回落到 emoji。
+    """
+    if not abs_path or not os.path.exists(abs_path):
+        return ''
+    try:
+        st = os.stat(abs_path)
+        cache_key = abs_path
+        cached = _DATA_URI_CACHE.get(cache_key)
+        if cached is not None:
+            c_mtime, c_size, c_uri = cached
+            if c_mtime == st.st_mtime and c_size == st.st_size:
+                return c_uri
+
+        import base64
+        with open(abs_path, 'rb') as f:
+            raw = f.read()
+        # 文件名后缀判断 mime；本插件里只生成 png，但用户若手动放
+        # 其他格式也兜底支持
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext in ('.jpg', '.jpeg'):
+            mime = 'image/jpeg'
+        elif ext == '.gif':
+            mime = 'image/gif'
+        else:
+            mime = 'image/png'
+        data_uri = 'data:{};base64,{}'.format(
+            mime, base64.b64encode(raw).decode('ascii'),
+        )
+        _DATA_URI_CACHE[cache_key] = (st.st_mtime, st.st_size, data_uri)
+        return data_uri
+    except (OSError, IOError):
+        return ''
+
+
+def _invalidate_data_uri_cache(abs_path=None):
+    # type: (Optional[str]) -> None
+    """清空 data URI 缓存。
+
+    :param abs_path: 指定路径时只清该条；None 清空全部。
+    保存新头像后应调用这个，让下次气泡渲染读到新图。
+    """
+    if abs_path is None:
+        _DATA_URI_CACHE.clear()
+    else:
+        _DATA_URI_CACHE.pop(abs_path, None)
+
+
 # 公开别名：dock_widget 等同包外部模块通过这个名字调用，
 # 避免 import 私有函数（带下划线前缀）触发 lint 告警。
 escape_name = _html_escape
@@ -218,6 +286,9 @@ def save_avatar_image(qpixmap, target_size=AVATAR_STORE_SIZE):
     )
     full_path = get_avatar_image_full_path()
     ok = scaled.save(full_path, 'PNG')
+    if ok:
+        # 写盘成功后让 data URI 缓存失效——下次气泡渲染读到新图
+        _invalidate_data_uri_cache(full_path)
     return AVATAR_FILENAME if ok else None
 
 
@@ -228,6 +299,7 @@ def remove_avatar_image():
     try:
         if os.path.exists(path):
             os.remove(path)
+            _invalidate_data_uri_cache(path)
             return True
     except OSError:
         pass

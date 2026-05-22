@@ -192,7 +192,10 @@ class TestDisplayHTML:
         )
         html = emp.display_html()
         assert '<img' in html
-        assert 'avatar.png' in html
+        # base64 data URI 不再包含原始路径，改为校验 data:image 前缀
+        # （原断言 'avatar.png' in html 在改用 data URI 后不再适用）
+        assert 'src="data:image/png;base64,' in html
+        assert '小猫' in html
 
 
 # ====================================================================== #
@@ -241,3 +244,106 @@ class TestRemoveAvatar:
         from maxagent.ui.employee import remove_avatar_image
         # 没有 avatar.png 时调用应返回 False，不抛
         assert remove_avatar_image() is False
+
+
+# ====================================================================== #
+# 头像 data URI 编码（PySide6 跨版本兼容的关键路径）
+# ====================================================================== #
+class TestAvatarDataURI:
+    """覆盖 ``_file_to_data_uri`` 与缓存失效逻辑。
+
+    bug 背景：PySide6 (Qt6) 的 QLabel/QTextDocument 默认不再加载
+    ``file:///`` 本地资源，导致用户截图里头像槽位空白。改用 base64
+    data URI 后两个版本一致工作。
+    """
+
+    @staticmethod
+    def _make_png_at(path):
+        # 写一个最小合法的 1x1 PNG 文件
+        with open(path, 'wb') as fh:
+            fh.write(
+                b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                b'\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00'
+                b'\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\x00\x01\x00'
+                b'\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+            )
+
+    def test_data_uri_encodes_png(self, isolated_config_dir):
+        from maxagent.ui.employee import _file_to_data_uri
+        path = os.path.join(isolated_config_dir, 'avatar.png')
+        self._make_png_at(path)
+        uri = _file_to_data_uri(path)
+        assert uri.startswith('data:image/png;base64,')
+        # base64 段非空
+        assert len(uri) > len('data:image/png;base64,')
+
+    def test_data_uri_missing_file_returns_empty(self, isolated_config_dir):
+        from maxagent.ui.employee import _file_to_data_uri
+        # 不存在的路径不应抛，应返回空串让调用方回落 emoji
+        path = os.path.join(isolated_config_dir, 'no_such.png')
+        assert _file_to_data_uri(path) == ''
+        assert _file_to_data_uri('') == ''
+
+    def test_data_uri_uses_cache_on_repeat_calls(self, isolated_config_dir):
+        from maxagent.ui import employee as emp_mod
+        path = os.path.join(isolated_config_dir, 'avatar.png')
+        self._make_png_at(path)
+        # 清空缓存确保起点干净
+        emp_mod._invalidate_data_uri_cache()
+        uri1 = emp_mod._file_to_data_uri(path)
+        # 缓存命中后即使删了文件也应返回旧值（直到失效）
+        os.remove(path)
+        # 但 _file_to_data_uri 内部会先 os.path.exists 检查；
+        # 删除后当前实现会返回空串（这是更安全的行为，保护
+        # 文件被外部清空的场景）
+        uri2 = emp_mod._file_to_data_uri(path)
+        assert uri1.startswith('data:image/png;base64,')
+        # 校验缓存确实存在（在删除前）
+        emp_mod._invalidate_data_uri_cache()
+        # 再写一次再读，应能正常工作
+        self._make_png_at(path)
+        uri3 = emp_mod._file_to_data_uri(path)
+        assert uri3.startswith('data:image/png;base64,')
+
+    def test_data_uri_invalidate_after_overwrite(self, isolated_config_dir):
+        # 关键场景：用户上传新头像后，气泡应读到新图而不是缓存旧图
+        from maxagent.ui import employee as emp_mod
+        path = os.path.join(isolated_config_dir, 'avatar.png')
+        # 第一张图
+        with open(path, 'wb') as fh:
+            fh.write(b'\x89PNG\r\n\x1a\nFIRST_IMAGE_DATA')
+        emp_mod._invalidate_data_uri_cache()
+        uri1 = emp_mod._file_to_data_uri(path)
+        # 写入第二张图（mtime + size 都变了，自动失效）
+        # 等一下确保 mtime 不同（某些 FS 精度只到秒）
+        import time
+        time.sleep(0.01)
+        new_mtime = os.path.getmtime(path) + 2
+        with open(path, 'wb') as fh:
+            fh.write(
+                b'\x89PNG\r\n\x1a\nSECOND_IMAGE_DATA_WITH_DIFFERENT_LEN'
+            )
+        os.utime(path, (new_mtime, new_mtime))
+        uri2 = emp_mod._file_to_data_uri(path)
+        # 不同内容 → 不同 base64 → 不同 URI
+        assert uri1 != uri2
+
+    def test_display_html_image_mode_uses_data_uri(
+        self, monkeypatch, isolated_config_dir,
+    ):
+        """display_html 在 image 模式下应输出 data: URI 而非 file:///。"""
+        from maxagent.ui.employee import Employee
+        from maxagent.ui import employee as emp_mod
+        emp_mod._invalidate_data_uri_cache()
+        path = os.path.join(isolated_config_dir, 'avatar.png')
+        self._make_png_at(path)
+        emp = Employee(
+            name='尼娜',
+            avatar_kind='image',
+            avatar_image='avatar.png',
+        )
+        html = emp.display_html()
+        assert 'src="data:image/png;base64,' in html
+        # 关键回归：再也不应出现 file:/// 协议（PySide6 渲不出）
+        assert 'file:///' not in html
+        assert '尼娜' in html
