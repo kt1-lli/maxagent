@@ -85,6 +85,7 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('🤖') + '  模型', 'model'),
         (_ee('🌐') + '  联网', 'network'),
         (_ee('🎨') + '  应用', 'app'),
+        (_ee('📋') + '  我的规则', 'rules'),
         (_ee('📜') + '  日志', 'log'),
         (_ee('❓') + '  帮助', 'help'),
     ]
@@ -132,6 +133,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_model())
         self.stack.addWidget(self._build_page_network())
         self.stack.addWidget(self._build_page_app())
+        self.stack.addWidget(self._build_page_rules())
         self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_help())
         right_box.addWidget(self.stack, 1)
@@ -621,6 +623,195 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addWidget(info)
         layout.addStretch(1)
         return page
+
+    # ================================================================== #
+    # Page 4: 我的规则（用户从对话中沉淀的 LLM 行为规则）
+    # ================================================================== #
+    def _build_page_rules(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        title = QtWidgets.QLabel(
+            '<b>我的规则</b><br>'
+            '<span style="color:#aaa;">'
+            '这里是从你与 AI 的协作中沉淀的本地规则，'
+            '会在每轮对话注入到 system prompt。'
+            '官方文档不会被改动；超过 4KB 的部分会按"最新优先"截断。'
+            '</span>'
+        )
+        title.setWordWrap(True)
+        title.setTextFormat(QtCore.Qt.RichText)
+        layout.addWidget(title)
+
+        # 状态行：规则总数 + 当前注入字节数
+        self._rules_status_label = QtWidgets.QLabel('')
+        self._rules_status_label.setStyleSheet('color:#7ec0ff;')
+        layout.addWidget(self._rules_status_label)
+
+        # 规则列表
+        self._rules_list = QtWidgets.QListWidget()
+        self._rules_list.setStyleSheet(
+            'QListWidget { background:#252525; color:#d4d4d4; border:1px solid #444; }'
+            'QListWidget::item { padding:6px; border-bottom:1px solid #333; }'
+            'QListWidget::item:selected { background:#3a5d8f; }'
+        )
+        self._rules_list.itemDoubleClicked.connect(self._on_rules_view_detail)
+        layout.addWidget(self._rules_list, 1)
+
+        # 操作按钮
+        btn_row = QtWidgets.QHBoxLayout()
+        view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看详情'))
+        view_btn.clicked.connect(self._on_rules_view_detail)
+        btn_row.addWidget(view_btn)
+        toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        toggle_btn.clicked.connect(self._on_rules_toggle_enabled)
+        btn_row.addWidget(toggle_btn)
+        del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        del_btn.setStyleSheet('color:#ff8888;')
+        del_btn.clicked.connect(self._on_rules_delete)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch(1)
+        refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        refresh_btn.clicked.connect(self._refresh_rules_list)
+        btn_row.addWidget(refresh_btn)
+        layout.addLayout(btn_row)
+
+        # 初次加载
+        self._refresh_rules_list()
+        return page
+
+    # ------------------------------------------------------------------ #
+    # 我的规则 - 事件处理
+    # ------------------------------------------------------------------ #
+    def _refresh_rules_list(self):
+        """重新扫盘并刷新规则列表。"""
+        try:
+            from ..user_rules_loader import list_rules
+            from ..user_rules_loader import total_enabled_bytes
+            from ..user_rules_loader import MAX_TOTAL_BYTES
+        except Exception as exc:  # pylint: disable=broad-except
+            self._rules_status_label.setText(
+                '<span style="color:#ff8888;">加载规则模块失败: {}</span>'.format(exc),
+            )
+            return
+
+        self._rules_list.clear()
+        rules = list_rules(only_enabled=False)
+        for r in rules:
+            enabled = r.get('enabled', True)
+            mark = '◉' if enabled else '○'
+            color = '#a8e6a8' if enabled else '#888'
+            text = '{} [{}] {}'.format(
+                mark, r.get('id', ''), r.get('title', ''),
+            )
+            item = QtWidgets.QListWidgetItem(text)
+            item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+            item.setData(QtCore.Qt.UserRole, r.get('id', ''))
+            self._rules_list.addItem(item)
+
+        used = total_enabled_bytes()
+        pct = (used * 100) // max(MAX_TOTAL_BYTES, 1)
+        if pct >= 90:
+            color = '#ff8888'
+        elif pct >= 70:
+            color = '#ffd166'
+        else:
+            color = '#7ec0ff'
+        self._rules_status_label.setText(
+            '<span style="color:{c};">共 {n} 条规则，已启用部分占用 {u}/{m} 字节 ({p}%)</span>'
+            .format(
+                c=color,
+                n=len(rules),
+                u=used,
+                m=MAX_TOTAL_BYTES,
+                p=pct,
+            ),
+        )
+
+    def _selected_rule_id(self):
+        # type: () -> Optional[str]
+        item = self._rules_list.currentItem()
+        if item is None:
+            return None
+        return item.data(QtCore.Qt.UserRole)
+
+    def _on_rules_view_detail(self, *_args):
+        rid = self._selected_rule_id()
+        if not rid:
+            return
+        try:
+            from ..user_rules_loader import get_rule
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+        r = get_rule(rid)
+        if r is None:
+            QtWidgets.QMessageBox.information(self, '提示', '规则已不存在')
+            self._refresh_rules_list()
+            return
+        # 简单只读展示
+        body = (
+            'ID: {id}\n标题: {title}\n标签: {tags}\n启用: {enabled}\n\n'
+            '【规则正文】\n{content}\n\n'
+            '【反例】\n{bad}\n\n'
+            '【正例】\n{good}\n\n'
+            '【理由】\n{rationale}'
+        ).format(
+            id=r.get('id', ''),
+            title=r.get('title', ''),
+            tags=', '.join(r.get('tags') or []),
+            enabled=r.get('enabled', True),
+            content=r.get('content', ''),
+            bad=r.get('bad_example', '') or '(无)',
+            good=r.get('good_example', '') or '(无)',
+            rationale=r.get('rationale', '') or '(无)',
+        )
+        dlg = QtWidgets.QMessageBox(self)
+        dlg.setWindowTitle('规则详情 · {}'.format(r.get('id', '')))
+        dlg.setText(body)
+        dlg.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        dlg.exec_()
+
+    def _on_rules_toggle_enabled(self):
+        rid = self._selected_rule_id()
+        if not rid:
+            return
+        try:
+            from ..user_rules_loader import get_rule
+            from ..user_rules_loader import set_rule_enabled
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+        r = get_rule(rid)
+        if r is None:
+            self._refresh_rules_list()
+            return
+        set_rule_enabled(rid, not r.get('enabled', True))
+        self._refresh_rules_list()
+
+    def _on_rules_delete(self):
+        rid = self._selected_rule_id()
+        if not rid:
+            return
+        ans = QtWidgets.QMessageBox.question(
+            self,
+            '确认删除',
+            '确定删除规则 [{}] 吗？此操作不可撤销。'.format(rid),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ans != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            from ..user_rules_loader import delete_rule
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+        delete_rule(rid)
+        self._refresh_rules_list()
 
     # ================================================================== #
     # Page 5: 帮助

@@ -1250,6 +1250,37 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             set_approval_callback(make_approval_callback(parent_widget=self))
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning('注册学习审批回调失败: %s', exc)
+        # 同时安装规则学习审批回调（同样要求主线程）
+        try:
+            from .rule_approval_dialog import make_rule_approval_callback
+            from ..tools.learn_rules import set_rule_approval_callback
+            set_rule_approval_callback(
+                make_rule_approval_callback(parent_widget=self),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('注册规则审批回调失败: %s', exc)
+
+    def _build_system_prompt_addon(self, user_input=None):
+        """合并 skills 和用户规则两个 system prompt 附加段。
+
+        :param user_input: 当前用户消息，传给 skills 触发关键词匹配
+        :returns: 多行字符串，可能为空
+        """
+        parts = []
+        try:
+            skill_part = self._skill_mgr.build_system_prompt_addon(user_input)
+            if skill_part:
+                parts.append(skill_part)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('skills addon 异常: %s', exc)
+        try:
+            from ..user_rules_loader import build_system_prompt_addon as _bra
+            rule_part = _bra(user_input)
+            if rule_part:
+                parts.append(rule_part)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('user_rules addon 异常: %s', exc)
+        return '\n\n'.join(parts)
 
     def _on_example_picked(self, text):
         # 把示例文本填入输入框，让用户可以编辑后再发
@@ -1370,7 +1401,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
         self._worker.set_system_prompt_addon_provider(
-            self._skill_mgr.build_system_prompt_addon,
+            self._build_system_prompt_addon,
         )
         # 根据当前 🌐 按钮状态决定本轮是否暴露 web_* 工具给 LLM
         use_web = self._should_use_web_this_turn()
