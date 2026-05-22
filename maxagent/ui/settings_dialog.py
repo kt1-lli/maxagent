@@ -24,6 +24,7 @@ UI 布局（v2 改造为左侧导航 + 右侧 Stacked Page）::
 from __future__ import absolute_import
 from __future__ import print_function
 
+import time
 from typing import Any
 from typing import Optional
 
@@ -674,6 +675,19 @@ class SettingsDialog(QtWidgets.QDialog):
         del_btn.clicked.connect(self._on_rules_delete)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
+        # Phase 2: 导入 / 导出（轻共享）
+        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
+        export_btn.setToolTip('把当前选中的规则导出为 .maxagent-rule.json 文件')
+        export_btn.clicked.connect(self._on_rules_export_selected)
+        btn_row.addWidget(export_btn)
+        export_all_btn = QtWidgets.QPushButton(_btn_label('📦', '导出全部'))
+        export_all_btn.setToolTip('把所有已启用规则打包导出为 .maxagent-rules.json 文件')
+        export_all_btn.clicked.connect(self._on_rules_export_all)
+        btn_row.addWidget(export_all_btn)
+        import_btn = QtWidgets.QPushButton(_btn_label('📥', '导入文件'))
+        import_btn.setToolTip('从 .maxagent-rule(s).json 文件导入规则')
+        import_btn.clicked.connect(self._on_rules_import_file)
+        btn_row.addWidget(import_btn)
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
         refresh_btn.clicked.connect(self._refresh_rules_list)
         btn_row.addWidget(refresh_btn)
@@ -704,8 +718,10 @@ class SettingsDialog(QtWidgets.QDialog):
             enabled = r.get('enabled', True)
             mark = '◉' if enabled else '○'
             color = '#a8e6a8' if enabled else '#888'
-            text = '{} [{}] {}'.format(
-                mark, r.get('id', ''), r.get('title', ''),
+            # 来源标记：'import' 显示 [导入]，否则不加（自创为隐式默认）
+            src_tag = ' [导入]' if r.get('source') == 'import' else ''
+            text = '{} [{}]{} {}'.format(
+                mark, r.get('id', ''), src_tag, r.get('title', ''),
             )
             item = QtWidgets.QListWidgetItem(text)
             item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
@@ -812,6 +828,102 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         delete_rule(rid)
         self._refresh_rules_list()
+
+    # ------------------------------------------------------------------ #
+    # 我的规则 - 导入 / 导出（Phase 2）
+    # ------------------------------------------------------------------ #
+    def _on_rules_export_selected(self):
+        """把当前选中规则导出为 .maxagent-rule.json 文件。"""
+        rid = self._selected_rule_id()
+        if not rid:
+            QtWidgets.QMessageBox.information(
+                self, '提示', '请先在列表中选中一条规则再导出。',
+            )
+            return
+        try:
+            from .. import user_rules_loader as url
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+
+        default_name = '{}.maxagent-rule.json'.format(rid)
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            '导出规则',
+            default_name,
+            'MaxAgent 规则文件 (*.maxagent-rule.json);;所有文件 (*.*)',
+        )
+        if not path:
+            return
+        try:
+            payload = url.export_rule(rid)
+            url.write_export_file(path, payload)
+        except (ValueError, OSError) as exc:
+            QtWidgets.QMessageBox.warning(self, '导出失败', str(exc))
+            return
+        QtWidgets.QMessageBox.information(
+            self, '导出成功',
+            '规则 [{}] 已导出到:\n{}'.format(rid, path),
+        )
+
+    def _on_rules_export_all(self):
+        """打包导出全部启用规则为 .maxagent-rules.json 文件。"""
+        try:
+            from .. import user_rules_loader as url
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+
+        bundle = url.export_bundle()
+        rules = bundle.get('rules') or []
+        if not rules:
+            QtWidgets.QMessageBox.information(
+                self, '提示',
+                '没有可导出的规则（至少需要一条已启用规则）。',
+            )
+            return
+
+        default_name = 'rules-{}.maxagent-rules.json'.format(
+            time.strftime('%Y%m%d'),
+        )
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            '导出全部已启用规则',
+            default_name,
+            'MaxAgent 规则包 (*.maxagent-rules.json);;所有文件 (*.*)',
+        )
+        if not path:
+            return
+        try:
+            url.write_export_file(path, bundle)
+        except (ValueError, OSError) as exc:
+            QtWidgets.QMessageBox.warning(self, '导出失败', str(exc))
+            return
+        QtWidgets.QMessageBox.information(
+            self, '导出成功',
+            '已导出 {} 条规则到:\n{}'.format(len(rules), path),
+        )
+
+    def _on_rules_import_file(self):
+        """打开导入对话框，让用户选择文件并勾选要导入的规则。"""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            '选择规则文件',
+            '',
+            'MaxAgent 规则文件 (*.maxagent-rule.json *.maxagent-rules.json *.json);;'
+            '所有文件 (*.*)',
+        )
+        if not path:
+            return
+        try:
+            from .rule_import_dialog import RuleImportDialog
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(self, '错误', str(exc))
+            return
+
+        dlg = RuleImportDialog(path, self)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            self._refresh_rules_list()
 
     # ================================================================== #
     # Page 5: 帮助

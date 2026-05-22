@@ -135,6 +135,11 @@ def write_rule(rule_id, data):
         raise ValueError('规则标题不能为空')
     validate_rule_content(content)
 
+    # source: 'manual' = 用户/LLM 在本机沉淀, 'import' = 从外部文件导入
+    source = data.get('source') or 'manual'
+    if source not in ('manual', 'import'):
+        source = 'manual'
+
     full = {
         'id': rule_id,
         'title': title,
@@ -147,6 +152,8 @@ def write_rule(rule_id, data):
         'created_at': data.get('created_at') or time.time(),
         'approved_by_user': bool(data.get('approved_by_user', True)),
         'enabled': bool(data.get('enabled', True)),
+        'source': source,
+        'imported_at': data.get('imported_at') or 0.0,
     }
 
     path = _rule_path(rule_id)
@@ -295,6 +302,181 @@ def total_enabled_bytes():
     return len(addon.encode('utf-8'))
 
 
+# ---------------------------------------------------------------------- #
+# 导入 / 导出（Phase 2 - 轻共享）
+# ---------------------------------------------------------------------- #
+
+# 文件格式版本号，将来 schema 演进时递增并保留向后兼容
+EXPORT_SCHEMA_VERSION = 1
+
+# 单条规则导出后缀（一个 JSON 对象）
+SINGLE_FILE_TYPE = 'maxagent-rule'
+# 多条规则打包后缀（包裹在 rules 字段下的列表）
+BUNDLE_FILE_TYPE = 'maxagent-rules'
+
+
+def export_rule(rule_id):
+    # type: (str) -> Dict[str, Any]
+    """把单条规则导出为可写盘的字典（带文件类型标识）。
+
+    :raises ValueError: 规则不存在
+    """
+    rule = get_rule(rule_id)
+    if rule is None:
+        raise ValueError('规则不存在: {}'.format(rule_id))
+    return {
+        'type': SINGLE_FILE_TYPE,
+        'schema_version': EXPORT_SCHEMA_VERSION,
+        'exported_at': time.time(),
+        'rule': rule,
+    }
+
+
+def export_bundle(rule_ids=None):
+    # type: (Optional[List[str]]) -> Dict[str, Any]
+    """把多条规则打包导出。
+
+    :param rule_ids: 指定 ID 列表；None 表示导出全部已启用规则
+    """
+    if rule_ids is None:
+        rules = list_rules(only_enabled=True)
+    else:
+        rules = []
+        for rid in rule_ids:
+            r = get_rule(rid)
+            if r is not None:
+                rules.append(r)
+    return {
+        'type': BUNDLE_FILE_TYPE,
+        'schema_version': EXPORT_SCHEMA_VERSION,
+        'exported_at': time.time(),
+        'rules': rules,
+    }
+
+
+def write_export_file(path, payload):
+    # type: (str, Dict[str, Any]) -> str
+    """把 ``export_rule`` / ``export_bundle`` 的结果落盘成 JSON 文件。"""
+    if not isinstance(payload, dict) or 'type' not in payload:
+        raise ValueError('导出数据缺少 type 字段，请使用 export_rule/export_bundle 生成')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    if os.path.exists(path):
+        os.replace(tmp, path)
+    else:
+        os.rename(tmp, path)
+    return path
+
+
+def parse_import_file(path):
+    # type: (str) -> List[Dict[str, Any]]
+    """解析导入文件，统一返回规则列表（即使单条文件也包成单元素列表）。
+
+    支持两种顶层结构：
+    - 单条：``{"type": "maxagent-rule", "rule": {...}}``
+    - 多条：``{"type": "maxagent-rules", "rules": [{...}, ...]}``
+
+    向后兼容：若顶层就是单条规则字典（缺 ``type`` 字段但有 ``id`` 和
+    ``content``），也认为是合法单条文件。
+
+    :raises ValueError: 文件不存在 / JSON 损坏 / 格式无法识别
+    """
+    if not os.path.exists(path):
+        raise ValueError('文件不存在: {}'.format(path))
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError('解析 JSON 失败: {}'.format(exc))
+
+    if not isinstance(data, dict):
+        raise ValueError('导入文件根节点必须是 JSON 对象')
+
+    file_type = data.get('type')
+    if file_type == SINGLE_FILE_TYPE:
+        rule = data.get('rule')
+        if not isinstance(rule, dict):
+            raise ValueError('单条规则文件缺少 rule 字段')
+        return [rule]
+    if file_type == BUNDLE_FILE_TYPE:
+        rules = data.get('rules')
+        if not isinstance(rules, list):
+            raise ValueError('多条规则文件缺少 rules 列表')
+        # 过滤掉非 dict 元素，避免 LLM/手工编辑搞出的脏数据炸 UI
+        return [r for r in rules if isinstance(r, dict)]
+    # 向后兼容：裸规则对象
+    if 'id' in data and 'content' in data:
+        return [data]
+    raise ValueError(
+        '无法识别的文件格式（type={!r}）'.format(file_type),
+    )
+
+
+def import_rule(rule_data, overwrite=False):
+    # type: (Dict[str, Any], bool) -> Dict[str, Any]
+    """把单条规则数据导入本地用户规则目录。
+
+    :param rule_data: 规则字段字典
+    :param overwrite: 同 ID 已存在时是否覆盖；False 时返回 skipped
+    :returns: ``{'status': 'imported'|'skipped'|'overwritten',
+        'rule_id': str, 'path': str}``
+    """
+    rule_id = rule_data.get('id') or ''
+    validate_rule_id(rule_id)  # 抛 ValueError 是 import 调用方该处理的事
+    validate_rule_content(rule_data.get('content') or '')
+
+    exists = get_rule(rule_id) is not None
+    if exists and not overwrite:
+        return {
+            'status': 'skipped',
+            'rule_id': rule_id,
+            'path': _rule_path(rule_id),
+            'reason': '规则已存在，未勾选覆盖',
+        }
+
+    # 强制标记来源，并注入导入时间
+    payload = dict(rule_data)
+    payload['source'] = 'import'
+    payload['imported_at'] = time.time()
+    # 不沿用导出文件里的 created_at（保持本地"创建时间"语义新鲜）
+    # 但保留对方原始 created_at 到 rationale 里太啰嗦——这里直接重置
+    payload['created_at'] = time.time()
+
+    path = write_rule(rule_id, payload)
+    return {
+        'status': 'overwritten' if exists else 'imported',
+        'rule_id': rule_id,
+        'path': path,
+    }
+
+
+def diff_import_rules(rule_list):
+    # type: (List[Dict[str, Any]]) -> List[Dict[str, Any]]
+    """为 UI 展示用：标注每条规则是新增还是已存在 + 是否合法。
+
+    :returns: 列表，每项为 ``{'rule': {...}, 'status': 'new'|'existing'|'invalid',
+        'reason': str}``
+    """
+    out = []
+    for r in rule_list:
+        if not isinstance(r, dict):
+            out.append({'rule': {}, 'status': 'invalid', 'reason': '不是 JSON 对象'})
+            continue
+        rid = r.get('id') or ''
+        try:
+            validate_rule_id(rid)
+            validate_rule_content(r.get('content') or '')
+        except ValueError as exc:
+            out.append({'rule': r, 'status': 'invalid', 'reason': str(exc)})
+            continue
+        if get_rule(rid) is not None:
+            out.append({'rule': r, 'status': 'existing', 'reason': ''})
+        else:
+            out.append({'rule': r, 'status': 'new', 'reason': ''})
+    return out
+
+
 __all__ = [
     'get_user_rules_dir',
     'set_user_rules_dir_override',
@@ -307,6 +489,15 @@ __all__ = [
     'set_rule_enabled',
     'build_system_prompt_addon',
     'total_enabled_bytes',
+    'export_rule',
+    'export_bundle',
+    'write_export_file',
+    'parse_import_file',
+    'import_rule',
+    'diff_import_rules',
     'MAX_RULE_BYTES',
     'MAX_TOTAL_BYTES',
+    'EXPORT_SCHEMA_VERSION',
+    'SINGLE_FILE_TYPE',
+    'BUNDLE_FILE_TYPE',
 ]

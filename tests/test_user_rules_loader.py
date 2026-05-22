@@ -13,6 +13,8 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import json
+import os
 import time
 
 import pytest
@@ -317,3 +319,160 @@ class TestLearnRulesTool:
         ans = delete_learned_rule('rule_x')
         assert ans['deleted'] is True
         assert url.get_rule('rule_x') is None
+
+
+# ====================================================================== #
+# Phase 2: 导入 / 导出
+# ====================================================================== #
+
+class TestExportImport:
+    """规则导入导出（轻共享）功能测试。"""
+
+    def test_export_single_roundtrip(self, rules_base, tmp_path):
+        """单条导出 → 写盘 → 解析 → 导入到新位置，往返一致。"""
+        url.write_rule('src_rule', _make_rule('src_rule'))
+        payload = url.export_rule('src_rule')
+        assert payload['type'] == url.SINGLE_FILE_TYPE
+        assert payload['schema_version'] == url.EXPORT_SCHEMA_VERSION
+        assert payload['rule']['id'] == 'src_rule'
+
+        out = str(tmp_path / 'one.maxagent-rule.json')
+        url.write_export_file(out, payload)
+        assert os.path.exists(out)
+
+        rules = url.parse_import_file(out)
+        assert len(rules) == 1
+        assert rules[0]['id'] == 'src_rule'
+        assert rules[0]['content']
+
+    def test_export_bundle_all_enabled(self, rules_base, tmp_path):
+        """打包导出：默认导出全部启用规则；禁用规则不在 bundle 中。"""
+        url.write_rule('rule_a', _make_rule('rule_a'))
+        url.write_rule('rule_b', _make_rule('rule_b'))
+        url.write_rule('rule_c', _make_rule('rule_c'))
+        url.set_rule_enabled('rule_b', False)
+
+        bundle = url.export_bundle()
+        assert bundle['type'] == url.BUNDLE_FILE_TYPE
+        ids = sorted(r['id'] for r in bundle['rules'])
+        assert ids == ['rule_a', 'rule_c']
+
+        out = str(tmp_path / 'all.maxagent-rules.json')
+        url.write_export_file(out, bundle)
+        parsed = url.parse_import_file(out)
+        assert len(parsed) == 2
+
+    def test_export_bundle_explicit_ids(self, rules_base):
+        """指定 ID 列表的 bundle 包含禁用规则也会被收纳（用户显式选择）。"""
+        url.write_rule('rule_a', _make_rule('rule_a'))
+        url.write_rule('rule_b', _make_rule('rule_b'))
+        url.set_rule_enabled('rule_b', False)
+        bundle = url.export_bundle(['rule_a', 'rule_b', 'not_exist'])
+        ids = sorted(r['id'] for r in bundle['rules'])
+        # not_exist 自动跳过；禁用规则被显式列出仍包含
+        assert ids == ['rule_a', 'rule_b']
+
+    def test_parse_legacy_naked_rule(self, rules_base, tmp_path):
+        """向后兼容：裸规则对象（缺 type 字段）也能解析。"""
+        legacy = {
+            'id': 'legacy_rule',
+            'title': '老格式',
+            'content': '老导出文件没有 type 字段',
+        }
+        out = str(tmp_path / 'legacy.json')
+        with open(out, 'w', encoding='utf-8') as fh:
+            json.dump(legacy, fh)
+
+        rules = url.parse_import_file(out)
+        assert len(rules) == 1
+        assert rules[0]['id'] == 'legacy_rule'
+
+    def test_parse_invalid_file_rejected(self, rules_base, tmp_path):
+        """畸形文件应被拒绝。"""
+        # 1) JSON 损坏
+        bad1 = str(tmp_path / 'broken.json')
+        with open(bad1, 'w', encoding='utf-8') as fh:
+            fh.write('{not valid json')
+        with pytest.raises(ValueError):
+            url.parse_import_file(bad1)
+
+        # 2) 顶层不是对象
+        bad2 = str(tmp_path / 'array.json')
+        with open(bad2, 'w', encoding='utf-8') as fh:
+            json.dump([1, 2, 3], fh)
+        with pytest.raises(ValueError):
+            url.parse_import_file(bad2)
+
+        # 3) 文件不存在
+        with pytest.raises(ValueError):
+            url.parse_import_file(str(tmp_path / 'nope.json'))
+
+        # 4) 无法识别的 type
+        bad3 = str(tmp_path / 'unknown.json')
+        with open(bad3, 'w', encoding='utf-8') as fh:
+            json.dump({'type': 'something-else'}, fh)
+        with pytest.raises(ValueError):
+            url.parse_import_file(bad3)
+
+    def test_import_skip_existing(self, rules_base):
+        """同 ID 已存在且未勾选覆盖时返回 skipped，不修改原数据。"""
+        url.write_rule('keep_me', _make_rule('keep_me'))
+        original = url.get_rule('keep_me')
+        original_title = original['title']
+
+        new_data = _make_rule('keep_me')
+        new_data['id'] = 'keep_me'
+        new_data['title'] = '我想顶替你的'
+
+        result = url.import_rule(new_data, overwrite=False)
+        assert result['status'] == 'skipped'
+        # 原数据未被改写
+        assert url.get_rule('keep_me')['title'] == original_title
+
+    def test_import_with_overwrite(self, rules_base):
+        """overwrite=True 时同 ID 被覆盖，状态为 overwritten。"""
+        url.write_rule('replace_me', _make_rule('replace_me'))
+        new_data = _make_rule('replace_me')
+        new_data['id'] = 'replace_me'
+        new_data['title'] = '新内容'
+
+        result = url.import_rule(new_data, overwrite=True)
+        assert result['status'] == 'overwritten'
+        assert url.get_rule('replace_me')['title'] == '新内容'
+
+    def test_import_marks_source_field(self, rules_base):
+        """导入的规则必须打上 source='import' 和 imported_at 时间戳。"""
+        new_data = _make_rule('fresh_one')
+        new_data['id'] = 'fresh_one'
+        result = url.import_rule(new_data, overwrite=False)
+        assert result['status'] == 'imported'
+        rule = url.get_rule('fresh_one')
+        assert rule['source'] == 'import'
+        assert rule['imported_at'] > 0
+
+    def test_diff_import_rules(self, rules_base):
+        """diff 函数：标注每条规则是 new / existing / invalid。"""
+        url.write_rule('exists_one', _make_rule('exists_one'))
+
+        existing = _make_rule('exists_one')
+        existing['id'] = 'exists_one'
+        new_one = _make_rule('brand_new')
+        new_one['id'] = 'brand_new'
+
+        candidates = [
+            existing,  # existing
+            new_one,  # new
+            {'id': 'Bad-ID', 'content': 'x' * 30, 'title': 't'},  # invalid id
+            {'id': 'no_content', 'content': '', 'title': 't'},  # invalid content
+            'not a dict',  # invalid type
+        ]
+        diffs = url.diff_import_rules(candidates)
+        statuses = [d['status'] for d in diffs]
+        assert statuses == ['existing', 'new', 'invalid', 'invalid', 'invalid']
+
+    def test_manual_rules_keep_source_manual(self, rules_base):
+        """write_rule 默认写入的规则 source='manual'。"""
+        url.write_rule('manual_one', _make_rule('manual_one'))
+        rule = url.get_rule('manual_one')
+        assert rule['source'] == 'manual'
+        assert rule['imported_at'] == 0.0
