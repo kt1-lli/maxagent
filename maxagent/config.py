@@ -162,9 +162,11 @@ class AppConfig:
     # 启动 Max 时是否自动显示 MaxAgent 面板。False 时用户需手动调用
     # ``maxagent.startup.show_panel()`` 或 MaxScript ``g_show_max_agent()``
     auto_show_on_startup: bool = True
-    # 日志级别。可选 ``DEBUG`` / ``INFO`` / ``WARNING`` / ``ERROR``。
-    # 文件日志固定写 DEBUG 以上（最详细，方便事后回溯），控制台只输出
-    # 这里配置的级别。出问题时调成 ``DEBUG`` 抓现场即可。
+    # 日志级别。三态：``OFF`` / ``INFO`` / ``DEBUG``。
+    #   OFF   - 完全关闭日志（不写文件、不输出控制台）
+    #   INFO  - 默认开启，记录关键节点（会话、错误、配置变更等）
+    #   DEBUG - 详细模式，附加 LLM 请求/工具调用/线程切换等全量埋点
+    # 老配置 ``WARNING`` / ``ERROR`` 会在加载时归一化到 ``INFO``。
     log_level: str = "INFO"
 
     # ---------- 联网搜索 ---------- #
@@ -243,12 +245,16 @@ class AppConfig:
         cfg.auto_show_on_startup = bool(
             data.get("auto_show_on_startup", True)
         )
-        # log_level 兼容老配置：缺失或非法值时回落 INFO
+        # log_level 兼容老配置：三态化（OFF / INFO / DEBUG）。
+        # 老的 WARNING / ERROR / CRITICAL 一律折算成 INFO；非法值
+        # 同样回落 INFO，保证用户从历史版本升级不会拿到一个会让
+        # logger 直接抛错的字段。
         raw_level = str(data.get("log_level", "INFO") or "INFO").upper()
-        cfg.log_level = (
-            raw_level if raw_level in ("DEBUG", "INFO", "WARNING", "ERROR")
-            else "INFO"
-        )
+        if raw_level in ("OFF", "INFO", "DEBUG"):
+            cfg.log_level = raw_level
+        else:
+            # 包含 WARNING / ERROR / CRITICAL / 任意非法字符串
+            cfg.log_level = "INFO"
         # ---- 联网搜索 ---- #
         mode = str(data.get("web_search_mode", "auto") or "auto").lower()
         cfg.web_search_mode = (

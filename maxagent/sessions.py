@@ -255,6 +255,11 @@ class SessionManager(object):
         metas = self._load_index()
         metas.insert(0, meta)
         self._save_index(metas)
+        # DEBUG 埋点：会话生命周期
+        logger.debug(
+            'session_create sid=%s title=%s has_prompt=%s',
+            sid, meta.title, system_prompt is not None,
+        )
         return meta
 
     def save(self, meta, conversation):
@@ -295,6 +300,11 @@ class SessionManager(object):
                 except (OSError, ValueError):
                     return None
                 conv = Conversation.from_json(data.get('conversation', {}))
+                # DEBUG 埋点：会话加载
+                logger.debug(
+                    'session_load sid=%s title=%s msgs=%d',
+                    sid, m.title, len(conv),
+                )
                 return m, conv
         return None
 
@@ -316,6 +326,8 @@ class SessionManager(object):
                 logger.warning('删除会话文件失败: %s', exc)
         metas = [m for m in metas if m.sid != sid]
         self._save_index(metas)
+        # DEBUG 埋点：会话删除
+        logger.debug('session_delete sid=%s title=%s', sid, target.title)
         return True
 
     def rename(self, sid, new_title):

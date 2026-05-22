@@ -1523,6 +1523,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         text = self.input_edit.toPlainText().strip()
         if not text:
             return
+        # DEBUG 埋点：用户发送（input 长度，避免泄漏正文）
+        logger.debug('ui_send len=%d', len(text))
         self.input_edit.clear()
         self._renderer.add_user(text)
         self._renderer.add_assistant_start()
@@ -1560,6 +1562,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _on_stop(self):
         if self._worker is not None:
+            # DEBUG 埋点：用户停止
+            logger.debug('ui_stop clicked')
             self._worker.cancel()
             self.status_label.setText('⏸ 正在停止...')
 

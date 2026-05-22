@@ -584,7 +584,7 @@ class SettingsDialog(QtWidgets.QDialog):
         return tab
 
     # ================================================================== #
-    # Page 5: 日志
+    # Page 5: 日志（三态：关闭 / 开启 / DEBUG）
     # ================================================================== #
     def _build_page_log(self):
         # type: () -> QtWidgets.QWidget
@@ -596,39 +596,66 @@ class SettingsDialog(QtWidgets.QDialog):
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
-        # 级别行
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel('日志级别:'))
-        self.log_level_combo = QtWidgets.QComboBox()
-        self.log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR'])
-        self.log_level_combo.setToolTip(
-            '日志级别（仅控制台输出粒度，文件日志固定为 DEBUG 全量）。\n'
-            '排查偶发问题时调成 DEBUG 抓现场，正常使用 INFO 即可。',
+        # ---- 三态单选 ----
+        # 用 QButtonGroup 把三个 radio 互斥分组，再统一接 toggled 信号。
+        # 单选按钮比下拉框更直观——状态一眼可见，不需要额外点开。
+        state_box = QtWidgets.QGroupBox('日志状态')
+        state_layout = QtWidgets.QHBoxLayout(state_box)
+        self.log_state_group = QtWidgets.QButtonGroup(self)
+        self.log_state_group.setExclusive(True)
+
+        self.log_radio_off = QtWidgets.QRadioButton('关闭')
+        self.log_radio_off.setToolTip(
+            '完全关闭日志：不写文件、不输出控制台。\n'
+            '适合不需要排查问题、希望最干净的日常使用。',
         )
-        self.log_level_combo.currentTextChanged.connect(
-            self._on_log_level_changed,
+        self.log_radio_on = QtWidgets.QRadioButton('开启')
+        self.log_radio_on.setToolTip(
+            '默认模式：记录关键节点到日志文件，不输出控制台。\n'
+            '会话生命周期、错误堆栈、配置变更等都会入档。',
         )
-        row.addWidget(self.log_level_combo, 0)
-        row.addStretch(1)
-        self.open_log_dir_btn = QtWidgets.QPushButton(_btn_label('📂', '打开日志目录'))
+        self.log_radio_debug = QtWidgets.QRadioButton('DEBUG')
+        self.log_radio_debug.setToolTip(
+            '详细模式：在"开启"基础上追加全量埋点（仍只写文件，\n'
+            '不输出控制台）。包含 LLM 请求/响应、工具调用入参出参、\n'
+            'Worker 线程切换、UI 关键事件等。\n'
+            '排查偶发问题时切到 DEBUG 抓现场。',
+        )
+        # 三个 radio 都注册到同一个 group 实现互斥
+        for btn in (
+            self.log_radio_off, self.log_radio_on, self.log_radio_debug,
+        ):
+            self.log_state_group.addButton(btn)
+            state_layout.addWidget(btn)
+            btn.toggled.connect(self._on_log_state_radio_toggled)
+        state_layout.addStretch(1)
+
+        # 打开日志目录按钮放在 group 同一行末，不影响布局
+        self.open_log_dir_btn = QtWidgets.QPushButton(
+            _btn_label('📂', '打开日志目录'),
+        )
         self.open_log_dir_btn.setToolTip(
             '在系统文件管理器中打开 maxagent 日志目录\n'
             '（包含 maxagent.log 主文件 + 滚动归档）',
         )
         self.open_log_dir_btn.clicked.connect(self._open_log_dir)
-        row.addWidget(self.open_log_dir_btn)
-        layout.addLayout(row)
+        state_layout.addWidget(self.open_log_dir_btn)
+        layout.addWidget(state_box)
 
-        # 详细说明
+        # ---- 详细说明 ----
         info = QtWidgets.QLabel(
-            '<b>DEBUG 级别</b>会同时输出：\n'
-            '  • LLM 请求 payload 摘要、流式 chunk 速率统计\n'
-            '  • 每次工具调用入参/出参/耗时\n'
-            '  • Worker 子线程切换、主线程阻塞监测\n'
-            '  • UI 信号转发延迟（>50ms 才记）\n\n'
-            '排查偶发卡顿/工具异常时切到 DEBUG 抓现场；'
-            '正常使用 INFO 即可，避免控制台刷屏。\n\n'
-            '日志按 2 MB 滚动归档，最多保留 5 份历史。',
+            '<b>关闭</b>：日志系统完全静默，适合干净使用。<br>'
+            '<b>开启</b>（默认）：记录关键节点到日志文件，'
+            '<b>不输出到控制台</b>。<br>'
+            '<b>DEBUG</b>：在开启基础上追加全量埋点：<br>'
+            '&nbsp;&nbsp;• LLM 请求 payload / 流式 chunk 速率<br>'
+            '&nbsp;&nbsp;• 每次工具调用入参 / 出参 / 耗时<br>'
+            '&nbsp;&nbsp;• 会话生命周期（创建 / 加载 / 切换 / 删除）<br>'
+            '&nbsp;&nbsp;• Worker 子线程启停 / 主线程切换<br>'
+            '&nbsp;&nbsp;• UI 关键事件（发送、停止、清空、设置变更）'
+            '<br><br>'
+            '日志按 2 MB 滚动归档，最多保留 5 份历史。无论哪种状态，'
+            '日志都<b>不会输出到控制台</b>。',
         )
         info.setStyleSheet('color:#aaa;')
         info.setWordWrap(True)
@@ -1021,13 +1048,21 @@ class SettingsDialog(QtWidgets.QDialog):
             chk.blockSignals(False)
 
         level_text = str(getattr(cfg, 'log_level', 'INFO') or 'INFO').upper()
-        if level_text not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
+        # 三态归一化：老的 WARNING / ERROR 折算成 INFO
+        if level_text not in ('OFF', 'INFO', 'DEBUG'):
             level_text = 'INFO'
-        self.log_level_combo.blockSignals(True)
-        idx = self.log_level_combo.findText(level_text)
-        if idx >= 0:
-            self.log_level_combo.setCurrentIndex(idx)
-        self.log_level_combo.blockSignals(False)
+        # 反向映射：状态字符串 → 对应 radio 按钮
+        radio_map = {
+            'OFF': self.log_radio_off,
+            'INFO': self.log_radio_on,
+            'DEBUG': self.log_radio_debug,
+        }
+        target_radio = radio_map.get(level_text, self.log_radio_on)
+        # 设置过程中屏蔽信号，避免 toggled 槽误触发"用户改设置"路径
+        for btn in radio_map.values():
+            btn.blockSignals(True)
+            btn.setChecked(btn is target_radio)
+            btn.blockSignals(False)
 
         # ---- 联网设置 ---- #
         self._load_web_settings()
@@ -1045,27 +1080,41 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '保存失败', '应用设置写盘失败: {}'.format(exc),
             )
 
-    def _on_log_level_changed(self, level_text):
+    def _on_log_state_radio_toggled(self, checked):
+        # type: (bool) -> None
+        """三态单选切换槽：只在 ``checked=True`` 的那次回调里处理。
+
+        QButtonGroup 互斥时一次切换会触发两次 toggled（旧按钮 False、
+        新按钮 True），这里只响应 True 的一次，避免重复写盘。
+        """
+        if not checked:
+            return
+        # 反查当前哪个 radio 被选中 → 状态字符串
+        if self.log_radio_off.isChecked():
+            new_state = 'OFF'
+        elif self.log_radio_debug.isChecked():
+            new_state = 'DEBUG'
+        else:
+            new_state = 'INFO'
+
         cfg = self._config.config
-        new_level = str(level_text or 'INFO').upper()
-        if new_level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
-            new_level = 'INFO'
-        cfg.log_level = new_level
+        if str(getattr(cfg, 'log_level', 'INFO') or 'INFO').upper() == new_state:
+            # 重复点击同一档不必写盘
+            return
+        cfg.log_level = new_state
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except
             QtWidgets.QMessageBox.warning(
-                self, '保存失败', '日志级别写盘失败: {}'.format(exc),
+                self, '保存失败', '日志状态写盘失败: {}'.format(exc),
             )
             return
-        # 实时调整正在运行的 logger
+        # 实时应用到正在运行的 logger（无需重启）
         try:
-            import logging
-            from ..logger import ROOT_NAME
-            logging.getLogger(ROOT_NAME).setLevel(
-                getattr(logging, new_level, logging.INFO),
-            )
-            logger.info('日志级别已切换为 %s', new_level)
+            from ..logger import apply_log_level
+            apply_log_level(new_state)
+            # apply_log_level 内部已经在非 OFF 时打了 info；
+            # OFF 时由它"什么也不写"——保持完全静默语义
         except Exception:  # pylint: disable=broad-except
             pass
 

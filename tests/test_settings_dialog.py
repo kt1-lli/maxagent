@@ -135,12 +135,48 @@ def test_del_profile_by_name_blocks_active(dialog, config_mgr, monkeypatch):
     assert triggered['warn'] == 1
 
 
-def test_log_level_combo_load(dialog, config_mgr):
-    """日志级别下拉应该按当前 cfg.log_level 选中。"""
+def test_log_state_radio_load(dialog, config_mgr):
+    """日志状态三态单选应按当前 cfg.log_level 选中对应 radio。"""
     cfg = config_mgr.config
+    # DEBUG → log_radio_debug 选中
     cfg.log_level = 'DEBUG'
     dialog._load_app_settings()
-    assert dialog.log_level_combo.currentText() == 'DEBUG'
+    assert dialog.log_radio_debug.isChecked() is True
+    assert dialog.log_radio_on.isChecked() is False
+    assert dialog.log_radio_off.isChecked() is False
+
+    # OFF → log_radio_off 选中
+    cfg.log_level = 'OFF'
+    dialog._load_app_settings()
+    assert dialog.log_radio_off.isChecked() is True
+    assert dialog.log_radio_debug.isChecked() is False
+
+    # INFO（默认）→ log_radio_on 选中
+    cfg.log_level = 'INFO'
+    dialog._load_app_settings()
+    assert dialog.log_radio_on.isChecked() is True
+    assert dialog.log_radio_off.isChecked() is False
+    assert dialog.log_radio_debug.isChecked() is False
+
+    # 老配置 WARNING：在 _load_app_settings 里被归一化成 INFO
+    cfg.log_level = 'WARNING'
+    dialog._load_app_settings()
+    assert dialog.log_radio_on.isChecked() is True
+
+
+def test_log_state_radio_writes_back(dialog, config_mgr, monkeypatch):
+    """点击 DEBUG radio 后，cfg.log_level 应被写回 'DEBUG'，
+    且 logger 真实级别同步切换。"""
+    cfg = config_mgr.config
+    cfg.log_level = 'INFO'
+    dialog._load_app_settings()
+    # 触发：让 log_radio_debug 选中——QButtonGroup 互斥下会发 toggled
+    dialog.log_radio_debug.setChecked(True)
+    assert cfg.log_level == 'DEBUG'
+
+    # 切到 OFF
+    dialog.log_radio_off.setChecked(True)
+    assert cfg.log_level == 'OFF'
 
 
 def test_worker_debug_metrics_initialized():

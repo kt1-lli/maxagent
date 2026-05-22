@@ -185,6 +185,8 @@ class AgentWorker(QObject):
     def cancel(self):
         """请求取消当前对话轮（下一次工具结束/LLM 流式分块时生效）。"""
         self._cancel_event.set()
+        # DEBUG 埋点：用户主动取消（排查"卡住后点停止"路径）
+        logger.debug('worker_cancel requested')
 
     def reset_cancel(self):
         self._cancel_event.clear()

@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""统一日志模块。
+"""统一日志模块（三态版：关闭 / 开启 / DEBUG）。
 
 设计目标
 ========
-1. **持久化**：日志写入 ``<config_dir>/logs/maxagent.log``，滚动归档
-   （5 个文件 × 2 MB），重启 Max 后仍可回溯崩溃前几小时的现场。
-2. **双通道**：同时写文件 + ``stderr``。文件用于事后追溯，stderr 用
-   于开发期在 Max MAXScript Listener 里看实时输出。
-3. **独立命名空间**：所有 logger 都挂在 ``maxagent.*`` 下，
+1. **三档状态**：``OFF`` / ``INFO`` / ``DEBUG``。一字段（``log_level``）
+   表达全部含义——OFF 表示完全关闭，INFO 是默认开启，DEBUG 是详细模式。
+2. **只写文件，不写控制台**：日志一律落盘 ``<config_dir>/logs/
+   maxagent.log``，按 2 MB × 5 份滚动归档。**不再向 stderr 输出**
+   （Max 嵌入环境里也保持安静，避免 MAXScript Listener 被刷屏）。
+3. **DEBUG = 全量埋点**：DEBUG 模式下 LLM 请求 / 工具调用 / 会话生命
+   周期 / Worker 线程切换 / UI 关键事件全部入档，方便事后定位偶发
+   bug；INFO 模式下只记关键节点。
+4. **独立命名空间**：所有 logger 都挂在 ``maxagent.*`` 下，
    ``propagate=False``，绝不污染 Max 自身或其它插件的 root logger。
-4. **线程安全**：标准库 ``logging`` 内建线程锁，Worker 子线程、
+5. **线程安全**：标准库 ``logging`` 内建线程锁，Worker 子线程、
    主线程、QTimer 回调写日志都安全。
-5. **零外部依赖**：仅用 ``logging`` + ``logging.handlers``，避免
-   pip 安装第三方包（Max 内常受限）。
-6. **幂等初始化**：``setup_logging`` 重复调用不会重复挂 handler，
-   方便 ``reload.py`` 热重载。
+6. **零外部依赖**：仅用 ``logging`` + ``logging.handlers``。
+7. **幂等初始化**：``setup_logging`` 重复调用不会重复挂 handler。
 
 典型用法
 ========
@@ -30,7 +32,8 @@
     from maxagent.logger import get_logger
     logger = get_logger(__name__)
 
-    logger.info('启动会话: %s', sid)
+    logger.info('启动会话: %s', sid)              # 关键节点
+    logger.debug('LLM payload: %s', summary)      # 详细模式
     logger.warning('配置加载失败，回退默认: %s', exc)
     try:
         ...
@@ -45,6 +48,12 @@
 - 异常请用 ``logger.exception``，自动带 traceback。
 - ``ROOT_NAME`` 是 ``maxagent``，所以 ``get_logger('maxagent.worker')``
   会继承 root 的 handler，单独 ``get_logger('worker')`` 不会。
+
+向后兼容
+========
+旧 ``log_level='WARNING' / 'ERROR'`` 配置在 ``apply_log_level`` 里被
+归一化成 ``'INFO'``——三态简化后没有必要保留中间档。
+``use_stderr`` 形参为兼容旧测试保留，传 ``True`` 也只产生空操作。
 """
 
 from __future__ import absolute_import
@@ -53,7 +62,6 @@ from __future__ import print_function
 import logging
 import logging.handlers
 import os
-import sys
 
 
 # 所有日志统一挂在这个命名空间下，避免污染外部 root logger
@@ -63,11 +71,18 @@ ROOT_NAME = 'maxagent'
 _INIT_SENTINEL_ATTR = '_maxagent_log_initialized'
 
 # 默认参数（可被 setup_logging 覆盖）
-DEFAULT_LEVEL = logging.INFO
+DEFAULT_LEVEL = 'INFO'
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024  # 单个文件 2 MB
 DEFAULT_BACKUP_COUNT = 5             # 保留 5 份历史
 
-# 控制台与文件共用的格式：时间 + 级别 + 模块 + 线程 + 消息
+# ---------- 三态枚举 ---------- #
+# 用字符串而非 logging 数字常量，让配置文件人类可读
+LEVEL_OFF = 'OFF'        # 完全关闭：不写文件、不输出
+LEVEL_INFO = 'INFO'      # 开启：只记关键节点
+LEVEL_DEBUG = 'DEBUG'    # 详细：所有埋点全量入档
+VALID_LEVELS = (LEVEL_OFF, LEVEL_INFO, LEVEL_DEBUG)
+
+# 文件格式：时间 + 级别 + 模块 + 线程 + 消息
 # 线程名能在排查"主线程 vs Worker 子线程"问题时直接看出来
 _LOG_FORMAT = (
     '%(asctime)s [%(levelname)s] %(name)s '
@@ -93,22 +108,49 @@ def _resolve_log_dir():
         if not os.path.isdir(log_dir):
             os.makedirs(log_dir)
     except OSError:
-        # 目录创建失败（权限/只读盘）也不抛——降级成只用 stderr
+        # 目录创建失败（权限/只读盘）：返回 None，调用方降级成"不写文件"
         return None
     return log_dir
 
 
-def _coerce_level(level):
-    """把 'INFO' / logging.INFO / 'debug' 等都归一化成数字级别。"""
+def _normalize_level(level):
+    """把任意输入归一化成 OFF / INFO / DEBUG 三档之一。
+
+    兼容历史值：``'WARNING'`` / ``'ERROR'`` / ``logging.WARNING`` 等
+    一律折算成 ``INFO``（三态后没有中间档）；非法值同样回落 ``INFO``。
+    ``None`` 也回落 ``INFO``，避免在 setup 阶段抛异常。
+    """
     if isinstance(level, int):
-        return level
+        # logging 数字常量：CRITICAL/ERROR/WARNING → INFO，
+        # INFO → INFO，DEBUG/NOTSET → DEBUG
+        if level <= logging.DEBUG:
+            return LEVEL_DEBUG
+        if level <= logging.INFO:
+            return LEVEL_INFO
+        return LEVEL_INFO
     if isinstance(level, str):
         name = level.strip().upper()
-        if hasattr(logging, name):
-            value = getattr(logging, name)
-            if isinstance(value, int):
-                return value
-    return DEFAULT_LEVEL
+        if name in VALID_LEVELS:
+            return name
+        # 兼容老的 WARNING/ERROR/CRITICAL 配置
+        if name in ('WARNING', 'ERROR', 'CRITICAL', 'WARN'):
+            return LEVEL_INFO
+        if name == 'NOTSET':
+            return LEVEL_DEBUG
+    return LEVEL_INFO
+
+
+def _logging_level_for(state):
+    """三态 → ``logging`` 数字级别。
+
+    OFF 用 ``logging.CRITICAL + 1``（高于所有真实级别），保证任何
+    ``logger.xxx`` 调用都被过滤掉，等价"什么也不写"，但又不需要拆 handler。
+    """
+    if state == LEVEL_OFF:
+        return logging.CRITICAL + 1
+    if state == LEVEL_DEBUG:
+        return logging.DEBUG
+    return logging.INFO
 
 
 def setup_logging(
@@ -116,28 +158,33 @@ def setup_logging(
     log_dir=None,
     max_bytes=DEFAULT_MAX_BYTES,
     backup_count=DEFAULT_BACKUP_COUNT,
-    use_stderr=True,
+    use_stderr=False,
 ):
     """初始化 ``maxagent`` 命名空间下的日志系统。
 
-    :param level: 日志级别，可传 ``logging.DEBUG`` / ``'INFO'`` 等。
-                  ``None`` 时尝试从 ``AppConfig.log_level`` 读取。
+    :param level: 三态字符串 ``'OFF'`` / ``'INFO'`` / ``'DEBUG'``，
+                  也接受 ``logging.DEBUG`` 等数字（会被归一化）。
+                  ``None`` 时尝试从 ``AppConfig.log_level`` 读取，
+                  缺失再回落 ``INFO``。
     :param log_dir: 自定义日志目录；``None`` 时走默认（config_dir/logs）。
     :param max_bytes: 单个日志文件大小上限。
     :param backup_count: 滚动保留的历史文件个数。
-    :param use_stderr: 是否同时输出到 ``stderr``。Max 嵌入环境保持
-                       True 能看到实时日志，自动化跑批可关掉。
+    :param use_stderr: **已废弃**——保留参数仅为不破坏旧调用签名，
+                       任何取值都不会再向 stderr 输出。
     :returns: 已配置好的 root logger（``maxagent``）。
     """
+    # use_stderr 仅为兼容签名保留，故意不读，pylint: disable=unused-argument
+    del use_stderr
+
     root = logging.getLogger(ROOT_NAME)
 
     # 幂等：已初始化过就只更新级别，不再叠加 handler
     if getattr(root, _INIT_SENTINEL_ATTR, False):
         if level is not None:
-            root.setLevel(_coerce_level(level))
+            apply_log_level(level)
         return root
 
-    # 决定级别：显式传入 > AppConfig.log_level > DEFAULT_LEVEL
+    # 决定级别：显式传入 > AppConfig.log_level > 默认 INFO
     if level is None:
         try:
             from .config import load_config
@@ -145,14 +192,15 @@ def setup_logging(
             level = getattr(cfg, 'log_level', None)
         except Exception:  # pylint: disable=broad-except
             level = None
-    root.setLevel(_coerce_level(level))
+    state = _normalize_level(level)
+    root.setLevel(_logging_level_for(state))
 
     # 关键：不要把日志冒泡到外部 root logger，避免污染 Max
     root.propagate = False
 
     formatter = logging.Formatter(_LOG_FORMAT, _DATE_FORMAT)
 
-    # ---- 文件 handler（滚动） ----
+    # ---- 文件 handler（滚动）：唯一输出通道 ---- #
     if log_dir is None:
         log_dir = _resolve_log_dir()
     if log_dir:
@@ -165,23 +213,37 @@ def setup_logging(
                 encoding='utf-8',
             )
             file_handler.setFormatter(formatter)
-            file_handler.setLevel(logging.DEBUG)  # 文件抓最详细
+            # 文件 handler 自身设 DEBUG，真正过滤靠 root logger 级别。
+            # 这样 INFO/DEBUG 切换只需调 root.setLevel，不需要重建 handler。
+            file_handler.setLevel(logging.DEBUG)
             root.addHandler(file_handler)
         except (OSError, IOError):
-            # 文件不可写也不致命，继续走 stderr
+            # 文件不可写也不致命，降级成"完全静音"
             pass
 
-    # ---- 控制台 handler ----
-    if use_stderr:
-        stream_handler = logging.StreamHandler(sys.stderr)
-        stream_handler.setFormatter(formatter)
-        # 控制台跟随 root 级别，避免 INFO 之外的内容刷屏
-        root.addHandler(stream_handler)
+    # 注意：故意不再添加 StreamHandler。日志彻底不输出到控制台。
 
     setattr(root, _INIT_SENTINEL_ATTR, True)
-    root.info('日志系统已初始化，level=%s, dir=%s',
-              logging.getLevelName(root.level), log_dir)
+    if state != LEVEL_OFF:
+        # OFF 时连"系统已初始化"也不写，保持完全静默
+        root.info('日志系统已初始化，level=%s, dir=%s', state, log_dir)
     return root
+
+
+def apply_log_level(level):
+    """运行期切换日志级别（三态），不重建 handler。
+
+    :param level: ``'OFF'`` / ``'INFO'`` / ``'DEBUG'``，或可被
+                  ``_normalize_level`` 识别的等价值。
+    :returns: 实际生效的归一化状态字符串。
+    """
+    state = _normalize_level(level)
+    root = logging.getLogger(ROOT_NAME)
+    root.setLevel(_logging_level_for(state))
+    if state != LEVEL_OFF:
+        # 切到非 OFF 时打一条 info 用作切换审计
+        root.info('日志级别已切换为 %s', state)
+    return state
 
 
 def get_logger(name):
@@ -196,6 +258,16 @@ def get_logger(name):
     if name == ROOT_NAME or name.startswith(ROOT_NAME + '.'):
         return logging.getLogger(name)
     return logging.getLogger(ROOT_NAME + '.' + name)
+
+
+def is_debug_enabled():
+    """快捷判断 root logger 当前是否处于 DEBUG 级别。
+
+    业务侧在做"价高的 DEBUG 摘要构造"前可先用这个短路判断，避免
+    构造开销（虽然 ``logger.debug`` 本身已经按级别延迟，但参数表达
+    式仍会先求值）。
+    """
+    return logging.getLogger(ROOT_NAME).isEnabledFor(logging.DEBUG)
 
 
 def shutdown_logging():
