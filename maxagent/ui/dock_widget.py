@@ -38,6 +38,7 @@ from typing import Optional
 
 from ..agent import AgentWorker
 from ..agent import Conversation
+from ..agent import build_default_system_prompt
 from ..config import ConfigManager
 from ..llm_client import build_client_from_profile
 from ..logger import get_logger
@@ -435,7 +436,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._session_mgr = SessionManager()
         self._skill_mgr = SkillManager()
         self._current_session = None  # type: Optional[SessionMeta]
-        self._conv = Conversation()
+        self._conv = Conversation(
+            system_prompt=self._build_system_prompt_for_new_conv(),
+        )
         self._dispatcher = self._build_dispatcher()
         # type: Optional[AgentWorker]
         self._worker = None
@@ -1173,9 +1176,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             pass
         # 回放历史消息
         if not conv.messages:
+            # 欢迎屏的助手称呼跟随员工档案——员工名 'MaxAgent'（默认）
+            # 时与改造前完全一致；用户改名后立即生效。
+            # 用 escape_name 复用员工模块的 HTML 转义，避免名字含
+            # ``<script>`` 时被当 HTML 标签注入。
+            emp = self._make_employee()
+            from .employee import escape_name
+            safe_name = escape_name(emp.name)
             self._renderer.add_welcome(
-                '{} 你好，我是 <b style="color:#a8e6a8;">MaxAgent</b>。'
-                '点击下方任一示例快速开始：'.format(_ee('👋'))
+                '{} 你好，我是 <b style="color:#a8e6a8;">{}</b>。'
+                '点击下方任一示例快速开始：'.format(_ee('👋'), safe_name)
             )
         else:
             self._replay_messages(conv)
@@ -1357,6 +1367,20 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         """
         from .employee import Employee
         return Employee.from_config(self._config)
+
+    def _build_system_prompt_for_new_conv(self):
+        """为新建 ``Conversation`` 构造带"员工身份"注入的 system prompt。
+
+        - 老用户（默认员工名 'MaxAgent'）：行为完全等同改造前。
+        - 自定义员工名（如 '尼娜'）：LLM 对外只自称 '尼娜'，不暴露
+          'MaxAgent' 这个内部岗位代号；岗位职责、工具能力、身份铁律
+          一字不改。
+        - 仅作用于**新建**会话。已存盘的旧会话保留当时序列化的 prompt
+          原文（``Conversation.from_json`` 读档时使用），以保证历史
+          沉浸感、避免对老 session 的破坏性升级。
+        """
+        emp = self._make_employee()
+        return build_default_system_prompt(emp.name)
 
     def _build_system_prompt_addon(self, user_input=None):
         """合并 skills 和用户规则两个 system prompt 附加段。

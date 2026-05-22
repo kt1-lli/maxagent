@@ -281,6 +281,78 @@ class TestSystemPromptRules:
         assert CODING_RULES.strip() in prompt
 
 
+class TestEmployeeIdentityInjection:
+    """验证"岗位 / 员工分离"在 system prompt 上的注入逻辑。
+
+    岗位 = MaxAgent，写死。员工 = 用户在「助手形象」Tab 自定义的
+    对外名字。改名后 LLM 自我介绍只说员工名，不说 MaxAgent。
+    """
+
+    def test_default_name_falls_back_to_maxagent(self):
+        # 方案 B：员工名为 None / 空 / 默认值时，行为完全等同改造前
+        # —— 老用户升级零打扰
+        from maxagent.agent.conversation import build_default_system_prompt
+        from maxagent.agent.conversation import DEFAULT_SYSTEM_PROMPT
+        assert build_default_system_prompt(None) == DEFAULT_SYSTEM_PROMPT
+        assert build_default_system_prompt('') == DEFAULT_SYSTEM_PROMPT
+        assert build_default_system_prompt('   ') == DEFAULT_SYSTEM_PROMPT
+        assert build_default_system_prompt('MaxAgent') == DEFAULT_SYSTEM_PROMPT
+
+    def test_default_prompt_keeps_legacy_identity(self):
+        # 默认场景下身份铁律仍提"我是 MaxAgent..."，与历史完全一致
+        from maxagent.agent.conversation import DEFAULT_SYSTEM_PROMPT
+        assert '我是 MaxAgent' in DEFAULT_SYSTEM_PROMPT
+
+    def test_custom_name_replaces_self_introduction(self):
+        # 用户改名后，自我介绍模板里出现新名字
+        from maxagent.agent.conversation import build_default_system_prompt
+        prompt = build_default_system_prompt('尼娜')
+        assert '我是 尼娜，3ds Max 的智能助手' in prompt
+        # 必须明确告诉 LLM 对外名字是这个
+        assert '对外名字是「尼娜」' in prompt
+
+    def test_custom_name_hides_internal_codename(self):
+        # 关键诉求：改名后 LLM 不能主动说出 'MaxAgent' 这个内部代号
+        # —— prompt 里必须有显式禁止
+        from maxagent.agent.conversation import build_default_system_prompt
+        prompt = build_default_system_prompt('尼娜')
+        assert '绝不主动说出"MaxAgent"' in prompt
+        # 但允许在用户已经主动提及时确认
+        assert '主动提及' in prompt
+
+    def test_custom_name_keeps_role_immutable(self):
+        # 越狱守卫：允许改名（UI 配置层），禁止改岗位职责
+        from maxagent.agent.conversation import build_default_system_prompt
+        prompt = build_default_system_prompt('尼娜')
+        assert '不能' in prompt and '岗位职责' in prompt
+        # 工作原则、工具能力描述仍保留
+        assert '工作原则' in prompt
+        assert 'create_box' in prompt or 'list_scene_objects' in prompt
+
+    def test_custom_name_preserves_coding_rules(self):
+        # 拼接的 coding_rules 不能因换名字而丢失
+        from maxagent.agent.conversation import build_default_system_prompt
+        from maxagent.agent.coding_rules import CODING_RULES
+        prompt = build_default_system_prompt('尼娜')
+        assert CODING_RULES.strip() in prompt
+
+    def test_custom_name_does_not_leak_codename_to_self_intro(self):
+        # 自我介绍那一句不能再含 "我是 MaxAgent"——这是核心 bug 修复
+        from maxagent.agent.conversation import build_default_system_prompt
+        prompt = build_default_system_prompt('尼娜')
+        assert '我是 MaxAgent，3ds Max 的智能助手' not in prompt
+
+    def test_employee_module_exposes_escape_helper(self):
+        # 欢迎屏需要复用员工模块的 HTML 转义；公开别名不应被误删
+        from maxagent.ui import employee
+        assert hasattr(employee, 'escape_name')
+        assert employee.escape_name('<script>x</script>') == (
+            '&lt;script&gt;x&lt;/script&gt;'
+        )
+        assert employee.escape_name('') == ''
+        assert employee.escape_name('尼娜') == '尼娜'
+
+
 class TestValidateMaxscriptSyntax:
     """覆盖 validate_maxscript_syntax 工具入口校验器。
 

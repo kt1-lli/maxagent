@@ -194,6 +194,11 @@ def _html_escape(text):
     )
 
 
+# 公开别名：dock_widget 等同包外部模块通过这个名字调用，
+# 避免 import 私有函数（带下划线前缀）触发 lint 告警。
+escape_name = _html_escape
+
+
 def save_avatar_image(qpixmap, target_size=AVATAR_STORE_SIZE):
     # type: (Any, int) -> Optional[str]
     """把 QPixmap 缩放到 ``target_size`` 并写入 ``avatar.png``。
