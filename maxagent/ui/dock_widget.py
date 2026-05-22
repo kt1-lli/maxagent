@@ -59,6 +59,7 @@ from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
 from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import e as _e
 from .emoji_compat import ee as _ee
 from .tool_block import ToolCallBlock as _ToolCallBlock
@@ -410,8 +411,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         top.addWidget(self.profile_combo, 1)
-        # 重加载按钮：纯文字，避免 emoji 在 Max 内嵌 PySide 下渲染异常
-        self.reload_btn = QtWidgets.QPushButton('重载')
+        # 重加载按钮：图标 + 文字（PySide6 走真 emoji，PySide2 走 BMP 兜底）
+        self.reload_btn = QtWidgets.QPushButton(_btn_label('🔄', '重载'))
         self.reload_btn.setProperty('class', 'iconBtn')
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
@@ -420,7 +421,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         )
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
-        self.settings_btn = QtWidgets.QPushButton('设置')
+        self.settings_btn = QtWidgets.QPushButton(_btn_label('⚙️', '设置'))
         self.settings_btn.setToolTip('打开设置面板（Profile / API Key / 应用开关）')
         self.settings_btn.clicked.connect(self._open_settings)
         top.addWidget(self.settings_btn)
@@ -429,8 +430,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # === 顶部条第 2 行：会话管理 ===
         sess_row = QtWidgets.QHBoxLayout()
         sess_row.setSpacing(4)
-        # 新对话按钮：纯文字，节省横向空间
-        self.new_session_btn = QtWidgets.QPushButton('新对话')
+        # 新对话按钮：图标 + 文字
+        self.new_session_btn = QtWidgets.QPushButton(_btn_label('💬', '新对话'))
         self.new_session_btn.setProperty('class', 'iconBtn')
         self.new_session_btn.setToolTip('开启一个新的空白对话')
         self.new_session_btn.clicked.connect(self._on_new_session)
@@ -455,7 +456,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 会话操作菜单（重命名 / 删除 / 清空）合并到一个 ⋯ 按钮
         # 之前 ✏/🗑/清空 三个独立按钮在窄面板下会把会话下拉框挤掉
         self.session_menu_btn = QtWidgets.QToolButton()
-        self.session_menu_btn.setText('菜单')
+        self.session_menu_btn.setText(_btn_label('☰', '菜单'))
         self.session_menu_btn.setProperty('class', 'iconBtn')
         self.session_menu_btn.setToolTip('会话操作（重命名 / 删除 / 清空消息）')
         self.session_menu_btn.setPopupMode(
@@ -500,8 +501,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         ctx_row.addStretch(1)
 
-        # 压缩按钮：纯文字
-        self.compress_btn = QtWidgets.QPushButton('压缩')
+        # 压缩按钮：图标 + 文字
+        self.compress_btn = QtWidgets.QPushButton(_btn_label('🗜️', '压缩'))
         self.compress_btn.setProperty('class', 'iconBtn')
         self.compress_btn.setToolTip(
             '压缩对话：让 LLM 总结早期对话内容并替换为摘要，保留最近 2 轮。\n'
@@ -578,7 +579,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         # 发送/停止 合一：未运行时为发送（绿色），运行时切换为停止（红色）
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
-        self.send_btn = QtWidgets.QPushButton('发送')
+        self.send_btn = QtWidgets.QPushButton(_btn_label('🚀', '发送'))
         self.send_btn.setObjectName('sendBtn')
         # 占满整行，避免窄面板下被父布局压缩成"发"
         self.send_btn.setSizePolicy(
@@ -1404,12 +1405,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._is_running = bool(running)
         # 发送/停止 合一按钮：切换文字 + 样式 + 启用状态
         if running:
-            self.send_btn.setText('停止')
+            self.send_btn.setText(_btn_label('⏹', '停止'))
             self.send_btn.setObjectName('stopBtn')
             self.send_btn.setToolTip('停止当前对话')
             self.send_btn.setEnabled(True)
         else:
-            self.send_btn.setText('发送')
+            self.send_btn.setText(_btn_label('🚀', '发送'))
             self.send_btn.setObjectName('sendBtn')
             self.send_btn.setToolTip('发送消息（Enter 或 Ctrl+Enter）')
             self.send_btn.setEnabled(True)

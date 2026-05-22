@@ -357,3 +357,67 @@ def test_install_app_font_fallback_applies_to_app(monkeypatch):
     assert fake_app.applied is True
     assert fake_app._font.families_set is not None
     assert len(fake_app._font.families_set) > 0
+
+
+# ---------------------------------------------------------------------- #
+# btn_label：图标 + 文本组装
+# ---------------------------------------------------------------------- #
+def test_btn_label_pyside6_uses_real_emoji():
+    """PySide6 下应使用真 emoji 字符。"""
+    ec.set_use_real_emoji(True)
+    try:
+        assert ec.btn_label('🔄', '重载') == '🔄 重载'
+        assert ec.btn_label('⚙️', '设置') == '⚙️ 设置'
+    finally:
+        ec.set_use_real_emoji(False)
+
+
+def test_btn_label_pyside2_uses_bmp_fallback():
+    """PySide2 下应按 EMOJI_FALLBACK_TABLE 自动取 BMP 兜底。"""
+    ec.set_use_real_emoji(False)
+    try:
+        # 表里有 '🔄' → '⟳'，'⚙️' → '✱'
+        assert ec.btn_label('🔄', '重载') == '⟳ 重载'
+        assert ec.btn_label('⚙️', '设置') == '✱ 设置'
+        assert ec.btn_label('🚀', '发送') == '► 发送'
+    finally:
+        ec.set_use_real_emoji(True)
+
+
+def test_btn_label_custom_separator():
+    """自定义分隔符（中文 / 全角空格 / 多空格等）。"""
+    ec.set_use_real_emoji(False)
+    try:
+        assert ec.btn_label('🔄', '重载', sep='') == '⟳重载'
+        assert ec.btn_label('🔄', '重载', sep='  ') == '⟳  重载'
+    finally:
+        ec.set_use_real_emoji(True)
+
+
+def test_btn_label_empty_emoji_returns_text_only():
+    """emoji_char 为空时直接返回 text，不加无意义前缀。"""
+    ec.set_use_real_emoji(False)
+    try:
+        assert ec.btn_label('', '保存') == '保存'
+        assert ec.btn_label(None, '保存') == '保存'
+    finally:
+        ec.set_use_real_emoji(True)
+
+
+def test_btn_label_empty_text_returns_icon_only():
+    """text 为空时仅返回图标，去掉尾随分隔符。"""
+    ec.set_use_real_emoji(False)
+    try:
+        assert ec.btn_label('🔄', '') == '⟳'
+    finally:
+        ec.set_use_real_emoji(True)
+
+
+def test_btn_label_new_table_entries_present():
+    """本次新增的按钮图标条目都必须在 EMOJI_FALLBACK_TABLE 中。
+
+    若有人删除了表条目，按钮美化效果会回落到原 emoji（PySide2 上糊）。
+    """
+    new_required = ['🔄', '💬', '🗜️', '👁', '🔌', '💾', '📂']
+    missing = [e for e in new_required if e not in ec.EMOJI_FALLBACK_TABLE]
+    assert not missing, '本次按钮美化用 emoji 缺失表条目: {}'.format(missing)

@@ -24,6 +24,7 @@ from typing import Optional
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
 
 
@@ -126,7 +127,7 @@ class LearnApprovalDialog(QtWidgets.QDialog):
             '<b>源代码（可编辑，请审查）：</b>'
         ))
         code_head.addStretch(1)
-        reset_btn = QtWidgets.QPushButton('重置')
+        reset_btn = QtWidgets.QPushButton('↺ 重置')
         reset_btn.setToolTip('恢复到 AI 最初提交的代码')
         reset_btn.clicked.connect(self._on_reset_code)
         code_head.addWidget(reset_btn)
@@ -146,11 +147,11 @@ class LearnApprovalDialog(QtWidgets.QDialog):
         # 底部按钮
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
-        self.reject_btn = QtWidgets.QPushButton('拒绝')
+        self.reject_btn = QtWidgets.QPushButton(_btn_label('❌', '拒绝'))
         self.reject_btn.setObjectName('rejectBtn')
         self.reject_btn.clicked.connect(self._on_reject)
         btn_row.addWidget(self.reject_btn)
-        self.approve_btn = QtWidgets.QPushButton('批准并保存')
+        self.approve_btn = QtWidgets.QPushButton(_btn_label('✅', '批准并保存'))
         self.approve_btn.setObjectName('approveBtn')
         self.approve_btn.clicked.connect(self._on_approve)
         btn_row.addWidget(self.approve_btn)

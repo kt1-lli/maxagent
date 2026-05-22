@@ -253,7 +253,7 @@ class _CodeBlockWidget(QtWidgets.QWidget):
         head_h.addWidget(lbl)
         head_h.addStretch(1)
 
-        copy_btn = QtWidgets.QPushButton('复制代码')
+        copy_btn = QtWidgets.QPushButton('⎘ 复制代码')
         copy_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         copy_btn.setStyleSheet(_mini_btn_style())
         # 用 default arg 锁定当前 code，避免 lambda 闭包陷阱
@@ -458,7 +458,7 @@ class AssistantBubble(QtWidgets.QWidget):
         title_row.addWidget(head)
         title_row.addStretch(1)
 
-        copy_btn = QtWidgets.QPushButton('复制全部')
+        copy_btn = QtWidgets.QPushButton('⎘ 复制全部')
         copy_btn.setStyleSheet(_mini_btn_style())
         copy_btn.clicked.connect(lambda: _copy_to_clipboard(text))
         title_row.addWidget(copy_btn)

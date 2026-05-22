@@ -37,6 +37,7 @@ from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import e as _e
 from .emoji_compat import ee as _ee
 
@@ -188,10 +189,11 @@ class SettingsDialog(QtWidgets.QDialog):
         left.addWidget(self.profile_list, 1)
 
         btns = QtWidgets.QHBoxLayout()
-        self.add_btn = QtWidgets.QPushButton('+ 新建')
+        # 全角 ＋ ／ ✕ 在 PySide2/6 都能直接渲染，无需走 emoji_compat
+        self.add_btn = QtWidgets.QPushButton('＋ 新建')
         self.add_btn.clicked.connect(self._add_profile)
         btns.addWidget(self.add_btn)
-        self.del_btn = QtWidgets.QPushButton('- 删除')
+        self.del_btn = QtWidgets.QPushButton('✕ 删除')
         self.del_btn.clicked.connect(self._del_profile)
         btns.addWidget(self.del_btn)
         left.addLayout(btns)
@@ -238,7 +240,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '本地模型可留空，或填 ollama / lmstudio 等占位符',
         )
         key_row.addWidget(self.api_key_edit, 1)
-        self.show_key_btn = QtWidgets.QPushButton('显示')
+        self.show_key_btn = QtWidgets.QPushButton(_btn_label('👁', '显示'))
         self.show_key_btn.setCheckable(True)
         self.show_key_btn.toggled.connect(self._toggle_key_visible)
         key_row.addWidget(self.show_key_btn)
@@ -342,13 +344,13 @@ class SettingsDialog(QtWidgets.QDialog):
                 QtWidgets.QSizePolicy.Policy.Fixed,
             )
 
-        self.test_btn = QtWidgets.QPushButton('测试连接')
+        self.test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试连接'))
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
         _shape_btn(self.test_btn)
         op_row.addWidget(self.test_btn)
 
-        self.test_full_btn = QtWidgets.QPushButton('完整测试')
+        self.test_full_btn = QtWidgets.QPushButton(_btn_label('✅', '完整测试'))
         self.test_full_btn.setToolTip(
             '复刻真实对话的请求：开启流式 + 携带全部工具 schema。\n'
             '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
@@ -357,7 +359,7 @@ class SettingsDialog(QtWidgets.QDialog):
         _shape_btn(self.test_full_btn)
         op_row.addWidget(self.test_full_btn)
 
-        self.apply_btn = QtWidgets.QPushButton('应用')
+        self.apply_btn = QtWidgets.QPushButton(_btn_label('💾', '应用'))
         self.apply_btn.setToolTip('保存当前 Profile 修改')
         self.apply_btn.clicked.connect(self._apply)
         _shape_btn(self.apply_btn)
@@ -453,7 +455,7 @@ class SettingsDialog(QtWidgets.QDialog):
         # 右侧操作按钮列
         btn_col = QtWidgets.QVBoxLayout()
         btn_col.setSpacing(4)
-        self.web_provider_use_btn = QtWidgets.QPushButton('设为默认')
+        self.web_provider_use_btn = QtWidgets.QPushButton(_btn_label('⭐', '设为默认'))
         self.web_provider_use_btn.setToolTip(
             '把选中的 Provider 设为搜索默认（main UI 联网按钮也使用它）',
         )
@@ -462,32 +464,34 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         btn_col.addWidget(self.web_provider_use_btn)
 
-        self.web_provider_edit_btn = QtWidgets.QPushButton('编辑')
+        self.web_provider_edit_btn = QtWidgets.QPushButton(_btn_label('✏️', '编辑'))
         self.web_provider_edit_btn.clicked.connect(
             self._on_provider_edit_clicked,
         )
         btn_col.addWidget(self.web_provider_edit_btn)
 
-        self.web_provider_add_btn = QtWidgets.QPushButton('新增')
+        # 新增 / 复制按钮：用 BMP 字符 ＋ ⎘ 做图标，PySide2/6 都能直接渲染，
+        # 不走 emoji_compat 兼容层，避免空 emoji 调用引起误解
+        self.web_provider_add_btn = QtWidgets.QPushButton('＋ 新增')
         self.web_provider_add_btn.setToolTip('添加自定义搜索后端')
         self.web_provider_add_btn.clicked.connect(
             self._on_provider_add_clicked,
         )
         btn_col.addWidget(self.web_provider_add_btn)
 
-        self.web_provider_dup_btn = QtWidgets.QPushButton('复制')
+        self.web_provider_dup_btn = QtWidgets.QPushButton('⎘ 复制')
         self.web_provider_dup_btn.clicked.connect(
             self._on_provider_dup_clicked,
         )
         btn_col.addWidget(self.web_provider_dup_btn)
 
-        self.web_provider_del_btn = QtWidgets.QPushButton('删除')
+        self.web_provider_del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
         self.web_provider_del_btn.clicked.connect(
             self._on_provider_del_clicked,
         )
         btn_col.addWidget(self.web_provider_del_btn)
 
-        self.web_provider_test_btn = QtWidgets.QPushButton('测试')
+        self.web_provider_test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试'))
         self.web_provider_test_btn.setToolTip(
             '用选中 Provider 发起一次 "3ds Max" 搜索验证可用性',
         )
@@ -496,7 +500,7 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         btn_col.addWidget(self.web_provider_test_btn)
 
-        self.web_provider_reset_btn = QtWidgets.QPushButton('恢复内置')
+        self.web_provider_reset_btn = QtWidgets.QPushButton('↺ 恢复内置')
         self.web_provider_reset_btn.setToolTip(
             '把内置 Provider（DuckDuckGo / Bing / Google CSE 等）'
             '\n字段重置为出厂值，保留你已填的 API Key 和 extra 字段。',
@@ -591,7 +595,7 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         row.addWidget(self.log_level_combo, 0)
         row.addStretch(1)
-        self.open_log_dir_btn = QtWidgets.QPushButton('打开日志目录')
+        self.open_log_dir_btn = QtWidgets.QPushButton(_btn_label('📂', '打开日志目录'))
         self.open_log_dir_btn.setToolTip(
             '在系统文件管理器中打开 maxagent 日志目录\n'
             '（包含 maxagent.log 主文件 + 滚动归档）',

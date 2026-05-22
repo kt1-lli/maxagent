@@ -162,6 +162,17 @@ EMOJI_FALLBACK_TABLE = {
     '🎯': '◎',       # 目标（同心圆）
     '🛠': '✱',
     '🛠️': '✱',
+    # —— 按钮美化用图标（与上方语义不重叠的新增条目）—— #
+    '🔄': '⟳',       # 重载 / 刷新（U+27F3 顺时针箭头）
+    '💬': '✎',       # 对话 / 新会话（复用编辑铅笔，避免视觉花哨）
+    '🗜': '⊟',       # 压缩（带边框的减号，"压扁"的暗示）
+    '🗜️': '⊟',
+    '👁': '◉',       # 显示 / 查看（同心圆作"眼睛"替身）
+    '👁️': '◉',
+    '🔌': '⚡',       # 测试连接（闪电做"电气连接"暗示）
+    '💾': '▣',       # 保存 / 应用（带框方块，保存图标的极简版）
+    '📂': '▤',       # 打开文件夹（横线纹方块，"目录列表"暗示）
+    '📁': '▤',
 }
 
 
@@ -193,6 +204,39 @@ def ee(emoji_char, fallback_text=None):
     # 表里没有 + 调用方没传 fallback：直接返回原字符兜底
     # （ASCII / BMP 内的字符如 '✓' '✗' 本来就能渲染，emoji 才会糊）
     return emoji_char
+
+
+def btn_label(emoji_char, text, sep=' '):
+    # type: (str, str, str) -> str
+    """组装"图标 + 文本"格式的按钮标签。
+
+    PySide6 下 ``emoji_char`` 原样输出（彩色 emoji），PySide2 下
+    走 :data:`EMOJI_FALLBACK_TABLE` 自动取 BMP 单字符兜底，省去
+    每个调用点都写 ``ee('🌐') + ' 联网'``。
+
+    :param emoji_char: 真 emoji 字符；表中需有兜底条目，否则
+        PySide2 上会原样保留（视觉降级风险）。
+    :param text: 按钮文本（中文 / 西文均可）。
+    :param sep: 图标与文本间的分隔，默认单空格。
+    :returns: 拼好的按钮标签字符串。
+
+    用法：
+
+        from maxagent.ui.emoji_compat import btn_label
+        btn = QtWidgets.QPushButton(btn_label('🔄', '重载'))
+        # PySide6 → '🔄 重载'
+        # PySide2 → '⟳ 重载'
+
+    边界情况：
+    - ``emoji_char`` 为空字符串 / None：直接返回 ``text``，避免无意义前缀。
+    - ``text`` 为空：仅返回图标本身（去掉尾随分隔）。
+    """
+    if not emoji_char:
+        return text
+    icon = ee(emoji_char)
+    if not text:
+        return icon
+    return '{}{}{}'.format(icon, sep, text)
 
 
 def _build_fallback_font(base_font, families):
@@ -293,6 +337,7 @@ def install_app_font_fallback(app=None):
 __all__ = [
     'EMOJI_FALLBACK_TABLE',
     'apply_font_fallback',
+    'btn_label',
     'e',
     'ee',
     'install_app_font_fallback',
