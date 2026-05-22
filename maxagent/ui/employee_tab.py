@@ -177,6 +177,8 @@ class EmployeeTab(QtWidgets.QWidget):
         preview_layout.setContentsMargins(10, 6, 10, 8)
         preview_layout.setSpacing(2)
         self._preview_head = QtWidgets.QLabel()
+        # 显式 RichText，避免 PySide6 把含 ``<img>`` 的 HTML 误判成纯文本
+        self._preview_head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._preview_head.setStyleSheet('background:transparent;')
         preview_layout.addWidget(self._preview_head)
         preview_body = QtWidgets.QLabel('你好，我可以帮你操作 3ds Max 场景。')

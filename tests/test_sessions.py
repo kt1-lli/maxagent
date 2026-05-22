@@ -139,3 +139,72 @@ class TestSessionIndexRebuild:
         sids = {s.sid for s in mgr2.list_sessions()}
         assert m1.sid not in sids
         assert m2.sid in sids
+
+
+class TestSessionEmployeeInjection:
+    """覆盖"岗位 / 员工分离"在 SessionManager 层的注入路径。
+
+    bug 复现：v0.x 之前 ``create_session`` 内部直接 ``Conversation()``，
+    导致用户改员工名后新建的会话仍用默认 system prompt，LLM 自我介绍
+    继续说"我是 MaxAgent"。本测试类锁定该路径。
+    """
+
+    def test_create_session_default_uses_default_prompt(self, sessions_dir):
+        # 不传 system_prompt 时，回落到 Conversation 默认值（向后兼容）
+        from maxagent.agent.conversation import DEFAULT_SYSTEM_PROMPT
+        mgr = SessionManager(base_dir=sessions_dir)
+        meta = mgr.create_session()
+        result = mgr.load(meta.sid)
+        assert result is not None
+        _, conv = result
+        assert conv.system_prompt == DEFAULT_SYSTEM_PROMPT
+
+    def test_create_session_injects_custom_prompt(self, sessions_dir):
+        # 传入"员工尼娜"对应的 prompt 后，存盘和重读应保持一致
+        from maxagent.agent.conversation import build_default_system_prompt
+        mgr = SessionManager(base_dir=sessions_dir)
+        custom = build_default_system_prompt('尼娜')
+        meta = mgr.create_session(system_prompt=custom)
+
+        # 存盘文件里 system_prompt 应是新版本（含尼娜身份铁律）
+        result = mgr.load(meta.sid)
+        assert result is not None
+        _, conv = result
+        assert conv.system_prompt == custom
+        assert '我是 尼娜' in conv.system_prompt
+        # 关键：bug 修复后，自定义 prompt 不应残留 'MaxAgent' 自我介绍
+        assert '我是 MaxAgent，3ds Max 的智能助手' not in conv.system_prompt
+
+    def test_persisted_prompt_survives_manager_reload(self, sessions_dir):
+        # 模拟用户重启 Max：新 SessionManager 实例读盘后 prompt 仍正确
+        from maxagent.agent.conversation import build_default_system_prompt
+        mgr = SessionManager(base_dir=sessions_dir)
+        custom = build_default_system_prompt('尼娜')
+        meta = mgr.create_session(system_prompt=custom)
+
+        mgr2 = SessionManager(base_dir=sessions_dir)
+        result = mgr2.load(meta.sid)
+        assert result is not None
+        _, conv = result
+        assert conv.system_prompt == custom
+
+    def test_empty_session_can_have_prompt_overwritten(self, sessions_dir):
+        # 模拟"用户改员工名后切回空会话"的场景：
+        # dock_widget 在 _load_session 里会覆写空会话的 system_prompt。
+        # 这里验证 conversation.system_prompt 是可赋值字段且能被 save 正确持久化。
+        from maxagent.agent.conversation import build_default_system_prompt
+        mgr = SessionManager(base_dir=sessions_dir)
+        meta = mgr.create_session()  # 默认 prompt
+        # 加载、改 prompt、保存
+        result = mgr.load(meta.sid)
+        assert result is not None
+        meta2, conv = result
+        assert len(conv) == 0  # 确认是空会话
+        new_prompt = build_default_system_prompt('尼娜')
+        conv.system_prompt = new_prompt
+        mgr.save(meta2, conv)
+        # 重新加载验证
+        result2 = mgr.load(meta.sid)
+        assert result2 is not None
+        _, conv2 = result2
+        assert conv2.system_prompt == new_prompt

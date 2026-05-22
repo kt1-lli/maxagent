@@ -1143,7 +1143,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             target = sessions[0]
         if target is None:
             # 第一次启动：创建一个新的
-            target = self._session_mgr.create_session()
+            # 把"当前员工身份"对应的 system prompt 注入到新会话——
+            # LLM 自我介绍才会跟随员工名（修复 bug：尼娜会话仍说
+            # "我是 MaxAgent" 的根因即此处之前没注入）。
+            target = self._session_mgr.create_session(
+                system_prompt=self._build_system_prompt_for_new_conv(),
+            )
         self._load_session(target.sid)
         self._refresh_sessions_combo(select_sid=target.sid)
 
@@ -1176,6 +1181,13 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             pass
         # 回放历史消息
         if not conv.messages:
+            # 空会话：把当前最新的"员工身份" system prompt 覆写进去。
+            # 这样老用户改名后切回这个空会话时，LLM 自我介绍也会立刻
+            # 跟随新名字（修复 bug：截图里"尼娜"会话仍说"我是
+            # MaxAgent"——根因就是空会话用了老存盘 prompt）。
+            # 非空会话不动，保留历史身份氛围、避免对已有对话的破坏性升级。
+            conv.system_prompt = self._build_system_prompt_for_new_conv()
+            self._save_current_session(force=True)
             # 欢迎屏的助手称呼跟随员工档案——员工名 'MaxAgent'（默认）
             # 时与改造前完全一致；用户改名后立即生效。
             # 用 escape_name 复用员工模块的 HTML 转义，避免名字含
@@ -1270,7 +1282,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             return
         # 先把当前会话存盘
         self._save_current_session()
-        meta = self._session_mgr.create_session()
+        meta = self._session_mgr.create_session(
+            system_prompt=self._build_system_prompt_for_new_conv(),
+        )
         self._load_session(meta.sid)
         self._refresh_sessions_combo(select_sid=meta.sid)
 
@@ -1329,7 +1343,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._load_session(sessions[0].sid)
             self._refresh_sessions_combo(select_sid=sessions[0].sid)
         else:
-            meta = self._session_mgr.create_session()
+            meta = self._session_mgr.create_session(
+                system_prompt=self._build_system_prompt_for_new_conv(),
+            )
             self._load_session(meta.sid)
             self._refresh_sessions_combo(select_sid=meta.sid)
 

@@ -367,6 +367,10 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         from .employee import Employee as _Employee
         emp = employee if employee is not None else _Employee()
         head = QtWidgets.QLabel(emp.display_html())
+        # PySide6 的 QLabel 在 AutoText 模式下对包含 ``<img src="file:///...">``
+        # 的字符串识别不稳定（PySide2 默认会判为 RichText，PySide6 会判
+        # 为 PlainText，导致自定义图片头像不显示）。这里强制 RichText。
+        head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         head.setStyleSheet('background:transparent;')
         self._bubble.add_widget(head)
 
@@ -495,6 +499,9 @@ class AssistantBubble(QtWidgets.QWidget):
         from .employee import Employee as _Employee
         emp = employee if employee is not None else _Employee()
         head = QtWidgets.QLabel(emp.display_html())
+        # 同 StreamingAssistantBubble：强制 RichText 让 PySide6 也能渲染
+        # ``<img>`` 标签的自定义图片头像。
+        head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         head.setStyleSheet('background:transparent;')
         title_row.addWidget(head)
         title_row.addStretch(1)
@@ -641,6 +648,9 @@ class WelcomeBlock(QtWidgets.QWidget):
             '<div align="center" style="color:#888;font-size:10pt;">'
             + html_body + '</div>'
         )
+        # 同气泡头部：PySide6 对 AutoText 的 HTML 识别更挑剔，强制
+        # RichText 让欢迎屏的 HTML（含未来可能的 ``<img>``）稳定渲染
+        head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         head.setWordWrap(True)
         head.setStyleSheet('background:transparent;')
         v.addWidget(head)

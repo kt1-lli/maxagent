@@ -225,9 +225,17 @@ class SessionManager(object):
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         return metas
 
-    def create_session(self, title=None):
-        # type: (Optional[str]) -> SessionMeta
-        """新建一个空会话并写入索引。"""
+    def create_session(self, title=None, system_prompt=None):
+        # type: (Optional[str], Optional[str]) -> SessionMeta
+        """新建一个空会话并写入索引。
+
+        :param title: 可选标题；缺省 '新对话'，后续会按首条 user 消息覆写。
+        :param system_prompt: 可选 system prompt 原文。传入后写入新会话
+            的 ``Conversation.system_prompt``——用于"岗位 / 员工分离"
+            场景：调用方（dock_widget）可注入"当前员工身份"对应的
+            prompt，让 LLM 在新会话里自我介绍跟随员工名。
+            为 None 时回落到 ``Conversation`` 默认值（兼容旧调用方）。
+        """
         now = _now_ts()
         sid = _short_uid()
         meta = SessionMeta(
@@ -238,8 +246,10 @@ class SessionManager(object):
             message_count=0,
         )
         meta.file_path = self._file_path_for(meta)
-        # 写入空 conversation 文件，确保 list 时能看到
-        empty_conv = Conversation()
+        # 写入空 conversation 文件，确保 list 时能看到。
+        # system_prompt 可由调用方按"当前员工身份"动态注入，使新会话
+        # 在 LLM 视角下立即生效新的对外名字。
+        empty_conv = Conversation(system_prompt=system_prompt)
         self._write_session_file(meta, empty_conv)
         # 更新索引
         metas = self._load_index()
