@@ -386,7 +386,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 字体回退缺陷（emoji 字体拖累整行汉字渲染）。这里给整个 dock
         # widget 设一份带 CJK + emoji 回退族的 QFont，让 Qt 按字符级回退。
         # PySide6 不受影响，但应用同一份字体也不会出问题。
-        _apply_font_fallback(self)
+        # 必须 recursive=True：Qt 不会自动把父控件 setFont 级联到子控件，
+        # 需要逐个 QPushButton/QLabel/QLineEdit 单独设字体才能生效。
+        _apply_font_fallback(self, recursive=True)
 
     # ------------------------------------------------------------------ #
     # 构建 UI

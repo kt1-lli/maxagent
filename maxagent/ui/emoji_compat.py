@@ -195,41 +195,90 @@ def ee(emoji_char, fallback_text=None):
     return emoji_char
 
 
-def apply_font_fallback(widget, families=None):
-    # type: (object, List[str]) -> None
-    """给指定控件（含其所有子控件）设置带回退族的 QFont。
+def _build_fallback_font(base_font, families):
+    # type: (object, List[str]) -> object
+    """在 ``base_font`` 基础上设置回退族，返回新的 QFont。
+
+    若 ``base_font`` 是真正的 QFont，会拷贝其 pointSize / weight / italic
+    等属性后再覆盖 family；若不是（如单元测试里传的 FakeFont），直接
+    在它身上设 family 后原样返回。
+    """
+    # 只有真正的 QFont 才能用 QFont(other) 拷贝构造；其余情况（包括
+    # 单元测试里 mock 的 FakeFont 与 None）按 in-place 修改处理
+    if base_font is not None and isinstance(base_font, QtGui.QFont):
+        font = QtGui.QFont(base_font)
+    elif base_font is not None:
+        font = base_font
+    else:
+        font = QtGui.QFont()
+    set_families = getattr(font, 'setFamilies', None)
+    if callable(set_families):
+        try:
+            set_families(list(families))
+            return font
+        except Exception:  # pylint: disable=broad-except
+            # 极端情况下 setFamilies 也可能拒绝（PySide2 5.12 之前）；
+            # 退回到单族字符串作为最后兜底
+            font.setFamily(families[0])
+            return font
+    # PySide2 5.12 没有 setFamilies；用 CSS 风格 family 串
+    # （Qt 内部会做粗略的回退）
+    font.setFamily(', '.join(families))
+    return font
+
+
+def apply_font_fallback(widget, families=None, recursive=False):
+    # type: (object, List[str], bool) -> None
+    """给指定控件设置带回退族的 QFont。
 
     依赖 ``QFont.setFamilies()``（Qt 5.13+）。在更老的 Qt 上自动降级
     为单族字符串，效果略差但不会崩。
 
     :param widget: 任意 ``QWidget``；通常是主面板根 widget。
     :param families: 自定义字体回退候选；不传时使用 ``_DEFAULT_FAMILIES``。
+    :param recursive: True 时递归遍历所有子控件并各自 setFont。
+        Qt 字体不会自动级联到子控件——单纯给顶层 widget setFont
+        无法保证 QPushButton / QLabel 等子控件继承到回退族。
+        在 PySide2 + 嵌入 Max 主窗口的环境里，主题字体可能压过 setFont，
+        递归覆盖才能确保所有子控件都使用我们的回退族。
     """
     if widget is None:
         return
     fams = list(families or _DEFAULT_FAMILIES)
-    font = widget.font() if hasattr(widget, 'font') else QtGui.QFont()
-    set_families = getattr(font, 'setFamilies', None)
-    if callable(set_families):
+    base_font = widget.font() if hasattr(widget, 'font') else None
+    font = _build_fallback_font(base_font, fams)
+    try:
+        widget.setFont(font)
+    except Exception:  # pylint: disable=broad-except
+        return
+    if not recursive:
+        return
+    # 递归对所有子 QWidget setFont。Qt 的 findChildren 默认深度遍历。
+    find_children = getattr(widget, 'findChildren', None)
+    if not callable(find_children):
+        return
+    try:
+        from ..qt_compat import QtWidgets
+        children = find_children(QtWidgets.QWidget)
+    except Exception:  # pylint: disable=broad-except
+        return
+    for child in children:
         try:
-            set_families(fams)
+            child_base = child.font() if hasattr(child, 'font') else None
+            child.setFont(_build_fallback_font(child_base, fams))
         except Exception:  # pylint: disable=broad-except
-            # 极端情况下 setFamilies 也可能拒绝（PySide2 5.12 之前）；
-            # 退回到单族字符串作为最后兜底
-            font.setFamily(fams[0])
-    else:
-        # PySide2 5.12 没有 setFamilies；用 CSS 风格 family 串
-        # （Qt 内部会做粗略的回退）
-        font.setFamily(', '.join(fams))
-    widget.setFont(font)
+            # 单个子控件失败不影响其他兄弟节点
+            continue
 
 
 def install_app_font_fallback(app=None):
     # type: (object) -> None
     """把字体回退族应用到 QApplication 级别，覆盖所有未来创建的控件。
 
-    在主入口（如 ``startup.show_panel``）调用一次即可。已存在控件
-    需要单独 ``apply_font_fallback`` 才能生效。
+    应在创建任何业务 QWidget **之前**调用一次（如 ``startup.show_panel``
+    顶部）。这样后续所有 ``QWidget()`` 默认就会继承到回退族。
+    对于已经存在的控件（如 Max 主窗口）此调用不会回溯生效，需要
+    再走 ``apply_font_fallback(widget, recursive=True)``。
     """
     try:
         from ..qt_compat import QtWidgets

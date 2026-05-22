@@ -170,3 +170,190 @@ def test_ee_table_covers_main_ui_emojis():
     ]
     missing = [e for e in required if e not in ec.EMOJI_FALLBACK_TABLE]
     assert not missing, 'EMOJI_FALLBACK_TABLE 缺失主 UI 必需键: {}'.format(missing)
+
+
+# ---------------------------------------------------------------------- #
+# apply_font_fallback(recursive=True)：递归覆盖子控件
+# ---------------------------------------------------------------------- #
+def test_apply_font_fallback_recursive_covers_all_children():
+    """recursive=True 必须对每个子控件都 setFont，不依赖 Qt 自动级联。"""
+
+    class FakeFont(object):
+        def __init__(self):
+            self.families_set = None
+
+        def setFamilies(self, fams):
+            self.families_set = list(fams)
+
+        def setFamily(self, name):
+            pass
+
+    class FakeChild(object):
+        def __init__(self):
+            self._font = FakeFont()
+            self.applied = False
+
+        def font(self):
+            return self._font
+
+        def setFont(self, _f):
+            self.applied = True
+
+    class FakeRoot(object):
+        def __init__(self, children):
+            self._font = FakeFont()
+            self._children = children
+            self.applied = False
+
+        def font(self):
+            return self._font
+
+        def setFont(self, _f):
+            self.applied = True
+
+        def findChildren(self, _cls):
+            return list(self._children)
+
+    children = [FakeChild() for _ in range(5)]
+    root = FakeRoot(children)
+
+    ec.apply_font_fallback(root, families=['F1', 'F2'], recursive=True)
+
+    # 根控件被 setFont
+    assert root.applied is True
+    # 全部子控件都被 setFont（关键断言：不依赖 Qt 自动级联）
+    assert all(c.applied for c in children), '部分子控件未被 setFont'
+
+
+def test_apply_font_fallback_recursive_default_off():
+    """默认 recursive=False，不应触发 findChildren 调用。"""
+
+    class FakeFont(object):
+        def setFamilies(self, _fams):
+            pass
+
+        def setFamily(self, _name):
+            pass
+
+    class FakeRoot(object):
+        def __init__(self):
+            self._font = FakeFont()
+            self.find_children_called = False
+
+        def font(self):
+            return self._font
+
+        def setFont(self, _f):
+            pass
+
+        def findChildren(self, _cls):
+            self.find_children_called = True
+            return []
+
+    root = FakeRoot()
+    ec.apply_font_fallback(root, families=['F1'])
+    # recursive 默认 False，不应调用 findChildren
+    assert root.find_children_called is False
+
+
+def test_apply_font_fallback_recursive_resilient_to_child_failure():
+    """单个子控件 setFont 失败不应影响兄弟节点。"""
+
+    class FakeFont(object):
+        def setFamilies(self, _fams):
+            pass
+
+        def setFamily(self, _name):
+            pass
+
+    class BadChild(object):
+        def font(self):
+            return FakeFont()
+
+        def setFont(self, _f):
+            raise RuntimeError('bad child')
+
+    class GoodChild(object):
+        def __init__(self):
+            self.applied = False
+
+        def font(self):
+            return FakeFont()
+
+        def setFont(self, _f):
+            self.applied = True
+
+    good = GoodChild()
+    bad = BadChild()
+
+    class FakeRoot(object):
+        def font(self):
+            return FakeFont()
+
+        def setFont(self, _f):
+            pass
+
+        def findChildren(self, _cls):
+            # 故意把坏的放在前面
+            return [bad, good]
+
+    ec.apply_font_fallback(FakeRoot(), families=['F1'], recursive=True)
+    # 即便 bad 抛异常，good 仍然应被 setFont
+    assert good.applied is True
+
+
+# ---------------------------------------------------------------------- #
+# install_app_font_fallback：QApplication 级别的回退族
+# ---------------------------------------------------------------------- #
+def test_install_app_font_fallback_no_app_instance(monkeypatch):
+    """没有 QApplication 实例时不应抛异常。"""
+    from maxagent import qt_compat
+
+    class FakeQApp(object):
+        @staticmethod
+        def instance():
+            return None
+
+    monkeypatch.setattr(qt_compat.QtWidgets, 'QApplication', FakeQApp)
+    # 不应抛异常
+    ec.install_app_font_fallback()
+
+
+def test_install_app_font_fallback_applies_to_app(monkeypatch):
+    """有 QApplication 实例时，应给 app 设置带回退族的字体。"""
+    from maxagent import qt_compat
+
+    class FakeFont(object):
+        def __init__(self):
+            self.families_set = None
+
+        def setFamilies(self, fams):
+            self.families_set = list(fams)
+
+        def setFamily(self, name):
+            self.families_set = [name]
+
+    class FakeApp(object):
+        def __init__(self):
+            self._font = FakeFont()
+            self.applied = False
+
+        def font(self):
+            return self._font
+
+        def setFont(self, _f):
+            self.applied = True
+
+    fake_app = FakeApp()
+
+    class FakeQApp(object):
+        @staticmethod
+        def instance():
+            return fake_app
+
+    monkeypatch.setattr(qt_compat.QtWidgets, 'QApplication', FakeQApp)
+    ec.install_app_font_fallback()
+
+    assert fake_app.applied is True
+    assert fake_app._font.families_set is not None
+    assert len(fake_app._font.families_set) > 0

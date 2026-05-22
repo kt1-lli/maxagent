@@ -218,10 +218,21 @@ def show_panel(force=False):
     from maxagent.qt_compat import QtWidgets
     from maxagent.tools import load_all_tools
     from maxagent.ui.dock_widget import MaxAgentDockWidget
+    from maxagent.ui.emoji_compat import install_app_font_fallback
 
     # 启动日志系统（幂等，重复调用安全）
     setup_logging()
     logger = get_logger(__name__)
+
+    # 字体回退族安装到 QApplication 级别——必须在创建任何业务 QWidget
+    # 之前调用，这样后续所有 QPushButton/QLabel 默认就会继承到回退族。
+    # 在 PySide2 + Windows 上，这能消除"纯中文按钮在嵌入 Max 后糊掉"
+    # 的问题。已存在的控件（含 Max 主窗口）不会回溯生效。
+    try:
+        install_app_font_fallback()
+    except Exception:  # pylint: disable=broad-except
+        # 字体设置失败不应阻塞启动
+        logger.debug('install_app_font_fallback failed', exc_info=True)
 
     global _DOCK_WIDGET, _QDOCK_HOLDER  # pylint: disable=global-statement
 

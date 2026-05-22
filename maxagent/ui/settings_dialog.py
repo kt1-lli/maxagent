@@ -99,7 +99,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self._build_ui()
         self._reload_profiles()
         # 字体回退链：让 PySide2 上 emoji + 中文混排正确渲染
-        _apply_font_fallback(self)
+        # recursive=True：递归到所有子按钮 / 标签 / 输入框，确保
+        # PySide2 下 Qt 主题字体不会压过我们的回退族
+        _apply_font_fallback(self, recursive=True)
 
     # ================================================================== #
     # 顶层 UI 构建
