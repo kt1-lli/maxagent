@@ -118,6 +118,11 @@ class AgentWorker(QObject):
         # 当前轮的用户输入（供 sys_addon_provider 用于触发词匹配）
         self._current_user_input = ''
 
+        # 工具过滤回调：签名 (tool_name: str) -> bool；返回 False 时该工具
+        # 不会被纳入本轮 LLM 的 tools schema，相当于"本轮临时屏蔽"。
+        # 用于联网开关：联网关闭时屏蔽 web_* 工具，避免 LLM 误用。
+        self._tools_filter = None  # type: Optional[Any]
+
         # ---------- chunk 节流（合并主线程信号风暴） ----------
         # LLM 流式每个 token 一个 chunk，在子线程里先攒到 buffer，
         # 满足任一条件再 emit：累计字节 >= _chunk_flush_chars
@@ -167,6 +172,15 @@ class AgentWorker(QObject):
             返回空字符串则不附加。
         """
         self._sys_addon_provider = provider
+
+    def set_tools_filter(self, filter_func):
+        """注入工具过滤回调。
+
+        :param filter_func: 可调用对象，签名 ``(tool_name: str) -> bool``。
+            返回 False 时该工具不会被纳入本轮 LLM 的 tools schema。
+            传 None 则不过滤（默认）。
+        """
+        self._tools_filter = filter_func
 
     def cancel(self):
         """请求取消当前对话轮（下一次工具结束/LLM 流式分块时生效）。"""
@@ -267,6 +281,22 @@ class AgentWorker(QObject):
           让用户看到部分成果，而不是丢失整轮上下文
         """
         tools_schema = build_openai_tools_schema()
+        # 应用工具过滤（如本轮关闭联网时屏蔽 web_*）
+        if self._tools_filter is not None and tools_schema:
+            try:
+                tools_schema = [
+                    s for s in tools_schema
+                    if self._tools_filter(
+                        (s.get('function') or {}).get('name', ''),
+                    )
+                ]
+                logger.info(
+                    'tools_filter applied: %d tools enabled this turn',
+                    len(tools_schema),
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning('tools_filter 异常，回退全量: %s', exc)
+                tools_schema = build_openai_tools_schema()
         # 标记是否已注入软提示，避免重复
         soft_warned = False
 

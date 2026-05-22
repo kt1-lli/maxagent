@@ -167,6 +167,22 @@ class AppConfig:
     # 这里配置的级别。出问题时调成 ``DEBUG`` 抓现场即可。
     log_level: str = "INFO"
 
+    # ---------- 联网搜索 ---------- #
+    # 联网模式三选一：
+    #   off    - 全局禁用联网，主 UI 按钮置灰
+    #   auto   - 全局允许，由用户在主 UI 通过 🌐 按钮按需切换本轮
+    #   force  - 全局强制开启，主 UI 按钮强制亮起且不可关
+    web_search_mode: str = "auto"
+    # 搜索后端：duckduckgo（HTML scraping，零依赖，默认）/
+    #            bing_api（需 Key）/ disabled（永不联网）
+    web_search_backend: str = "duckduckgo"
+    # 单次返回的最大结果数（标题 + url + 摘要）
+    web_search_max_results: int = 5
+    # 是否对前 N 条结果抓取网页正文摘要（默认开，否则只有标题摘要质量差）
+    web_fetch_page_text: bool = True
+    # Bing API Key（仅 backend=bing_api 时需要）
+    bing_api_key: str = ""
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -184,6 +200,11 @@ class AppConfig:
             "max_context_chars": self.max_context_chars,
             "auto_show_on_startup": self.auto_show_on_startup,
             "log_level": self.log_level,
+            "web_search_mode": self.web_search_mode,
+            "web_search_backend": self.web_search_backend,
+            "web_search_max_results": self.web_search_max_results,
+            "web_fetch_page_text": self.web_fetch_page_text,
+            "bing_api_key": self.bing_api_key,
         }
 
     @classmethod
@@ -210,6 +231,28 @@ class AppConfig:
             raw_level if raw_level in ("DEBUG", "INFO", "WARNING", "ERROR")
             else "INFO"
         )
+        # ---- 联网搜索 ---- #
+        mode = str(data.get("web_search_mode", "auto") or "auto").lower()
+        cfg.web_search_mode = (
+            mode if mode in ("off", "auto", "force") else "auto"
+        )
+        backend = str(
+            data.get("web_search_backend", "duckduckgo") or "duckduckgo",
+        ).lower()
+        cfg.web_search_backend = (
+            backend if backend in ("duckduckgo", "bing_api", "disabled")
+            else "duckduckgo"
+        )
+        try:
+            cfg.web_search_max_results = max(1, min(10, int(
+                data.get("web_search_max_results", 5),
+            )))
+        except (TypeError, ValueError):
+            cfg.web_search_max_results = 5
+        cfg.web_fetch_page_text = bool(
+            data.get("web_fetch_page_text", True),
+        )
+        cfg.bing_api_key = str(data.get("bing_api_key", "") or "")
         return cfg
 
 

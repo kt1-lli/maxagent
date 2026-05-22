@@ -363,32 +363,104 @@ class SettingsDialog(QtWidgets.QDialog):
         return page
 
     # ================================================================== #
-    # Page 2: 联网（Commit 2 实装；先放占位说明）
+    # Page 2: 联网搜索
     # ================================================================== #
     def _build_page_network(self):
         # type: () -> QtWidgets.QWidget
         page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setSpacing(12)
+        outer = QtWidgets.QVBoxLayout(page)
+        outer.setSpacing(12)
 
         title = QtWidgets.QLabel('🌐  联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
-        layout.addWidget(title)
+        outer.addWidget(title)
 
-        info = QtWidgets.QLabel(
-            '联网搜索功能即将上线。\n\n'
-            '届时本页将提供：\n'
-            '  • 联网模式：关闭 / 自动 / 强制\n'
-            '  • 搜索后端：DuckDuckGo / Bing API / 关闭\n'
-            '  • 单次搜索结果数 / 是否抓取网页正文\n'
-            '  • 命中缓存开关\n\n'
-            '主对话窗口的输入栏将提供"🌐"按钮，'
-            '让你按需开关本轮对话是否联网。',
+        form = QtWidgets.QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        # 联网模式
+        self.web_mode_combo = QtWidgets.QComboBox()
+        # display ↔ value 一一对应；存到配置时写 value
+        self._web_mode_options = [
+            ('关闭（全局禁用）', 'off'),
+            ('自动（按需在主 UI 切换）', 'auto'),
+            ('强制开启', 'force'),
+        ]
+        for label, _v in self._web_mode_options:
+            self.web_mode_combo.addItem(label)
+        self.web_mode_combo.setToolTip(
+            '关闭：永远不联网，主 UI 按钮置灰\n'
+            '自动：在主 UI 通过 🌐 按钮按需开关本轮对话\n'
+            '强制：每轮对话都允许 LLM 联网，主 UI 按钮强制亮起',
         )
-        info.setStyleSheet('color:#aaa;')
-        info.setWordWrap(True)
-        layout.addWidget(info)
-        layout.addStretch(1)
+        self.web_mode_combo.currentIndexChanged.connect(
+            self._on_web_settings_changed,
+        )
+        form.addRow('联网模式:', self.web_mode_combo)
+
+        # 后端
+        self.web_backend_combo = QtWidgets.QComboBox()
+        self._web_backend_options = [
+            ('DuckDuckGo（免费，零依赖）', 'duckduckgo'),
+            ('Bing API（需 Key）', 'bing_api'),
+            ('禁用搜索（仅保留 web_fetch）', 'disabled'),
+        ]
+        for label, _v in self._web_backend_options:
+            self.web_backend_combo.addItem(label)
+        self.web_backend_combo.currentIndexChanged.connect(
+            self._on_web_settings_changed,
+        )
+        form.addRow('搜索后端:', self.web_backend_combo)
+
+        # 结果数
+        self.web_max_results_spin = QtWidgets.QSpinBox()
+        self.web_max_results_spin.setRange(1, 10)
+        self.web_max_results_spin.setValue(5)
+        self.web_max_results_spin.valueChanged.connect(
+            self._on_web_settings_changed,
+        )
+        form.addRow('单次结果数:', self.web_max_results_spin)
+
+        # 是否抓正文
+        self.web_fetch_chk = QtWidgets.QCheckBox(
+            '抓取每条结果的网页正文（推荐开启）',
+        )
+        self.web_fetch_chk.setToolTip(
+            '关闭后只有标题 + 摘要，质量较差。\n'
+            '开启会对前 N 条结果各发一次 HTTP，单次搜索耗时增加。',
+        )
+        self.web_fetch_chk.toggled.connect(self._on_web_settings_changed)
+        form.addRow('', self.web_fetch_chk)
+
+        # Bing API Key
+        self.bing_key_edit = QtWidgets.QLineEdit()
+        self.bing_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.bing_key_edit.setPlaceholderText(
+            '仅当后端=Bing API 时需要',
+        )
+        self.bing_key_edit.editingFinished.connect(
+            self._on_web_settings_changed,
+        )
+        form.addRow('Bing API Key:', self.bing_key_edit)
+
+        outer.addLayout(form)
+
+        # 测试按钮 + 提示
+        op = QtWidgets.QHBoxLayout()
+        self.web_test_btn = QtWidgets.QPushButton('测试搜索')
+        self.web_test_btn.setToolTip('用上方设置发起一次"3ds Max"的搜索验证可用性')
+        self.web_test_btn.clicked.connect(self._test_web_search)
+        op.addWidget(self.web_test_btn)
+        op.addStretch(1)
+        outer.addLayout(op)
+
+        self.web_test_label = QtWidgets.QLabel('')
+        self.web_test_label.setStyleSheet('color:#888;')
+        self.web_test_label.setWordWrap(True)
+        outer.addWidget(self.web_test_label)
+
+        outer.addStretch(1)
         return page
 
     # ================================================================== #
@@ -583,6 +655,9 @@ class SettingsDialog(QtWidgets.QDialog):
             self.log_level_combo.setCurrentIndex(idx)
         self.log_level_combo.blockSignals(False)
 
+        # ---- 联网设置 ---- #
+        self._load_web_settings()
+
     def _on_app_setting_changed(self, _checked):
         cfg = self._config.config
         cfg.auto_show_on_startup = bool(self.auto_show_chk.isChecked())
@@ -679,6 +754,116 @@ class SettingsDialog(QtWidgets.QDialog):
         self.headers_edit.setPlainText(text)
         self.test_label.setText('')
         self._dirty = False
+
+    # ================================================================== #
+    # 联网设置加载 / 写盘
+    # ================================================================== #
+    def _load_web_settings(self):
+        """把 AppConfig 上的联网字段加载到联网 Tab 控件。"""
+        cfg = self._config.config
+        # 联网模式
+        mode = str(getattr(cfg, 'web_search_mode', 'auto') or 'auto').lower()
+        for i, (_, v) in enumerate(self._web_mode_options):
+            if v == mode:
+                self.web_mode_combo.blockSignals(True)
+                self.web_mode_combo.setCurrentIndex(i)
+                self.web_mode_combo.blockSignals(False)
+                break
+        # 后端
+        backend = str(
+            getattr(cfg, 'web_search_backend', 'duckduckgo') or 'duckduckgo',
+        ).lower()
+        for i, (_, v) in enumerate(self._web_backend_options):
+            if v == backend:
+                self.web_backend_combo.blockSignals(True)
+                self.web_backend_combo.setCurrentIndex(i)
+                self.web_backend_combo.blockSignals(False)
+                break
+        # 结果数
+        self.web_max_results_spin.blockSignals(True)
+        self.web_max_results_spin.setValue(
+            int(getattr(cfg, 'web_search_max_results', 5) or 5),
+        )
+        self.web_max_results_spin.blockSignals(False)
+        # 抓正文开关
+        self.web_fetch_chk.blockSignals(True)
+        self.web_fetch_chk.setChecked(
+            bool(getattr(cfg, 'web_fetch_page_text', True)),
+        )
+        self.web_fetch_chk.blockSignals(False)
+        # Bing Key
+        self.bing_key_edit.blockSignals(True)
+        self.bing_key_edit.setText(
+            str(getattr(cfg, 'bing_api_key', '') or ''),
+        )
+        self.bing_key_edit.blockSignals(False)
+
+    def _on_web_settings_changed(self, *_args):
+        """任一联网控件变化即写盘 + 通知主窗口刷新 🌐 按钮状态。"""
+        cfg = self._config.config
+        mode_idx = self.web_mode_combo.currentIndex()
+        backend_idx = self.web_backend_combo.currentIndex()
+        cfg.web_search_mode = self._web_mode_options[mode_idx][1]
+        cfg.web_search_backend = self._web_backend_options[backend_idx][1]
+        cfg.web_search_max_results = int(self.web_max_results_spin.value())
+        cfg.web_fetch_page_text = bool(self.web_fetch_chk.isChecked())
+        cfg.bing_api_key = str(self.bing_key_edit.text() or '').strip()
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '联网设置写盘失败: {}'.format(exc),
+            )
+            return
+        # 通知主窗口刷新主 UI 联网按钮（如果父窗口实现了该接口）
+        try:
+            parent = self.parent()
+            refresh = getattr(parent, 'refresh_web_button_state', None)
+            if callable(refresh):
+                refresh()
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _test_web_search(self):
+        """用当前设置发起一次冒烟搜索，把结果摘要打到提示标签上。"""
+        # 先把当前 UI 的修改写盘，确保后端拿到的是最新值
+        self._on_web_settings_changed()
+        self.web_test_label.setText('⏳ 正在搜索...')
+        self.web_test_label.setStyleSheet('color:#888;')
+        QtWidgets.QApplication.processEvents()
+        try:
+            from ..web_search import search as _do_search
+            from ..web_search import SearchError
+            cfg = self._config.config
+            results = _do_search(
+                '3ds Max maxscript',
+                max_results=int(cfg.web_search_max_results or 5),
+                backend=cfg.web_search_backend,
+                bing_api_key=cfg.bing_api_key,
+                fetch_page=False,
+                use_cache=False,
+            )
+        except SearchError as exc:
+            self.web_test_label.setText('❌ 搜索失败: {}'.format(exc))
+            self.web_test_label.setStyleSheet('color:#e57373;')
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            self.web_test_label.setText('❌ 异常: {}'.format(exc))
+            self.web_test_label.setStyleSheet('color:#e57373;')
+            return
+        if not results:
+            self.web_test_label.setText(
+                '⚠ 后端没返回结果（可能被反爬或网络受限）',
+            )
+            self.web_test_label.setStyleSheet('color:#b8923a;')
+            return
+        first = results[0]
+        self.web_test_label.setText(
+            '✅ 命中 {} 条；首条: {}'.format(
+                len(results), first.title[:60] or first.url[:60],
+            ),
+        )
+        self.web_test_label.setStyleSheet('color:#8fce8f;')
 
     def _read_form(self):
         headers = {}

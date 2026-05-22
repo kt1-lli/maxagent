@@ -529,6 +529,24 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(6)
 
+        # 🌐 联网按钮（toggle）：本轮对话是否允许 LLM 调联网工具
+        # 行为根据全局 web_search_mode 三态联动：
+        #   off    -> 按钮置灰不可点，hover 提示"全局已禁用"
+        #   auto   -> 按钮可点，亮起=本轮联网/熄灭=本轮关闭
+        #   force  -> 按钮强制亮起且不可点，hover 提示"全局已强制开启"
+        self.web_btn = QtWidgets.QPushButton('🌐')
+        self.web_btn.setCheckable(True)
+        self.web_btn.setFixedWidth(40)
+        self.web_btn.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.web_btn.setStyleSheet(
+            'QPushButton:checked { background-color: #094771; color: #fff; }'
+        )
+        self.web_btn.toggled.connect(self._on_web_btn_toggled)
+        action_row.addWidget(self.web_btn, 0)
+
         # 发送/停止 合一：未运行时为发送（绿色），运行时切换为停止（红色）
         # 通过 _is_running 状态分发到 _on_send 或 _on_stop
         self.send_btn = QtWidgets.QPushButton('发送')
@@ -544,6 +562,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.stop_btn = self.send_btn
         action_row.addWidget(self.send_btn, 1)
         input_layout.addLayout(action_row)
+
+        # 初始化 🌐 按钮状态（依赖 self._config）
+        self.refresh_web_button_state()
 
         input_container.setMinimumHeight(self._MIN_INPUT_HEIGHT + 8)
         self.splitter.addWidget(input_container)
@@ -1205,6 +1226,77 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit.setPlainText(text)
         self.input_edit.setFocus()
 
+    def refresh_web_button_state(self):
+        """根据全局 ``web_search_mode`` 同步 🌐 按钮显示与可点击性。
+
+        在以下时机调用：
+        1. 主 UI 初始化（_build_ui 末尾）
+        2. 设置面板 OK 后（SettingsDialog 主动回调本方法）
+        3. 重新加载配置后（reload）
+        """
+        if not hasattr(self, 'web_btn'):
+            return
+        cfg = self._config.config
+        mode = str(getattr(cfg, 'web_search_mode', 'auto') or 'auto').lower()
+        backend = str(
+            getattr(cfg, 'web_search_backend', 'duckduckgo') or 'duckduckgo',
+        ).lower()
+        # 后端为 disabled 视同 mode=off
+        effective_off = (mode == 'off' or backend == 'disabled')
+        # 阻塞 toggle 信号避免触发副作用
+        self.web_btn.blockSignals(True)
+        if effective_off:
+            self.web_btn.setEnabled(False)
+            self.web_btn.setChecked(False)
+            self.web_btn.setToolTip('联网已被全局关闭（设置 → 联网）')
+        elif mode == 'force':
+            self.web_btn.setEnabled(False)
+            self.web_btn.setChecked(True)
+            self.web_btn.setToolTip(
+                '联网为强制开启（设置 → 联网）；本按钮不可关闭',
+            )
+        else:  # auto
+            self.web_btn.setEnabled(True)
+            # 默认每次刷新不动当前 checked 状态——除非按钮原本就关闭则保持关闭，
+            # 但首次进入时根据 backend 是否可用启用
+            self.web_btn.setToolTip(
+                '本轮对话允许 LLM 联网搜索\n'
+                '点击切换：亮起=本轮联网；熄灭=本轮关闭',
+            )
+        self.web_btn.blockSignals(False)
+
+    def _on_web_btn_toggled(self, checked):
+        """用户点击 🌐 切换本轮联网开关——仅 auto 模式下生效。
+
+        force / off 模式下按钮被 setEnabled(False) 拦住，不会进入这里。
+        """
+        try:
+            self.status_label.setText(
+                '🌐 本轮联网：开启' if checked else '🌐 本轮联网：关闭',
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _should_use_web_this_turn(self):
+        """决策本轮是否暴露 web_* 工具。
+
+        :returns: True 表示允许 LLM 调用 web_search / web_fetch
+        """
+        cfg = self._config.config
+        mode = str(getattr(cfg, 'web_search_mode', 'auto') or 'auto').lower()
+        backend = str(
+            getattr(cfg, 'web_search_backend', 'duckduckgo') or 'duckduckgo',
+        ).lower()
+        if mode == 'off' or backend == 'disabled':
+            return False
+        if mode == 'force':
+            return True
+        # auto 模式：看按钮当前 checked 状态
+        try:
+            return bool(self.web_btn.isChecked())
+        except Exception:  # pylint: disable=broad-except
+            return False
+
     def _on_send(self):
         if self._is_running:
             return
@@ -1229,6 +1321,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.set_system_prompt_addon_provider(
             self._skill_mgr.build_system_prompt_addon,
         )
+        # 根据当前 🌐 按钮状态决定本轮是否暴露 web_* 工具给 LLM
+        use_web = self._should_use_web_this_turn()
+        if not use_web:
+            self._worker.set_tools_filter(
+                lambda name: not name.startswith('web_'),
+            )
         self._worker.chunk_received.connect(self._on_chunk)
         self._worker.tool_started.connect(self._on_tool_started)
         self._worker.tool_finished.connect(self._on_tool_finished)
