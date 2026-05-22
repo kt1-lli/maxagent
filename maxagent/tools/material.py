@@ -34,12 +34,12 @@ def _get_node(name):
 def _to_color(rgb):
     """[r, g, b] (0~255 或 0~1) -> rt.Color。"""
     if rgb is None or len(rgb) < 3:
-        return rt.color(255, 255, 255)
+        return rt.Color(255, 255, 255)
     r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
     # 自动判断是 0-1 还是 0-255
     if max(r, g, b) <= 1.0:
         r, g, b = r * 255.0, g * 255.0, b * 255.0
-    return rt.color(r, g, b)
+    return rt.Color(r, g, b)
 
 
 # 模块级缓存：保存 agent 创建过的材质，确保未被对象引用时也能再次通过名字找到

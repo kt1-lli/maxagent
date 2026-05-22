@@ -499,6 +499,69 @@ c = rt.Color(255, 128, 0)
 obj.wireColor = rt.Color(255, 0, 0)  # 设置为红色
 ```
 
+#### ⚠️ 颜色相关高频踩坑（项目实战教训）
+
+**坑 1：`rt.Color` 必须大写 C，写成 `rt.color` 会得到完全错误的颜色**
+
+pymxs 在 attribute lookup 时**区分大小写**。小写 `rt.color(255, 0, 0)` 不会报错（pymxs 会模糊匹配到一个旧式 MaxScript 函数），但返回的对象赋给 `mat.diffuse` 后通道顺序会错乱，
+表现为"红色变墨绿、白色变暗红"。**唯一正确写法：大写首字母 `rt.Color`**。
+
+```python
+# ✅ 正确
+mat.diffuse = rt.Color(255, 0, 0)
+
+# ❌ 错误（曾导致茶壶变墨绿色的真实 bug）
+mat.diffuse = rt.color(255, 0, 0)
+```
+
+同理 `rt.Point3`、`rt.Box`、`rt.Teapot`、`rt.Standardmaterial` 等所有"类型构造器"
+均遵循 MaxScript 类名 pascal-case，**禁止全小写**。
+
+**坑 2：通过 `rt.execute()` 拼接 MaxScript 时，颜色字面量不能写成 Python 列表**
+
+MaxScript 中颜色字面量是 `(color 255 0 0)`（**空格分隔，不是逗号**），与 Python 的
+`[255, 0, 0]` 完全不兼容。把 Python 列表 `str()` 后直接拼进 MaxScript 字符串会得到
+`(color 2 5 5)`（解析成单字符 `'2'`/`'5'`/`'5'`），渲染为深青色。
+
+```python
+# ❌ 错误：把 Python 列表当成 MaxScript 颜色字面量
+rgb = [255, 0, 0]
+rt.execute('mat.diffuse = (color {})'.format(rgb))
+# 实际生成: mat.diffuse = (color [255, 0, 0])  ← MaxScript 解析失败 / 错乱
+
+# ✅ 推荐 1：根本不用 execute，直接 pymxs 对象操作
+mat.diffuse = rt.Color(255, 0, 0)
+
+# ✅ 推荐 2：必须用 execute 时，手动展开为空格分隔
+r, g, b = 255, 0, 0
+rt.execute('mat.diffuse = (color {} {} {})'.format(r, g, b))
+```
+
+**坑 3：分量范围 0~255 vs 0~1 不要混用**
+
+3ds Max 内部 `rt.Color()` 使用 **0~255** 整数分量（与 MaxScript 一致）。LLM 容易按
+其它 DCC 软件（Maya / Blender）习惯传 `[1.0, 0.0, 0.0]` 当成红色——pymxs **不会自动归一化**，
+分量 1.0 几乎等于黑色。本项目 `tools/material.py::_to_color` 做了自动判断：
+``max(r,g,b) <= 1.0`` 时按 0~1 处理并放大 255 倍，否则按 0~255 直接使用。
+**对外暴露的工具签名应保持这一约定**。
+
+```python
+# 0~255 范围（推荐）
+mat.diffuse = rt.Color(255, 0, 0)
+
+# 0~1 范围（需先放大）
+r, g, b = 1.0, 0.0, 0.0
+mat.diffuse = rt.Color(r * 255, g * 255, b * 255)
+```
+
+**坑 4：`mat.diffuse` 与 `mat.diffuseMap` 不是同一个东西**
+
+- `mat.diffuse`：纯色 `rt.Color` 对象
+- `mat.diffuseMap`：贴图节点（`rt.Bitmaptexture` 等）
+- PhysicalMaterial 用 `mat.base_color` / `mat.base_color_map`
+
+赋值时不要混用，否则会静默失败（材质看起来"没变化"）。
+
 ---
 
 ## 场景对象操作规范
@@ -632,6 +695,44 @@ return = True
 
 ---
 
+### P006 [MUST_NOT] 禁止使用小写 `rt.color`，颜色构造器必须 `rt.Color`
+
+pymxs attribute lookup 区分大小写。小写 `rt.color()` 不会立刻报错，但返回的对象通道
+顺序错乱，赋给 `mat.diffuse` 会出现"红变绿、白变暗红"等诡异颜色 bug。**所有类型构造器
+统一遵循 MaxScript pascal-case**：`rt.Color`、`rt.Point3`、`rt.Box`、`rt.Teapot`、
+`rt.Standardmaterial` 等。
+
+```python
+# ✗ 错误（曾导致茶壶变墨绿色的真实 bug）
+mat.diffuse = rt.color(255, 0, 0)
+
+# ✓ 正确
+mat.diffuse = rt.Color(255, 0, 0)
+```
+
+---
+
+### P007 [MUST_NOT] 禁止把 Python 列表当成 MaxScript 颜色字面量拼进 `rt.execute`
+
+MaxScript 的颜色字面量是 `(color 255 0 0)`（**空格分隔**），与 Python 列表
+`[255, 0, 0]` 完全不兼容。`str([255, 0, 0])` 拼进 MaxScript 字符串后会被解析成
+`(color 2 5 5)`（按字符切），渲染为深青色而非红色。
+
+```python
+# ✗ 错误
+rgb = [255, 0, 0]
+rt.execute('mat.diffuse = (color {})'.format(rgb))
+
+# ✓ 推荐：直接用 pymxs 对象，避免 execute
+mat.diffuse = rt.Color(255, 0, 0)
+
+# ✓ 必须用 execute 时，手动展开为空格分隔
+r, g, b = 255, 0, 0
+rt.execute('mat.diffuse = (color {} {} {})'.format(r, g, b))
+```
+
+---
+
 ## 最佳实践
 
 1. 所有注释必须使用中文
@@ -740,5 +841,5 @@ rt.setMeditMaterial(1, mat)
 | 项目 | 值 |
 |------|-----|
 | 标题 | Python + pymxs 编码规范 (LLM Rules) |
-| 版本 | 2.0 |
-| 强制规则摘要 | 所有注释必须使用中文；pymxs.runtime 统一使用别名 rt；访问 pymxs 数组使用 0-based 索引；传递索引给 MaxScript 函数使用 1-based；pymxs 对象相等性测试使用 ==，禁用 is；禁止使用不存在的 API；禁止使用 Python 关键字作为变量名 |
+| 版本 | 2.1 |
+| 强制规则摘要 | 所有注释必须使用中文；pymxs.runtime 统一使用别名 rt；访问 pymxs 数组使用 0-based 索引；传递索引给 MaxScript 函数使用 1-based；pymxs 对象相等性测试使用 ==，禁用 is；禁止使用不存在的 API；禁止使用 Python 关键字作为变量名；类型构造器必须 pascal-case（rt.Color / rt.Point3 / rt.Box，禁止 rt.color 等小写形式）；rt.execute 拼接 MaxScript 时颜色字面量是空格分隔 `(color r g b)`，禁止把 Python 列表 str() 后直接拼入 |
