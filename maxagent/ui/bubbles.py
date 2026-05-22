@@ -546,9 +546,16 @@ class AssistantBubble(QtWidgets.QWidget):
 # 用户气泡（靠右）
 # ---------------------------------------------------------------------- #
 class UserBubble(QtWidgets.QWidget):
-    """用户消息气泡，蓝色，右对齐。"""
+    """用户消息气泡，蓝色，右对齐。
 
-    def __init__(self, text, parent=None):
+    支持在文本上方按网格渲染图片附件（多张图横向排列，每行最多 3 张）。
+    """
+
+    # 单张缩略图最大宽度（像素），点击放大查看
+    _THUMB_MAX_W = 220
+    _THUMBS_PER_ROW = 3
+
+    def __init__(self, text, attachments=None, parent=None):
         super(UserBubble, self).__init__(parent)
         outer = QtWidgets.QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -564,13 +571,75 @@ class UserBubble(QtWidgets.QWidget):
         head.setStyleSheet('background:transparent; color:#bbd9f5;')
         bubble.add_widget(head)
 
-        body = html_escape(text).replace('\n', '<br>')
-        label = ChatLabel(
-            '<span style="color:#ffffff;line-height:1.5;">'
-            + body + '</span>'
-        )
-        bubble.add_widget(label)
+        # 图片附件：在文本前先放图，符合"先上下文，再描述"的阅读习惯
+        if attachments:
+            self._add_attachment_grid(bubble, attachments)
+
+        if text and text.strip():
+            body = html_escape(text).replace('\n', '<br>')
+            label = ChatLabel(
+                '<span style="color:#ffffff;line-height:1.5;">'
+                + body + '</span>'
+            )
+            bubble.add_widget(label)
         outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+
+    def _add_attachment_grid(self, bubble, attachments):
+        """在气泡内添加图片缩略图网格。"""
+        # 每行 _THUMBS_PER_ROW 张，超过换行
+        row_layout = None
+        col = 0
+        for att in attachments:
+            if not getattr(att, 'path', None):
+                continue
+            if row_layout is None or col >= self._THUMBS_PER_ROW:
+                row_layout = QtWidgets.QHBoxLayout()
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(4)
+                bubble.add_layout(row_layout)
+                col = 0
+            thumb = self._make_thumbnail(att)
+            row_layout.addWidget(thumb)
+            col += 1
+        # 末行加 stretch 让缩略图靠左
+        if row_layout is not None and col < self._THUMBS_PER_ROW:
+            row_layout.addStretch(1)
+
+    def _make_thumbnail(self, attachment):
+        """单张缩略图（QLabel + 点击放大）。"""
+        label = QtWidgets.QLabel()
+        label.setStyleSheet(
+            'QLabel { background:#1a3a5a; border:1px solid #3d6d9d;'
+            ' border-radius:3px; padding:2px; }'
+        )
+        pix = QtGui.QPixmap(attachment.path)
+        if pix.isNull():
+            label.setText('[图片缺失]')
+            label.setFixedSize(self._THUMB_MAX_W, 60)
+            label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            return label
+        # 等比缩放：宽度上限 _THUMB_MAX_W，高度上限 220
+        scaled = pix.scaled(
+            self._THUMB_MAX_W, 220,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        label.setPixmap(scaled)
+        label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        label.setToolTip('点击查看大图')
+        # 双击放大查看（避免与拖动选区冲突）
+        label.mouseReleaseEvent = (
+            lambda ev, a=attachment: self._open_viewer(a)
+        )
+        return label
+
+    @staticmethod
+    def _open_viewer(attachment):
+        try:
+            from .input_attachments import ImageViewerDialog
+            ImageViewerDialog.show_for(attachment)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     def apply_max_width(self, viewport_width):
         # type: (int) -> None

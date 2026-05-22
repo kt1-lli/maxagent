@@ -199,6 +199,23 @@ class AppConfig:
     # 实际路径 = config_dir + filename
     employee_avatar_image: str = ""
 
+    # ---------- 视觉/多模态（图片附件）---------- #
+    # 主开关：是否允许把图片附件作为 image_url 多模态消息发给 LLM。
+    # False 时即使用户在输入框插入图片，也只在本地气泡里显示，
+    # LLM 端只会收到文本内容（兼容不支持视觉的模型）。
+    vision_enabled: bool = True
+    # 视觉能力白名单：模型名（小写）只要包含其中任一子串，就视为
+    # 支持 OpenAI 多模态协议（content 列表 + image_url）。
+    # 这是个保守白名单——不在表里的模型按"不支持"处理，避免直接
+    # 把超长 base64 发给纯文本模型导致 400/超大 token 浪费。
+    vision_model_whitelist: List[str] = field(default_factory=lambda: [
+        "gpt-4o", "gpt-4-vision", "gpt-4-turbo",
+        "claude-3", "claude-4", "claude-sonnet", "claude-opus",
+        "gemini-1.5", "gemini-2", "gemini-pro-vision",
+        "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+        "glm-4v", "yi-vl", "internvl",
+    ])
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -225,6 +242,8 @@ class AppConfig:
             "employee_avatar_kind": self.employee_avatar_kind,
             "employee_avatar_emoji": self.employee_avatar_emoji,
             "employee_avatar_image": self.employee_avatar_image,
+            "vision_enabled": self.vision_enabled,
+            "vision_model_whitelist": list(self.vision_model_whitelist),
         }
 
     @classmethod
@@ -293,6 +312,14 @@ class AppConfig:
         cfg.employee_avatar_image = str(
             data.get("employee_avatar_image", "") or "",
         )
+        # ---- 视觉 / 多模态 ---- #
+        cfg.vision_enabled = bool(data.get("vision_enabled", True))
+        raw_wl = data.get("vision_model_whitelist")
+        if isinstance(raw_wl, list) and raw_wl:
+            cfg.vision_model_whitelist = [
+                str(x).strip().lower() for x in raw_wl if str(x).strip()
+            ]
+        # else 走 dataclass 默认值
         return cfg
 
 

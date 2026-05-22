@@ -310,9 +310,9 @@ class _ChatRenderer(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # 消息接口
     # ------------------------------------------------------------------ #
-    def add_user(self, text):
+    def add_user(self, text, attachments=None):
         self._close_streaming_if_any()
-        self._append(_UserBubble(text))
+        self._append(_UserBubble(text, attachments=attachments))
 
     def add_assistant_start(self):
         """开始一段助手回复气泡，后续 chunk 会增量追加。"""
@@ -638,15 +638,37 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit.setMinimumHeight(self._MIN_INPUT_HEIGHT)
         self.input_edit.setPlaceholderText(
             _ee('✏️') + ' 在这里输入指令...\n'
-            'Enter 发送 / Shift+Enter 换行 / Ctrl+Enter 发送（拖动上方分割条可调整大小）',
+            'Enter 发送 / Shift+Enter 换行 / Ctrl+Enter 发送 / Ctrl+V 粘贴图片',
         )
         self.input_edit.send_requested.connect(self._on_send)
+        # 接收输入框内通过粘贴/拖拽产生的图片字节
+        self.input_edit.image_dropped.connect(self._on_image_dropped)
+        # 附件预览条（输入框上方，无附件时自动隐藏）
+        from .input_attachments import AttachmentStrip
+        self.attachment_strip = AttachmentStrip(self)
+        input_layout.addWidget(self.attachment_strip, 0)
         input_layout.addWidget(self.input_edit, 1)
 
         # 底部操作行：发送/停止 合一按钮占满整行，文字在窄面板下也不会被截断
         action_row = QtWidgets.QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(6)
+
+        # 📎 添加图片按钮：打开文件对话框选图
+        self.attach_btn = QtWidgets.QPushButton(_ee('📎'))
+        self.attach_btn.setFixedWidth(40)
+        self.attach_btn.setToolTip(
+            '添加图片（也可 Ctrl+V 粘贴 / 拖入图片文件）',
+        )
+        self.attach_btn.clicked.connect(self._on_attach_image)
+        action_row.addWidget(self.attach_btn, 0)
+
+        # ✂️ 截图按钮：进程内 Qt 全屏框选
+        self.snip_btn = QtWidgets.QPushButton(_ee('✂️'))
+        self.snip_btn.setFixedWidth(40)
+        self.snip_btn.setToolTip('截图（全屏框选）')
+        self.snip_btn.clicked.connect(self._on_snip)
+        action_row.addWidget(self.snip_btn, 0)
 
         # 🌐 联网按钮（toggle）：本轮对话是否允许 LLM 调联网工具
         # 行为根据全局 web_search_mode 三态联动：
@@ -1221,8 +1243,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         for m in conv.messages:
             if m.role == 'user':
-                if m.content:
-                    self._renderer.add_user(m.content)
+                if m.content or getattr(m, 'attachments', None):
+                    self._renderer.add_user(
+                        m.content or '',
+                        attachments=getattr(m, 'attachments', None),
+                    )
             elif m.role == 'assistant':
                 if m.content:
                     # 直接渲染最终版（不走流式）
@@ -1521,14 +1546,31 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         if self._is_running:
             return
         text = self.input_edit.toPlainText().strip()
-        if not text:
+        atts = list(self.attachment_strip.attachments())
+        if not text and not atts:
             return
-        # DEBUG 埋点：用户发送（input 长度，避免泄漏正文）
-        logger.debug('ui_send len=%d', len(text))
+        # 没文本但有图片时给一个默认描述，避免 OpenAI 端纯图被拒
+        if not text and atts:
+            text = '请看图。'
+        # DEBUG 埋点：用户发送（input 长度 + 附件数）
+        logger.debug('ui_send len=%d atts=%d', len(text), len(atts))
         self.input_edit.clear()
-        self._renderer.add_user(text)
+        self.attachment_strip.clear()
+        self._renderer.add_user(text, attachments=atts)
+        # 把 attachments 同步写入 conv，以便保存到 session
+        # 注意：到此时 worker 还没启动，conv.add_user 没被调用
+        # —— 它在 worker.run_in_thread(text) 内部添加。这里需要
+        # 用一个 hook 让 worker 添加时带上 attachments。
+        # 简单做法：直接在这里手动 add_user，然后告诉 worker 不再 add。
+        self._conv.add_user(text, attachments=atts)
         self._renderer.add_assistant_start()
         self._set_running(True)
+
+        # 当前 profile 决定是否走视觉协议
+        whitelist = list(getattr(self._config.config,
+                                 'vision_model_whitelist', []))
+        vision_on = bool(getattr(self._config.config,
+                                 'vision_enabled', True))
 
         self._worker = AgentWorker(
             llm_client=self._llm,
@@ -1538,6 +1580,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             max_history_tokens=self._get_active_max_history_tokens(),
             price_input_per_1m=self._get_active_prices()[0],
             price_output_per_1m=self._get_active_prices()[1],
+            vision_enabled=vision_on,
+            vision_whitelist=whitelist,
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
         self._worker.set_system_prompt_addon_provider(
@@ -1558,7 +1602,81 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.usage_received.connect(self._on_usage_received)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
-        self._worker.run_in_thread(text)
+        # 已经手动 add_user 了，告诉 worker 不要再 add
+        self._worker.run_in_thread(text, skip_add_user=True)
+
+    # ------------------------------------------------------------------ #
+    # 多模态：附件按钮 / 截屏 / 粘贴 / 拖拽
+    # ------------------------------------------------------------------ #
+    def _on_attach_image(self):
+        """📎 添加图片：弹出文件对话框选 1+ 张图。"""
+        if self._is_running:
+            return
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, '选择图片', '',
+            'Image (*.png *.jpg *.jpeg *.gif *.webp *.bmp)',
+        )
+        if not paths:
+            return
+        from ..attachments import save_image_file
+        for p in paths:
+            att = save_image_file(p)
+            if att is not None:
+                self.attachment_strip.add(att)
+            else:
+                self._renderer.add_status(
+                    '图片添加失败（可能过大或格式不支持）: {}'.format(p),
+                )
+
+    def _on_snip(self):
+        """✂️ 截图：进程内 Qt 全屏框选，结果加入预览条。"""
+        if self._is_running:
+            return
+        try:
+            from .screenshot_overlay import ScreenshotOverlay
+            from .input_attachments import pixmap_to_attachment
+        except ImportError as exc:
+            self._renderer.add_error(
+                '截图模块加载失败: {}'.format(exc),
+            )
+            return
+        # 在主面板上 hide 一下，避免把自身截到图里
+        self.window().hide()
+        try:
+            QtCore.QCoreApplication.processEvents()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
+            pix = ScreenshotOverlay.capture_interactive()
+        finally:
+            self.window().show()
+            self.window().raise_()
+            self.window().activateWindow()
+        if pix is None or pix.isNull():
+            return
+        att = pixmap_to_attachment(pix, name='screenshot')
+        if att is not None:
+            self.attachment_strip.add(att)
+        else:
+            self._renderer.add_status('截图保存失败')
+
+    def _on_image_dropped(self, payload, mime, name):
+        """从输入框转抛上来的图片：bytes 或 文件路径。"""
+        if self._is_running:
+            return
+        from ..attachments import save_image_bytes
+        from ..attachments import save_image_file
+        att = None
+        if isinstance(payload, (bytes, bytearray)):
+            att = save_image_bytes(bytes(payload), mime=mime, name=name)
+        elif isinstance(payload, str):
+            att = save_image_file(payload, name=name)
+        if att is not None:
+            self.attachment_strip.add(att)
+        else:
+            self._renderer.add_status(
+                '图片添加失败（可能过大或读失败）',
+            )
 
     def _on_stop(self):
         if self._worker is not None:
@@ -1875,12 +1993,25 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 # 输入框：Enter 发送 / Shift+Enter 换行
 # ---------------------------------------------------------------------- #
 class _SmartInput(QtWidgets.QPlainTextEdit):
-    """支持 Enter 发送、Shift+Enter 换行、Ctrl+Enter 发送的输入框。"""
+    """支持 Enter 发送、Shift+Enter 换行、Ctrl+Enter 发送的输入框。
+
+    扩展能力（多模态）：
+    - Ctrl+V 粘贴剪贴板里的图片，转字节后通过 ``image_dropped(bytes, mime, name)``
+      信号外抛给 dock_widget 处理；
+    - 拖拽图片文件进来同样通过 ``image_dropped`` 抛出（这里只抛文件路径）。
+    """
 
     send_requested = QtCore.Signal()
+    # 抛出图片：(payload, mime, name)，payload 是 bytes 或文件路径(str)
+    # bytes 表示来自剪贴板，str 表示来自拖拽文件
+    image_dropped = QtCore.Signal(object, str, str)
+
+    # 拖拽时识别的图片扩展名
+    _IMAGE_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
 
     def __init__(self, parent=None):
         super(_SmartInput, self).__init__(parent)
+        self.setAcceptDrops(True)
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -1898,6 +2029,109 @@ class _SmartInput(QtWidgets.QPlainTextEdit):
             self.send_requested.emit()
             return
         super(_SmartInput, self).keyPressEvent(event)
+
+    # ------------------------------------------------------------------ #
+    # 剪贴板：拦截 Ctrl+V 时如果含图片，截走转 bytes
+    # ------------------------------------------------------------------ #
+    def insertFromMimeData(self, source):  # noqa: D401  Qt 重载
+        if source is None:
+            return
+        # 1. 图片字节（来自截屏 / 复制图片）
+        if source.hasImage():
+            img = source.imageData()
+            if img is not None:
+                pix = self._mime_image_to_pixmap(img)
+                if pix is not None and not pix.isNull():
+                    raw = self._pixmap_to_png_bytes(pix)
+                    if raw:
+                        self.image_dropped.emit(raw, 'image/png', '剪贴板图片')
+                        return
+        # 2. 文件 URL（资源管理器复制的图片文件）
+        if source.hasUrls():
+            handled = False
+            for url in source.urls():
+                p = url.toLocalFile() if hasattr(url, 'toLocalFile') else ''
+                if p and p.lower().endswith(self._IMAGE_EXTS):
+                    self.image_dropped.emit(p, 'image/png', p)
+                    handled = True
+            if handled:
+                return
+        # 其它情况走默认（粘贴文本）
+        super(_SmartInput, self).insertFromMimeData(source)
+
+    # ------------------------------------------------------------------ #
+    # 拖拽图片
+    # ------------------------------------------------------------------ #
+    def dragEnterEvent(self, event):  # noqa: D401
+        md = event.mimeData()
+        if md is None:
+            return super(_SmartInput, self).dragEnterEvent(event)
+        if md.hasImage() or self._has_image_url(md):
+            event.acceptProposedAction()
+            return
+        super(_SmartInput, self).dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):  # noqa: D401
+        md = event.mimeData()
+        if md is not None and (md.hasImage() or self._has_image_url(md)):
+            event.acceptProposedAction()
+            return
+        super(_SmartInput, self).dragMoveEvent(event)
+
+    def dropEvent(self, event):  # noqa: D401
+        md = event.mimeData()
+        if md is None:
+            return super(_SmartInput, self).dropEvent(event)
+        if md.hasImage():
+            img = md.imageData()
+            pix = self._mime_image_to_pixmap(img)
+            if pix is not None and not pix.isNull():
+                raw = self._pixmap_to_png_bytes(pix)
+                if raw:
+                    self.image_dropped.emit(raw, 'image/png', '拖入图片')
+                    event.acceptProposedAction()
+                    return
+        if self._has_image_url(md):
+            for url in md.urls():
+                p = url.toLocalFile() if hasattr(url, 'toLocalFile') else ''
+                if p and p.lower().endswith(self._IMAGE_EXTS):
+                    self.image_dropped.emit(p, 'image/png', p)
+            event.acceptProposedAction()
+            return
+        super(_SmartInput, self).dropEvent(event)
+
+    @classmethod
+    def _has_image_url(cls, mime_data):
+        if not mime_data.hasUrls():
+            return False
+        for url in mime_data.urls():
+            p = url.toLocalFile() if hasattr(url, 'toLocalFile') else ''
+            if p and p.lower().endswith(cls._IMAGE_EXTS):
+                return True
+        return False
+
+    @staticmethod
+    def _mime_image_to_pixmap(img):
+        """把 mime imageData 统一转成 QPixmap。"""
+        if img is None:
+            return None
+        if isinstance(img, QtGui.QPixmap):
+            return img
+        if isinstance(img, QtGui.QImage):
+            return QtGui.QPixmap.fromImage(img)
+        # 某些后端会把图片包装为 QVariant，尝试 fromImage 兜底
+        try:
+            return QtGui.QPixmap.fromImage(QtGui.QImage(img))
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    @staticmethod
+    def _pixmap_to_png_bytes(pixmap):
+        buf = QtCore.QBuffer()
+        buf.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        if not pixmap.save(buf, 'PNG'):
+            return b''
+        return bytes(buf.data())
 
     @staticmethod
     def _has_shift(event):

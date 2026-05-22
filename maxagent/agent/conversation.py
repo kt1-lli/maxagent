@@ -167,8 +167,8 @@ class Message(object):
     """单条消息。"""
 
     def __init__(self, role, content=None, tool_calls=None,
-                 tool_call_id=None, name=None, ts=None):
-        # type: (str, Optional[str], Optional[List[Dict]], Optional[str], Optional[str], Optional[float]) -> None
+                 tool_call_id=None, name=None, ts=None, attachments=None):
+        # type: (str, Optional[str], Optional[List[Dict]], Optional[str], Optional[str], Optional[float], Optional[List]) -> None
         self.role = role
         # OpenAI 协议允许 content 为 None（仅当 assistant 只发 tool_calls 时）
         self.content = content
@@ -176,9 +176,18 @@ class Message(object):
         self.tool_call_id = tool_call_id
         self.name = name
         self.ts = ts if ts is not None else time.time()
+        # 多模态附件（仅 user 消息使用）。元素为 ``attachments.Attachment``
+        # 实例，序列化时降级为 dict；OpenAI content 的 list 化在 worker
+        # 层的 ``_compose_messages`` 完成，这里只保留元数据。
+        self.attachments = list(attachments) if attachments else []
 
     def to_openai_dict(self):
-        """转为 OpenAI Chat Completions 协议的 dict。"""
+        """转为 OpenAI Chat Completions 协议的 dict。
+
+        注意：这里 **不会** 把 attachments 合并到 content。
+        多模态打包必须在 worker 端结合"模型是否支持视觉"再决定，
+        本方法保持纯文本契约不变（兼容裁剪 / token 预算等老逻辑）。
+        """
         out = {'role': self.role}
         if self.content is not None:
             out['content'] = self.content
@@ -199,11 +208,31 @@ class Message(object):
         """转为持久化用的 dict（含时间戳）。"""
         d = self.to_openai_dict()
         d['ts'] = self.ts
+        if self.attachments:
+            # 兼容老格式：附件不存在时不写字段
+            d['attachments'] = [
+                a.to_json() if hasattr(a, 'to_json') else dict(a)
+                for a in self.attachments
+            ]
         return d
 
     @classmethod
     def from_json(cls, data):
         """从持久化 dict 恢复 Message。"""
+        atts = []
+        raw_atts = data.get('attachments') or []
+        if raw_atts:
+            # 延迟 import：conversation 不应硬依赖 attachments 模块，
+            # 老版本的 session 里没有这个字段也不会触发。
+            try:
+                from ..attachments import Attachment as _Attachment
+                for a in raw_atts:
+                    if isinstance(a, dict):
+                        atts.append(_Attachment.from_json(a))
+            except ImportError:
+                # 极端情况：attachments 模块不可用，丢弃附件元信息
+                # 但保留文本，确保对话主体仍可恢复。
+                atts = []
         return cls(
             role=data.get('role', 'user'),
             content=data.get('content'),
@@ -211,6 +240,7 @@ class Message(object):
             tool_call_id=data.get('tool_call_id'),
             name=data.get('name'),
             ts=data.get('ts'),
+            attachments=atts,
         )
 
     def estimate_tokens(self):
@@ -236,9 +266,9 @@ class Conversation(object):
     # ------------------------------------------------------------------ #
     # 增加消息
     # ------------------------------------------------------------------ #
-    def add_user(self, content):
-        # type: (str) -> Message
-        msg = Message(role='user', content=content)
+    def add_user(self, content, attachments=None):
+        # type: (str, Optional[List]) -> Message
+        msg = Message(role='user', content=content, attachments=attachments)
         self.messages.append(msg)
         return msg
 

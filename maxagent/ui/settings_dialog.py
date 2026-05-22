@@ -571,6 +571,19 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.wrap_undo_chk)
+
+        # ---- 视觉/多模态 ---- #
+        self.vision_enabled_chk = QtWidgets.QCheckBox(
+            '启用图片视觉（仅向支持视觉的模型发送图片）',
+        )
+        self.vision_enabled_chk.setToolTip(
+            '关闭后即使你在输入框插入图片，也只在本地气泡里显示，'
+            '不会作为 image_url 发给 LLM。\n'
+            '内置白名单：GPT-4o / Claude-3+/ Gemini / Qwen-VL / GLM-4V 等；'
+            '不在白名单的模型即使开关打开也会自动降级为纯文本。',
+        )
+        self.vision_enabled_chk.toggled.connect(self._on_app_setting_changed)
+        form.addRow('', self.vision_enabled_chk)
         return page
 
     # ================================================================== #
@@ -1042,6 +1055,7 @@ class SettingsDialog(QtWidgets.QDialog):
             (self.allow_escape_chk, cfg.allow_escape_hatch),
             (self.confirm_exec_chk, cfg.confirm_before_exec),
             (self.wrap_undo_chk, cfg.wrap_undo),
+            (self.vision_enabled_chk, getattr(cfg, 'vision_enabled', True)),
         ):
             chk.blockSignals(True)
             chk.setChecked(bool(val))
@@ -1073,6 +1087,7 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.allow_escape_hatch = bool(self.allow_escape_chk.isChecked())
         cfg.confirm_before_exec = bool(self.confirm_exec_chk.isChecked())
         cfg.wrap_undo = bool(self.wrap_undo_chk.isChecked())
+        cfg.vision_enabled = bool(self.vision_enabled_chk.isChecked())
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except

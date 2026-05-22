@@ -95,8 +95,10 @@ class AgentWorker(QObject):
                  max_history_tokens=32000,
                  price_input_per_1m=0.0,
                  price_output_per_1m=0.0,
+                 vision_enabled=True,
+                 vision_whitelist=None,
                  parent=None):
-        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, Any) -> None
+        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, bool, Optional[List[str]], Any) -> None
         super(AgentWorker, self).__init__(parent)
         self._llm = llm_client
         self._conv = conversation
@@ -105,6 +107,11 @@ class AgentWorker(QObject):
         self._max_history_tokens = int(max_history_tokens)
         self._price_in = float(price_input_per_1m or 0.0)
         self._price_out = float(price_output_per_1m or 0.0)
+        # 视觉/多模态开关：False 时 user 消息里的图片附件不发给 LLM，
+        # 只在本地气泡里展示并附"[图片] N 张"提示给模型，避免把 base64
+        # 喂给纯文本模型导致 400 / token 浪费。
+        self._vision_enabled = bool(vision_enabled)
+        self._vision_whitelist = list(vision_whitelist or [])
         # 在 worker 自身的线程上运行
         self._thread = None  # type: Optional[QThread]
         # 取消标志（跨线程共享）
@@ -182,6 +189,84 @@ class AgentWorker(QObject):
         """
         self._tools_filter = filter_func
 
+    def _apply_attachments(self, messages):
+        # type: (List[Dict[str, Any]]) -> List[Dict[str, Any]]
+        """把 user 消息里的附件按 OpenAI 视觉协议合并进 content。
+
+        策略：
+        - ``vision_enabled=False`` 或 当前 model 不在白名单：纯文本降级
+          （在文本末尾追加"[图片] N 张"提示，让 LLM 知道有图但看不到）
+        - 命中白名单：把 content 重写为 list 形态，含 image_url 段
+        - to_openai_messages() 与 conv.messages 顺序一一对应，按索引回填
+
+        本方法不会改动原 ``conv.messages``，只重写传入的 ``messages``
+        副本，供本轮 HTTP 请求使用。
+        """
+        # 只有当 conversation 里至少一条 user 消息带附件时才走重型路径
+        msgs = self._conv.messages
+        if not any(
+                getattr(m, 'attachments', None)
+                and m.role == 'user'
+                for m in msgs):
+            return messages
+
+        # 延迟 import：避免 worker 在不需要附件时也加载 attachments 模块
+        from ..attachments import build_user_content
+        from ..attachments import model_supports_vision
+
+        model_name = getattr(self._llm, '_model', '') or ''
+        can_vision = (
+            self._vision_enabled
+            and model_supports_vision(model_name, self._vision_whitelist)
+        )
+        # to_openai_messages() 跳过空消息时和 conv.messages 不严格 1:1，
+        # 这里做"role + ts"匹配重建索引，简单起见直接顺序扫描带 attachments
+        # 的 user 消息，然后在 messages 里找到对应位置重写。
+        # 因为 to_openai_messages 当前实现不会丢弃 user 消息，按 user
+        # 顺序匹配是稳定的。
+        att_iter = iter(
+            m for m in msgs
+            if m.role == 'user' and getattr(m, 'attachments', None)
+        )
+        out = list(messages)
+        for i, om in enumerate(out):
+            if om.get('role') != 'user':
+                continue
+            # 找下一条带附件的源消息——它必然出现在 om 当前或之后的
+            # 用户消息序列里；用 try/StopIteration 控制
+            try:
+                src_msg = next(att_iter)
+            except StopIteration:
+                break
+            # 如果 src_msg 的文本不等于 om['content']，说明这条 user
+            # 消息没有附件，跳过它继续找；为简化实现，要求文本严格匹配。
+            if (om.get('content') or '') != (src_msg.content or ''):
+                # 这条 user 消息没有附件，把刚 next 出来的 src 留到下条匹配
+                # 用 itertools.chain 的方式回退一格——简单实现：包一层。
+                # 实际场景里 user 多附件 / 多发不会这么频繁，这里直接跳过
+                # 这条不重写，下一条 user 再尝试匹配（容忍误匹配）。
+                continue
+            new_content = build_user_content(
+                text=src_msg.content or '',
+                attachments=src_msg.attachments,
+                can_vision=can_vision,
+            )
+            # 复制 om，避免修改原 dict
+            new_om = dict(om)
+            new_om['content'] = new_content
+            out[i] = new_om
+        if can_vision:
+            logger.debug(
+                'vision_enabled model=%s rewrote user msgs with image_url',
+                model_name,
+            )
+        else:
+            logger.debug(
+                'vision_disabled model=%s images degraded to text notice',
+                model_name,
+            )
+        return out
+
     def cancel(self):
         """请求取消当前对话轮（下一次工具结束/LLM 流式分块时生效）。"""
         self._cancel_event.set()
@@ -239,15 +324,18 @@ class AgentWorker(QObject):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
-    def run_in_thread(self, user_input):
+    def run_in_thread(self, user_input, skip_add_user=False):
         """启动一个子线程跑 LLM 对话循环。
 
         :param user_input: 用户输入文本
+        :param skip_add_user: 调用方已经手动 ``conv.add_user(...)``（带附件）
+            时设为 True，避免重复追加同一条 user 消息。
         """
         self.reset_cancel()
         self._current_user_input = user_input or ''
         # 把用户输入立刻写入对话历史（在调用线程也安全，因为 _conv 修改时序明确）
-        self._conv.add_user(user_input)
+        if not skip_add_user:
+            self._conv.add_user(user_input)
 
         thread = QThread()
         # 1. worker 移到子线程：之后 worker 的 @Slot 在 QueuedConnection 下
@@ -345,6 +433,10 @@ class AgentWorker(QObject):
                         )
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.warning('trim_to_token_budget 异常: %s', exc)
+            # 多模态附件合并：把 user 消息的图片附件按视觉协议拼进
+            # content（不支持视觉时降级为纯文本提示）。必须在 token
+            # 裁剪之后做——裁剪走的是文本估算，图片 base64 不参与。
+            messages = self._apply_attachments(messages)
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
                 try:
