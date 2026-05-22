@@ -205,34 +205,53 @@ class _CropGraphicsView(QtWidgets.QGraphicsView):
 
     # ---- 选区遮罩绘制（视图坐标系，覆盖在场景之上） ---- #
     def drawForeground(self, painter, _rect):
-        # 灰色半透明蒙版 + 中心方形镂空
+        """绘制中心镂空蒙版。
+
+        实现要点：
+        - QGraphicsView 的 viewport 是 opaque（不透明）的，无法用
+          ``CompositionMode_Clear`` 真的擦出"洞"——擦掉之后剩下的是
+          底色（黑色填充），所以会出现"框内反而全黑"的反相 bug。
+        - 正确做法：构造一个 ``QPainterPath``，把"外层视口矩形"和
+          "内层选区矩形"都加进去，再设 ``Qt.OddEvenFill`` 奇偶填充
+          规则——两个矩形重叠的区域（即选区）按奇偶规则不会被填充，
+          天然形成"带洞蒙版"效果。框内保留原图、框外蒙半透明黑。
+        - 选区始终以 viewport 中心为锚，每次重绘时计算，不受滚动/
+          缩放/拖动影响——所以"框固定不动、图片在框下移动"。
+        """
         painter.save()
         painter.resetTransform()
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+
         vp = self.viewport().rect()
-        # 整个视口先抹一层半透明黑
-        painter.setBrush(QtGui.QColor(0, 0, 0, 130))
+        cx = vp.width() / 2.0
+        cy = vp.height() / 2.0
+        half = _CROP_FRAME_SIZE / 2.0
+        sel = QtCore.QRectF(
+            cx - half, cy - half,
+            _CROP_FRAME_SIZE, _CROP_FRAME_SIZE,
+        )
+
+        # 用 OddEvenFill 构造"带洞"路径：外矩形 + 内矩形 → 中间夹层填充
+        path = QtGui.QPainterPath()
+        path.setFillRule(QtCore.Qt.OddEvenFill)
+        path.addRect(QtCore.QRectF(vp))
+        path.addRect(sel)
         painter.setPen(QtCore.Qt.NoPen)
-        painter.drawRect(vp)
-        # 镂空中心选区（用 destination-out 复合模式擦除）
-        cx = vp.width() / 2
-        cy = vp.height() / 2
-        half = _CROP_FRAME_SIZE / 2
-        sel = QtCore.QRectF(cx - half, cy - half,
-                            _CROP_FRAME_SIZE, _CROP_FRAME_SIZE)
-        painter.setCompositionMode(
-            QtGui.QPainter.CompositionMode_Clear,
-        )
-        painter.drawRect(sel)
-        # 选区描边
-        painter.setCompositionMode(
-            QtGui.QPainter.CompositionMode_SourceOver,
-        )
+        painter.setBrush(QtGui.QColor(0, 0, 0, 150))
+        painter.drawPath(path)
+
+        # 选区描边（视觉提示）
         pen = QtGui.QPen(QtGui.QColor('#a8e6a8'))
         pen.setWidth(2)
         painter.setPen(pen)
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.drawRect(sel)
         painter.restore()
+
+    def resizeEvent(self, event):
+        """视口尺寸变化时强制重绘前景蒙版，确保选区始终居中。"""
+        super(_CropGraphicsView, self).resizeEvent(event)
+        self.viewport().update()
 
     # ---- 输出裁剪结果 ---- #
     def crop_to_pixmap(self):

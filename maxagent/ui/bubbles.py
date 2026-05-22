@@ -49,7 +49,21 @@ class BubbleFrame(QtWidgets.QFrame):
     """单条消息的气泡容器（一个 QFrame，内含 layout）。
 
     通过外部 hbox 控制左右对齐：layout 里加 stretch 推到一边。
+
+    宽度策略：
+    - sizePolicy 用 ``Maximum`` 让气泡按内容收缩；
+    - 通过 ``apply_max_width`` 在外层（``_ChatRenderer``）拿到滚动区
+      可用宽度后下发，限制气泡不会撑满到整个滚动区——这样一条很长的
+      单行消息也能在 75~85% 视宽处自动换行，而不是顶到右边缘。
+    - 重绘时 ``ChatLabel.setWordWrap(True)`` 配合 ``maximumWidth``，
+      让 QLabel 自己处理软换行；代码块用 ``QPlainTextEdit`` 的横向
+      滚动条，不被强制换行破坏格式。
     """
+
+    # 占用滚动区可视宽度的比例上限：85% 为偏宽松、阅读舒适
+    _WIDTH_RATIO = 0.85
+    # 绝对下限：避免极窄面板下气泡缩成竖条
+    _MIN_BUBBLE_WIDTH = 200
 
     def __init__(self, align='left', bg='#2d3d2d', fg='#d4ead4',
                  parent=None):
@@ -73,6 +87,26 @@ class BubbleFrame(QtWidgets.QFrame):
 
     def add_layout(self, layout):
         self._inner.addLayout(layout)
+
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """根据外层滚动区可视宽度，按比例设置气泡最大宽度。
+
+        - viewport_width <= 0 时忽略（视图还未布局完成）
+        - 计算结果会与 ``_MIN_BUBBLE_WIDTH`` 取大，防止极窄面板
+          下气泡退化为竖条
+        """
+        try:
+            vw = int(viewport_width)
+        except (TypeError, ValueError):
+            return
+        if vw <= 0:
+            return
+        target = int(vw * self._WIDTH_RATIO)
+        if target < self._MIN_BUBBLE_WIDTH:
+            target = self._MIN_BUBBLE_WIDTH
+        if self.maximumWidth() != target:
+            self.setMaximumWidth(target)
 
     @property
     def align(self):
@@ -428,6 +462,12 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
     def is_empty(self):
         return not self._buffer.strip()
 
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """转发到内部 ``BubbleFrame``，由其按比例限制最大宽度。"""
+        if self._bubble is not None:
+            self._bubble.apply_max_width(viewport_width)
+
 
 # ---------------------------------------------------------------------- #
 # 最终助手气泡（markdown 渲染 + 复制按钮）
@@ -441,6 +481,7 @@ class AssistantBubble(QtWidgets.QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         bubble = BubbleFrame(align='left', bg='#2d3d2d', fg='#d4ead4')
+        self._bubble = bubble
 
         # 标题行：[头像 员工名]  [复制全部]
         # 注：代码块的复制按钮挂在每个 _CodeBlockWidget 自己头上，
@@ -487,6 +528,12 @@ class AssistantBubble(QtWidgets.QWidget):
         outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         outer.addStretch(1)
 
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """转发到内部 ``BubbleFrame``。"""
+        if self._bubble is not None:
+            self._bubble.apply_max_width(viewport_width)
+
 
 # ---------------------------------------------------------------------- #
 # 用户气泡（靠右）
@@ -501,6 +548,7 @@ class UserBubble(QtWidgets.QWidget):
         outer.addStretch(1)
 
         bubble = BubbleFrame(align='right', bg='#2c5d8f', fg='#ffffff')
+        self._bubble = bubble
         head = QtWidgets.QLabel(
             '<span style="color:#bbd9f5;font-size:9pt;">{} 你</span>'.format(
                 _ee('👤'),
@@ -516,6 +564,12 @@ class UserBubble(QtWidgets.QWidget):
         )
         bubble.add_widget(label)
         outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """转发到内部 ``BubbleFrame``。"""
+        if self._bubble is not None:
+            self._bubble.apply_max_width(viewport_width)
 
 
 # ---------------------------------------------------------------------- #
@@ -545,6 +599,7 @@ class ErrorBubble(QtWidgets.QWidget):
         outer = QtWidgets.QHBoxLayout(self)
         outer.setContentsMargins(0, 2, 0, 2)
         bubble = BubbleFrame(align='left', bg='#4a2a2a', fg='#ffaaaa')
+        self._bubble = bubble
         head = QtWidgets.QLabel(
             '<b style="color:#ffaaaa;">{} 错误</b>'.format(_ee('⚠'))
         )
@@ -558,6 +613,12 @@ class ErrorBubble(QtWidgets.QWidget):
         bubble.add_widget(label)
         outer.addWidget(bubble, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         outer.addStretch(1)
+
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """转发到内部 ``BubbleFrame``。"""
+        if self._bubble is not None:
+            self._bubble.apply_max_width(viewport_width)
 
 
 class WelcomeBlock(QtWidgets.QWidget):

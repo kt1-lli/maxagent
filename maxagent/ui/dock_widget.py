@@ -192,6 +192,56 @@ class _ChatRenderer(QtCore.QObject):
         # Employee 视图。这样改完员工设置后，下一条新气泡立即生效，
         # 已渲染的旧气泡保持原状（避免遍历刷新带来的复杂度）。
         self._employee_provider = employee_provider
+        # 监听 scroll viewport 的 resize 事件：面板宽度变化时遍历
+        # 所有现存气泡更新 maxWidth，让它们跟随面板宽度按比例缩放
+        try:
+            self._scroll.viewport().installEventFilter(self)
+        except Exception:  # pylint: disable=broad-except
+            # 容器构造异常时静默：宽度跟随只是优化项，不应阻止主流程
+            pass
+
+    # ------------------------------------------------------------------ #
+    # 宽度跟随：监听 viewport resize，把当前可视宽度下发给所有气泡
+    # ------------------------------------------------------------------ #
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.Resize:
+            self._apply_widths_to_all()
+        return False
+
+    def _viewport_width(self):
+        """返回当前滚动区可视宽度（已扣除内容布局边距）。"""
+        try:
+            vw = self._scroll.viewport().width()
+        except Exception:  # pylint: disable=broad-except
+            return 0
+        # 扣除 messages_layout 自身的左右 contentsMargins，避免气泡
+        # 撑到边距外被截切
+        try:
+            m = self._layout.contentsMargins()
+            vw -= (m.left() + m.right())
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return max(0, vw)
+
+    def _apply_widths_to_all(self):
+        """遍历 messages_layout 中所有支持 apply_max_width 的气泡，
+        按当前 viewport 宽度更新各自最大宽度。"""
+        vw = self._viewport_width()
+        if vw <= 0:
+            return
+        for i in range(self._layout.count()):
+            item = self._layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
+            if w is None:
+                continue
+            apply = getattr(w, 'apply_max_width', None)
+            if callable(apply):
+                try:
+                    apply(vw)
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     # ------------------------------------------------------------------ #
     # 底部追加（在 stretch 之前）
@@ -205,6 +255,15 @@ class _ChatRenderer(QtCore.QObject):
         # 滚动跟随策略：插入前判断用户当前是否在底部
         was_at_bottom = self._is_at_bottom()
         self._layout.insertWidget(idx, widget)
+        # 新气泡立即应用当前可视宽度（如果它支持的话）
+        apply = getattr(widget, 'apply_max_width', None)
+        if callable(apply):
+            vw = self._viewport_width()
+            if vw > 0:
+                try:
+                    apply(vw)
+                except Exception:  # pylint: disable=broad-except
+                    pass
         if was_at_bottom:
             QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
@@ -293,6 +352,13 @@ class _ChatRenderer(QtCore.QObject):
         if text.strip():
             final = _AssistantBubble(text, employee=self._current_employee())
             self._layout.insertWidget(idx, final)
+            # 立即应用当前 viewport 宽度，避免最终气泡被撑到边缘
+            vw = self._viewport_width()
+            if vw > 0:
+                try:
+                    final.apply_max_width(vw)
+                except Exception:  # pylint: disable=broad-except
+                    pass
 
     def add_tool_call(self, name, args_str, dangerous=False):
         # 工具块出现时收尾流式（LLM 不会在工具调用之间还吐 token）
