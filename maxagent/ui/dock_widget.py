@@ -313,6 +313,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     QDockWidget 里贴在 Max 主窗口上。在非 Max 环境也能独立 show() 出来调试。
     """
 
+    # 跨线程派发信号：从任意线程把 callable 调度到主线程执行。
+    # self 在主线程构造，亲缘=主线程；配合 QueuedConnection，Qt 会保证
+    # 槽函数 _invoke_main_slot 在主线程的事件循环里被调用——这是跨线程
+    # marshal 的唯一可靠机制。
+    # 切记：不要用裸 QtCore.QTimer.singleShot(0, fn) 替代——后者绑定的是
+    # **调用方所在线程**的事件循环；从 worker 子线程调用时会被派回 worker
+    # 子线程的"幽灵 timer 队列"，而 worker 子线程此时正阻塞在 done.wait()
+    # 上不 spin 事件循环 → fn 永远不会被执行 → 工具调用必 360s 超时。
+    _invoke_main_signal = QtCore.Signal(object)
+
     _DEFAULT_SPLIT_RATIO = (78, 22)
     _MIN_INPUT_HEIGHT = 60
     _MIN_CHAT_HEIGHT = 120
@@ -361,6 +371,13 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._bootstrap_session()
         # 注册"学习新工具"审批回调（把弹窗与本面板挂钩）
         self._install_learn_approval_callback()
+
+        # 跨线程派发桥：QueuedConnection 强制把 callable marshal 到主线程
+        # 事件循环。worker 子线程要把 pymxs 工具任务派回主线程时使用。
+        self._invoke_main_signal.connect(
+            self._invoke_main_slot,
+            QtCore.Qt.QueuedConnection,
+        )
 
     # ------------------------------------------------------------------ #
     # 构建 UI
@@ -1425,6 +1442,27 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------ #
     # 主线程同步工具执行
     # ------------------------------------------------------------------ #
+    @QtCore.Slot(object)
+    def _invoke_main_slot(self, fn):
+        """主线程槽：在主线程事件循环里执行任意 callable。
+
+        通过 ``self._invoke_main_signal.emit(fn)`` 从任意线程触发，Qt
+        会按 self 的亲缘（主线程）+ QueuedConnection 把调用排到主线程
+        队列。fn 自身的异常在这里捕获并落日志，避免冒泡破坏 Qt 事件循环。
+        """
+        try:
+            fn()
+        except Exception:  # pylint: disable=broad-except
+            logger.exception('invoke_main callable raised')
+
+    def _post_to_main(self, fn):
+        """从任意线程把 callable 调度到主线程执行（不等待）。
+
+        :param fn: 无参可调用对象。**禁止**传入 ``functools.partial`` 之外
+            的需要参数的函数；如需传参，请用闭包捕获。
+        """
+        self._invoke_main_signal.emit(fn)
+
     def _run_tool_sync(self, tool_name, arguments):
         """Worker 子线程通过此函数同步派回主线程执行 pymxs。
 
@@ -1473,7 +1511,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             finally:
                 done.set()
 
-        QtCore.QTimer.singleShot(0, _run_in_main)
+        # 关键：通过主线程亲缘的 QObject 信号 + QueuedConnection 派发，
+        # 而不是 QtCore.QTimer.singleShot(0, _run_in_main)——后者会被绑定
+        # 到当前 worker 子线程的事件循环（worker 子线程此时正在 done.wait
+        # 阻塞，根本不 spin 事件循环），导致 _run_in_main 永远不被调用。
+        self._post_to_main(_run_in_main)
 
         # 3. 动态心跳等待 + 主线程存活探测
         # 单次窗口 60s，累计上限 = 60s × (1 + max_extensions)
@@ -1519,7 +1561,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 return
             ping_state['in_flight'] = True
             ping_state['sent_at'] = time.time()
-            QtCore.QTimer.singleShot(0, _do_ping)
+            # 同 _run_in_main 派发：必须用 _post_to_main 走主线程亲缘
+            # QObject 的 QueuedConnection，否则 _do_ping 会被钉在子线程
+            # 永不触发，count_ok 始终为 0。
+            self._post_to_main(_do_ping)
 
         ping_interval = 10.0  # 每 10 秒探测一次
 
