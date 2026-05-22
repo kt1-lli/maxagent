@@ -137,6 +137,17 @@ class AgentWorker(QObject):
         # 首个流式 chunk 是否已到达：用于切换 UI 状态文本
         self._first_chunk_seen = False
 
+        # ---------- DEBUG 监控指标（每轮 LLM 调用周期重置） ----------
+        # _chunk_count: 该轮收到的 raw chunk 数（每个 token 一个）
+        # _chunk_emit_count: 该轮真实 emit 到主线程的合并 chunk 数
+        # _chunk_first_ts: 第一个 chunk 到达时间，用于算端到端首字延迟
+        # _llm_call_started_ts: 本轮 LLM HTTP 请求开始时间
+        # 这些只在 logger 处于 DEBUG 时才有意义；INFO 级别会汇总输出。
+        self._chunk_count = 0
+        self._chunk_emit_count = 0
+        self._chunk_first_ts = 0.0
+        self._llm_call_started_ts = 0.0
+
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
@@ -327,6 +338,19 @@ class AgentWorker(QObject):
                 )
                 # 首个 chunk 到达时再切换状态文本
                 self._first_chunk_seen = False
+                # DEBUG 监控：重置本轮指标
+                self._chunk_count = 0
+                self._chunk_emit_count = 0
+                self._chunk_first_ts = 0.0
+                self._llm_call_started_ts = time.time()
+                # DEBUG 埋点：发出请求摘要
+                if logger.isEnabledFor(10):
+                    logger.debug(
+                        '→ LLM call loop=%d/%d msgs=%d tools=%d',
+                        loop_idx + 1, self._max_loops,
+                        len(messages),
+                        len(tools_schema or []),
+                    )
                 resp = self._llm.chat(
                     messages=messages,
                     tools=tools_schema,
@@ -334,6 +358,29 @@ class AgentWorker(QObject):
                     on_delta=self._on_text_chunk,
                     cancel_check=self._cancel_event.is_set,
                 )
+                # DEBUG 埋点：本轮流式收尾统计
+                if self._llm_call_started_ts > 0:
+                    elapsed = time.time() - self._llm_call_started_ts
+                    ttf = (
+                        (self._chunk_first_ts - self._llm_call_started_ts)
+                        if self._chunk_first_ts > 0 else -1.0
+                    )
+                    rate = (
+                        self._chunk_count / elapsed
+                        if elapsed > 0 else 0.0
+                    )
+                    compress = (
+                        (self._chunk_count / self._chunk_emit_count)
+                        if self._chunk_emit_count > 0 else 0.0
+                    )
+                    logger.info(
+                        '← LLM done loop=%d elapsed=%.2fs '
+                        'ttf=%.2fs chunks=%d emit=%d rate=%.0f tok/s '
+                        'compress=%.1fx',
+                        loop_idx + 1, elapsed, ttf,
+                        self._chunk_count, self._chunk_emit_count,
+                        rate, compress,
+                    )
             except LLMError as exc:
                 # LLM 出错前，先把已经收到的流式残片送达 UI
                 self._flush_chunk_buf()
@@ -502,6 +549,10 @@ class AgentWorker(QObject):
         """
         if not chunk:
             return
+        # DEBUG 监控：累计 raw chunk 数 + 记录首字时间
+        self._chunk_count += 1
+        if self._chunk_first_ts <= 0:
+            self._chunk_first_ts = time.time()
         # 首字到达：通知 UI 切到"生成中"状态，让用户看到推理已开始
         if not getattr(self, '_first_chunk_seen', False):
             self._first_chunk_seen = True
@@ -522,6 +573,7 @@ class AgentWorker(QObject):
             else:
                 merged = ''
         if merged:
+            self._chunk_emit_count += 1
             self.chunk_received.emit(merged)
 
     def _flush_chunk_buf(self):
@@ -533,6 +585,7 @@ class AgentWorker(QObject):
             self._chunk_buf = []
             self._chunk_last_flush = time.time()
         if merged:
+            self._chunk_emit_count += 1
             self.chunk_received.emit(merged)
 
     def _emit_usage(self, usage):

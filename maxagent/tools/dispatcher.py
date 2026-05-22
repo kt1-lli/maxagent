@@ -14,6 +14,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import json
+import time
 import traceback
 from typing import Any
 from typing import Callable
@@ -77,12 +78,21 @@ class ToolDispatcher(object):
         """
         spec = get_tool(tool_name)
         if spec is None:
+            logger.warning("调用未知工具: %s", tool_name)
             return _err("未知工具: {}".format(tool_name), "unknown_tool")
 
         if not isinstance(arguments, dict):
             return _err(
                 "参数必须是对象，收到: {}".format(type(arguments).__name__),
                 "bad_arguments",
+            )
+
+        # DEBUG 埋点：入参摘要（截断长字符串/避免污染日志）
+        if logger.isEnabledFor(10):  # logging.DEBUG
+            logger.debug(
+                "▶ tool=%s on_main=%s wrap_undo=%s args=%s",
+                tool_name, spec.run_on_main_thread, spec.wrap_undo,
+                _summarize_args(arguments),
             )
 
         # 1. 危险工具确认
@@ -95,18 +105,29 @@ class ToolDispatcher(object):
                     "确认回调异常: {}".format(exc), "confirm_error",
                 )
 
-        # 2. 实际执行
+        # 2. 实际执行（带耗时统计）
+        t0 = time.time()
         try:
             result = self._invoke(spec, arguments)
         except TimeoutError as exc:
+            elapsed = (time.time() - t0) * 1000
+            logger.warning(
+                "✗ tool=%s timeout after %.0fms: %s",
+                tool_name, elapsed, exc,
+            )
             return _err(str(exc), "timeout")
         except Exception as exc:  # pylint: disable=broad-except
+            elapsed = (time.time() - t0) * 1000
             tb = traceback.format_exc()
-            logger.error("工具 %s 执行异常:\n%s", tool_name, tb)
+            logger.error(
+                "✗ tool=%s 执行异常 after %.0fms:\n%s",
+                tool_name, elapsed, tb,
+            )
             return _err(
                 "{}: {}".format(type(exc).__name__, exc),
                 "exec_error",
             )
+        elapsed_ms = (time.time() - t0) * 1000
 
         # 3. 序列化兜底：保证返回值可被 json.dumps
         safe = _safe_serialize(result)
@@ -116,6 +137,18 @@ class ToolDispatcher(object):
         if self._result_max_bytes > 0:
             out = _maybe_truncate_result(
                 out, self._result_max_bytes, tool_name=tool_name,
+            )
+
+        # DEBUG 埋点：出参摘要 + 耗时；超过 500ms 自动升 INFO 级别
+        if elapsed_ms >= 500:
+            logger.info(
+                "✔ tool=%s elapsed=%.0fms result=%s",
+                tool_name, elapsed_ms, _summarize_result(out),
+            )
+        elif logger.isEnabledFor(10):
+            logger.debug(
+                "✔ tool=%s elapsed=%.0fms result=%s",
+                tool_name, elapsed_ms, _summarize_result(out),
             )
         return out
 
@@ -292,3 +325,40 @@ def _truncate_dict(d, max_bytes):
         )
         return out_dict, keep
     return d, len(keys)
+
+
+def _summarize_args(arguments, max_chars=200):
+    # type: (Dict[str, Any], int) -> str
+    """把工具入参摘要成一行，适合日志打印。
+
+    长字符串截断为 ``...<N more chars>``，避免污染日志。
+    """
+    try:
+        text = json.dumps(arguments, ensure_ascii=False, default=str)
+    except Exception:  # pylint: disable=broad-except
+        text = str(arguments)
+    if len(text) > max_chars:
+        return "{}...<{} more chars>".format(
+            text[:max_chars], len(text) - max_chars,
+        )
+    return text
+
+
+def _summarize_result(out, max_chars=300):
+    # type: (Dict[str, Any], int) -> str
+    """把工具出参摘要成一行，仅保留结构与体量信息。"""
+    if not isinstance(out, dict):
+        return str(out)[:max_chars]
+    if not out.get("ok"):
+        return "FAILED: {}".format(out.get("error") or "?")[:max_chars]
+    res = out.get("result")
+    if isinstance(res, list):
+        return "list[{}]".format(len(res))
+    if isinstance(res, dict):
+        keys = list(res.keys())[:5]
+        return "dict(keys={}, total={})".format(keys, len(res))
+    if isinstance(res, str):
+        if len(res) > max_chars:
+            return "str[{}]: {}...".format(len(res), res[:max_chars])
+        return "str: {}".format(res)
+    return "{}={}".format(type(res).__name__, str(res)[:max_chars])

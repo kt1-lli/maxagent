@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""设置对话框：管理 Profile（API Key / Base URL / 模型 / 流式 / 温度）。
+"""设置对话框：管理 Profile / 应用全局设置 / 日志 / 帮助。
 
-UI 布局:
-+-----------------------------------------------+
-| [Profile 列表]  | 名称: [____________________]|
-|   - default     | Base URL: [_______________] |
-|   - ollama      | API Key: [____________] [👁]|
-|   - lm-studio   | 模型: [___________________] |
-|   - deepseek    | 温度: [0.7]                 |
-| [+新建][-删除]  | [✓] 流式 [✓] 工具调用      |
-|                 |                             |
-|                 | [测试连接] [应用] [关闭]    |
-+-----------------------------------------------+
+UI 布局（v2 改造为左侧导航 + 右侧 Stacked Page）::
+
+    +-----------------------------------------------+
+    | 🤖 模型     |  当前选中 tab 的内容              |
+    | 🌐 联网     |  （根据左侧导航切换 QStackedWidget）|
+    | 🎨 应用     |                                  |
+    | 📜 日志     |                                  |
+    | ❓ 帮助     |                                  |
+    +-----------------------------------------------+
+
+设计要点：
+- 用 QListWidget + QStackedWidget 组合实现"竖向靠左 Tab"，
+  优势：中文横排、文字不旋转、样式可控、与现代 IDE 一致。
+- Profile 列表支持右键菜单（重命名 / 删除 / 复制 / 设默认 / 测试连接）
+  以及双击 inline 重命名，提升日常切换的手感。
+- 各 page 各自独立方法构建，便于后续扩展（如新增"联网"页只需加一个
+  ``_build_page_network`` 与导航条目）。
 """
 
 from __future__ import absolute_import
@@ -25,37 +31,147 @@ from ..config import ConfigManager
 from ..config import LLMProfile
 from ..llm_client import build_client_from_profile
 from ..llm_client import diagnose_base_url
-from ..llm_client import LLMClient
 from ..llm_client import LLMError
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 
 
+logger = get_logger(__name__)
+
+
+# 左侧导航与右侧页面共用的 QSS：参考 VSCode / JetBrains 的设置面板
+_NAV_QSS = """
+QListWidget#SettingsNav {
+    background-color: #2b2b2b;
+    border: none;
+    outline: 0;
+    padding-top: 8px;
+}
+QListWidget#SettingsNav::item {
+    color: #d0d0d0;
+    padding: 10px 16px;
+    border: none;
+}
+QListWidget#SettingsNav::item:hover {
+    background-color: #3a3a3a;
+}
+QListWidget#SettingsNav::item:selected {
+    background-color: #094771;
+    color: #ffffff;
+}
+"""
+
+
 class SettingsDialog(QtWidgets.QDialog):
-    """设置对话框。"""
+    """MaxAgent 设置对话框。
+
+    左侧导航条目固定 5 项；后续如要新增页面（如联网搜索）只需：
+    1. 在 ``_NAV_ITEMS`` 中加一行
+    2. 实现 ``_build_page_xxx`` 并 returnQWidget
+    3. 在 ``_build_ui`` 里把它 addWidget 到 stacked
+    """
+
+    # 左侧导航条目：(显示名, 内部 key)。key 用于程序化跳转。
+    _NAV_ITEMS = [
+        ('🤖  模型', 'model'),
+        ('🌐  联网', 'network'),
+        ('🎨  应用', 'app'),
+        ('📜  日志', 'log'),
+        ('❓  帮助', 'help'),
+    ]
 
     def __init__(self, config_manager, parent=None):
         # type: (ConfigManager, Optional[Any]) -> None
         super(SettingsDialog, self).__init__(parent)
         self._config = config_manager
         self.setWindowTitle('MaxAgent 设置')
+        self.resize(900, 640)
+        # 当前 Profile 表单是否被改过（用于切换 Profile 前提示）
+        self._dirty = False
         self._build_ui()
         self._reload_profiles()
-        self._dirty = False
 
-    # ------------------------------------------------------------------ #
-    # UI 构建
-    # ------------------------------------------------------------------ #
+    # ================================================================== #
+    # 顶层 UI 构建
+    # ================================================================== #
     def _build_ui(self):
         outer = QtWidgets.QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        # 左：Profile 列表
+        # ----------- 左侧：导航 ----------- #
+        self.nav = QtWidgets.QListWidget()
+        self.nav.setObjectName('SettingsNav')
+        self.nav.setStyleSheet(_NAV_QSS)
+        self.nav.setFixedWidth(160)
+        self.nav.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        for label, _key in self._NAV_ITEMS:
+            QtWidgets.QListWidgetItem(label, self.nav)
+        self.nav.currentRowChanged.connect(self._on_nav_changed)
+        outer.addWidget(self.nav, 0)
+
+        # ----------- 右侧：Stacked Pages ----------- #
+        right_box = QtWidgets.QVBoxLayout()
+        right_box.setContentsMargins(16, 12, 16, 12)
+        right_box.setSpacing(10)
+
+        self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self._build_page_model())
+        self.stack.addWidget(self._build_page_network())
+        self.stack.addWidget(self._build_page_app())
+        self.stack.addWidget(self._build_page_log())
+        self.stack.addWidget(self._build_page_help())
+        right_box.addWidget(self.stack, 1)
+
+        # 底部统一关闭按钮：放在 stack 之外，所有页面共享
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addStretch(1)
+        self.close_btn = QtWidgets.QPushButton('关闭')
+        self.close_btn.setMinimumWidth(96)
+        self.close_btn.setMinimumHeight(30)
+        self.close_btn.clicked.connect(self.accept)
+        bottom.addWidget(self.close_btn)
+        right_box.addLayout(bottom)
+
+        right_widget = QtWidgets.QWidget()
+        right_widget.setLayout(right_box)
+        outer.addWidget(right_widget, 1)
+
+        # 默认选中第一项
+        self.nav.setCurrentRow(0)
+
+    def _on_nav_changed(self, row):
+        # type: (int) -> None
+        if 0 <= row < self.stack.count():
+            self.stack.setCurrentIndex(row)
+
+    # ================================================================== #
+    # Page 1: 模型 / Profile
+    # ================================================================== #
+    def _build_page_model(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        outer = QtWidgets.QHBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # ----- 左：Profile 列表 ----- #
         left = QtWidgets.QVBoxLayout()
         left.setSpacing(4)
         left.addWidget(QtWidgets.QLabel('Profile 列表'))
         self.profile_list = QtWidgets.QListWidget()
         self.profile_list.setMinimumWidth(180)
+        # 启用右键菜单与双击重命名
+        self.profile_list.setContextMenuPolicy(
+            QtCore.Qt.CustomContextMenu,
+        )
+        self.profile_list.customContextMenuRequested.connect(
+            self._on_profile_context_menu,
+        )
+        self.profile_list.itemDoubleClicked.connect(
+            self._on_profile_double_clicked,
+        )
         self.profile_list.currentItemChanged.connect(
             self._on_profile_selected,
         )
@@ -70,9 +186,17 @@ class SettingsDialog(QtWidgets.QDialog):
         btns.addWidget(self.del_btn)
         left.addLayout(btns)
 
+        # 提示：右键菜单功能入口
+        hint = QtWidgets.QLabel(
+            '提示：右键 Profile 可重命名 / 复制 / 设为默认',
+        )
+        hint.setStyleSheet('color:#888; font-size:11px;')
+        hint.setWordWrap(True)
+        left.addWidget(hint)
+
         outer.addLayout(left, 1)
 
-        # 右：编辑表单
+        # ----- 右：编辑表单 ----- #
         right = QtWidgets.QFormLayout()
         right.setSpacing(8)
         right.setLabelAlignment(QtCore.Qt.AlignRight)
@@ -157,11 +281,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '每次发请求前自动裁剪最早消息，但严格保护：\n'
             '  • system 提示\n'
             '  • 最近 4 条消息\n'
-            '  • assistant(tool_calls) 与对应 tool 结果的配对\n\n'
-            '推荐值：\n'
-            '  • 长上下文模型 (GPT-4 128K / Claude 200K): 64000\n'
-            '  • DeepSeek / Qwen Max (32-64K): 32000 (默认)\n'
-            '  • 本地小模型 (7B/14B): 8000-16000',
+            '  • assistant(tool_calls) 与对应 tool 结果的配对',
         )
         right.addRow('历史 token 预算:', self.max_history_tokens_spin)
 
@@ -178,83 +298,22 @@ class SettingsDialog(QtWidgets.QDialog):
         self.headers_edit.setPlaceholderText(
             '可选：每行一个 KEY=VALUE，例如\nX-Org-Id=foo\n',
         )
+        self.headers_edit.setMaximumHeight(80)
         right.addRow('自定义 Header:', self.headers_edit)
-
-        # === 全局应用设置（与 Profile 无关，作用于整个 MaxAgent）===
-        sep_label = QtWidgets.QLabel('— 应用设置 —')
-        sep_label.setStyleSheet('color:#888;')
-        right.addRow('', sep_label)
-
-        self.auto_show_chk = QtWidgets.QCheckBox(
-            'Max 启动时自动显示 MaxAgent 面板',
-        )
-        self.auto_show_chk.setToolTip(
-            '关闭后，Max 启动时不会自动弹出面板，需在 MAXScript Listener\n'
-            '中执行 g_show_max_agent() 或通过菜单/快捷键手动显示。',
-        )
-        self.auto_show_chk.toggled.connect(self._on_app_setting_changed)
-        right.addRow('', self.auto_show_chk)
-
-        self.allow_escape_chk = QtWidgets.QCheckBox(
-            '允许使用 run_maxscript / run_python 工具',
-        )
-        self.allow_escape_chk.setToolTip(
-            '关闭后 LLM 无法执行任意脚本，仅能调用预定义工具。',
-        )
-        self.allow_escape_chk.toggled.connect(self._on_app_setting_changed)
-        right.addRow('', self.allow_escape_chk)
-
-        self.confirm_exec_chk = QtWidgets.QCheckBox(
-            '执行脚本工具前弹窗确认',
-        )
-        self.confirm_exec_chk.toggled.connect(self._on_app_setting_changed)
-        right.addRow('', self.confirm_exec_chk)
-
-        self.wrap_undo_chk = QtWidgets.QCheckBox(
-            '工具操作包裹 Undo（可 Ctrl+Z 回滚）',
-        )
-        self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
-        right.addRow('', self.wrap_undo_chk)
-
-        # 日志级别下拉：DEBUG / INFO / WARNING / ERROR
-        # currentTextChanged 而不是 currentIndexChanged，方便直接拿到字符串
-        # 写入 cfg.log_level，无需再做 index→str 映射
-        self.log_level_combo = QtWidgets.QComboBox()
-        self.log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR'])
-        self.log_level_combo.setToolTip(
-            '日志级别（仅控制台输出粒度，文件日志固定为 DEBUG 全量）。\n'
-            '排查偶发问题时调成 DEBUG 抓现场，正常使用 INFO 即可。',
-        )
-        self.log_level_combo.currentTextChanged.connect(
-            self._on_log_level_changed,
-        )
-        right.addRow('日志级别:', self.log_level_combo)
-
-        # 打开日志目录按钮：跨平台用 QDesktopServices.openUrl
-        self.open_log_dir_btn = QtWidgets.QPushButton('打开日志目录')
-        self.open_log_dir_btn.setToolTip(
-            '在系统文件管理器中打开 maxagent 日志目录\n'
-            '（包含 maxagent.log 主文件 + 滚动归档）',
-        )
-        self.open_log_dir_btn.clicked.connect(self._open_log_dir)
-        right.addRow('', self.open_log_dir_btn)
 
         # 测试连接结果
         self.test_label = QtWidgets.QLabel('')
         self.test_label.setStyleSheet('color:#888;')
+        self.test_label.setWordWrap(True)
         right.addRow('', self.test_label)
 
-        # 操作按钮：根据按钮自身字体度量动态计算最小宽度，确保任何 DPI / 字体下
-        # "测试连接"、"完整测试"、"应用"、"关闭" 都能完整显示，不再硬编码像素。
+        # 操作按钮：测试连接 / 完整测试 / 应用
         op_row = QtWidgets.QHBoxLayout()
         op_row.setSpacing(6)
         op_row.addStretch(1)
 
         def _shape_btn(btn, fallback_min_w=80):
-            """按字体实测 + 安全余量设最小宽度，避免被父布局压缩文字。"""
             text = btn.text() or ''
-            # 按字符数估算下限（中文/emoji 当 14px 算，ASCII 7px），
-            # 防止在某些字体度量被异常拉小时仍能容纳全部文字
             char_lower = sum(14 if ord(c) > 127 else 7 for c in text) + 32
             try:
                 fm = btn.fontMetrics()
@@ -262,7 +321,6 @@ class SettingsDialog(QtWidgets.QDialog):
                     text_w = fm.horizontalAdvance(text)
                 else:
                     text_w = fm.width(text)
-                # emoji 字形渲染常宽于度量值，乘 1.15；再叠加 padding/边框 32px
                 measured = int(text_w * 1.15) + 32
             except Exception:  # pylint: disable=broad-except
                 measured = 0
@@ -295,11 +353,6 @@ class SettingsDialog(QtWidgets.QDialog):
         _shape_btn(self.apply_btn)
         op_row.addWidget(self.apply_btn)
 
-        self.close_btn = QtWidgets.QPushButton('关闭')
-        self.close_btn.clicked.connect(self.accept)
-        _shape_btn(self.close_btn)
-        op_row.addWidget(self.close_btn)
-
         right_box = QtWidgets.QVBoxLayout()
         right_box.addLayout(right, 1)
         right_box.addLayout(op_row)
@@ -307,10 +360,186 @@ class SettingsDialog(QtWidgets.QDialog):
         right_widget = QtWidgets.QWidget()
         right_widget.setLayout(right_box)
         outer.addWidget(right_widget, 2)
+        return page
 
-    # ------------------------------------------------------------------ #
+    # ================================================================== #
+    # Page 2: 联网（Commit 2 实装；先放占位说明）
+    # ================================================================== #
+    def _build_page_network(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setSpacing(12)
+
+        title = QtWidgets.QLabel('🌐  联网搜索')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        info = QtWidgets.QLabel(
+            '联网搜索功能即将上线。\n\n'
+            '届时本页将提供：\n'
+            '  • 联网模式：关闭 / 自动 / 强制\n'
+            '  • 搜索后端：DuckDuckGo / Bing API / 关闭\n'
+            '  • 单次搜索结果数 / 是否抓取网页正文\n'
+            '  • 命中缓存开关\n\n'
+            '主对话窗口的输入栏将提供"🌐"按钮，'
+            '让你按需开关本轮对话是否联网。',
+        )
+        info.setStyleSheet('color:#aaa;')
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        layout.addStretch(1)
+        return page
+
+    # ================================================================== #
+    # Page 3: 应用全局设置
+    # ================================================================== #
+    def _build_page_app(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(page)
+        form.setSpacing(8)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+
+        title = QtWidgets.QLabel('🎨  应用全局设置')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        form.addRow(title)
+
+        self.auto_show_chk = QtWidgets.QCheckBox(
+            'Max 启动时自动显示 MaxAgent 面板',
+        )
+        self.auto_show_chk.setToolTip(
+            '关闭后，Max 启动时不会自动弹出面板，需在 MAXScript Listener\n'
+            '中执行 g_show_max_agent() 或通过菜单/快捷键手动显示。',
+        )
+        self.auto_show_chk.toggled.connect(self._on_app_setting_changed)
+        form.addRow('', self.auto_show_chk)
+
+        self.allow_escape_chk = QtWidgets.QCheckBox(
+            '允许使用 run_maxscript / run_python 工具',
+        )
+        self.allow_escape_chk.setToolTip(
+            '关闭后 LLM 无法执行任意脚本，仅能调用预定义工具。',
+        )
+        self.allow_escape_chk.toggled.connect(self._on_app_setting_changed)
+        form.addRow('', self.allow_escape_chk)
+
+        self.confirm_exec_chk = QtWidgets.QCheckBox(
+            '执行脚本工具前弹窗确认',
+        )
+        self.confirm_exec_chk.toggled.connect(self._on_app_setting_changed)
+        form.addRow('', self.confirm_exec_chk)
+
+        self.wrap_undo_chk = QtWidgets.QCheckBox(
+            '工具操作包裹 Undo（可 Ctrl+Z 回滚）',
+        )
+        self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
+        form.addRow('', self.wrap_undo_chk)
+        return page
+
+    # ================================================================== #
+    # Page 4: 日志
+    # ================================================================== #
+    def _build_page_log(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setSpacing(12)
+
+        title = QtWidgets.QLabel('📜  日志')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        # 级别行
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel('日志级别:'))
+        self.log_level_combo = QtWidgets.QComboBox()
+        self.log_level_combo.addItems(['DEBUG', 'INFO', 'WARNING', 'ERROR'])
+        self.log_level_combo.setToolTip(
+            '日志级别（仅控制台输出粒度，文件日志固定为 DEBUG 全量）。\n'
+            '排查偶发问题时调成 DEBUG 抓现场，正常使用 INFO 即可。',
+        )
+        self.log_level_combo.currentTextChanged.connect(
+            self._on_log_level_changed,
+        )
+        row.addWidget(self.log_level_combo, 0)
+        row.addStretch(1)
+        self.open_log_dir_btn = QtWidgets.QPushButton('打开日志目录')
+        self.open_log_dir_btn.setToolTip(
+            '在系统文件管理器中打开 maxagent 日志目录\n'
+            '（包含 maxagent.log 主文件 + 滚动归档）',
+        )
+        self.open_log_dir_btn.clicked.connect(self._open_log_dir)
+        row.addWidget(self.open_log_dir_btn)
+        layout.addLayout(row)
+
+        # 详细说明
+        info = QtWidgets.QLabel(
+            '<b>DEBUG 级别</b>会同时输出：\n'
+            '  • LLM 请求 payload 摘要、流式 chunk 速率统计\n'
+            '  • 每次工具调用入参/出参/耗时\n'
+            '  • Worker 子线程切换、主线程阻塞监测\n'
+            '  • UI 信号转发延迟（>50ms 才记）\n\n'
+            '排查偶发卡顿/工具异常时切到 DEBUG 抓现场；'
+            '正常使用 INFO 即可，避免控制台刷屏。\n\n'
+            '日志按 2 MB 滚动归档，最多保留 5 份历史。',
+        )
+        info.setStyleSheet('color:#aaa;')
+        info.setWordWrap(True)
+        info.setTextFormat(QtCore.Qt.RichText)
+        layout.addWidget(info)
+        layout.addStretch(1)
+        return page
+
+    # ================================================================== #
+    # Page 5: 帮助
+    # ================================================================== #
+    def _build_page_help(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+
+        title = QtWidgets.QLabel('❓  使用帮助')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        text = QtWidgets.QTextBrowser()
+        text.setOpenExternalLinks(True)
+        text.setHtml(self._help_html())
+        layout.addWidget(text, 1)
+        return page
+
+    @staticmethod
+    def _help_html():
+        return (
+            '<h3>MaxAgent 设置帮助</h3>'
+            '<p><b>模型 Tab</b>：管理多套大模型连接（Ollama / LM Studio /'
+            ' OpenAI / DeepSeek 等），右键 Profile 可重命名 / 复制 / 设为默认。</p>'
+            '<p><b>Base URL</b>：OpenAI 兼容 API 的根地址，多数服务'
+            '需要带 <code>/v1</code> 后缀。'
+            '<br>· Ollama：<code>http://localhost:11434/v1</code>'
+            '<br>· LM Studio：<code>http://localhost:1234/v1</code>'
+            '<br>· OpenAI：<code>https://api.openai.com/v1</code>'
+            '<br>· DeepSeek：<code>https://api.deepseek.com/v1</code></p>'
+            '<p><b>API Key</b>：本地模型可留空或填占位符；商用 API 必填。</p>'
+            '<p><b>模型</b>：模型名称需与服务端实际可用模型完全一致。</p>'
+            '<p><b>温度</b>：0.0~2.0，越高越发散；建议 0.2 ~ 0.7。</p>'
+            '<p><b>请求超时</b>：单次请求等待秒数，长上下文/慢模型可调大。</p>'
+            '<p><b>工具调用上限</b>：单轮对话内 LLM 可触发的工具调用次数上限，'
+            '防止无限循环。</p>'
+            '<p><b>历史 token 预算</b>：发送给 LLM 时携带的对话历史 token 上限，'
+            '超出会自动裁剪最早消息。</p>'
+            '<hr>'
+            '<p><b>日志 Tab</b>：DEBUG 级别下会全链路打印 LLM 请求 / 工具调用 /'
+            '线程切换 / UI 信号延迟，方便排查偶发问题。</p>'
+            '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
+            '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
+            '用于排查 “测试连接通过但实际对话失败” 类问题。</p>'
+        )
+
+    # ================================================================== #
     # Profile 加载/保存
-    # ------------------------------------------------------------------ #
+    # ================================================================== #
     def _reload_profiles(self):
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
@@ -333,9 +562,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self._load_app_settings()
 
     def _load_app_settings(self):
-        """从 AppConfig 把全局开关加载到对应复选框。"""
+        """从 AppConfig 把全局开关加载到对应复选框 + 日志级别。"""
         cfg = self._config.config
-        # 阻塞信号，避免触发 _on_app_setting_changed 把 _dirty 置为 True
         for chk, val in (
             (self.auto_show_chk, cfg.auto_show_on_startup),
             (self.allow_escape_chk, cfg.allow_escape_hatch),
@@ -346,8 +574,6 @@ class SettingsDialog(QtWidgets.QDialog):
             chk.setChecked(bool(val))
             chk.blockSignals(False)
 
-        # 日志级别下拉：找到与 cfg.log_level 匹配的项；非法值回落 INFO。
-        # blockSignals 防止初始化触发 currentTextChanged → 无意义写盘。
         level_text = str(getattr(cfg, 'log_level', 'INFO') or 'INFO').upper()
         if level_text not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
             level_text = 'INFO'
@@ -358,11 +584,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.log_level_combo.blockSignals(False)
 
     def _on_app_setting_changed(self, _checked):
-        """任一全局开关变化时立刻保存到 AppConfig（不需要点应用）。
-
-        全局开关数量少且独立于 Profile 编辑，立即写盘体验更直接，
-        而且避免用户切换 Profile 时被"未保存提示"打断。
-        """
         cfg = self._config.config
         cfg.auto_show_on_startup = bool(self.auto_show_chk.isChecked())
         cfg.allow_escape_hatch = bool(self.allow_escape_chk.isChecked())
@@ -376,10 +597,6 @@ class SettingsDialog(QtWidgets.QDialog):
             )
 
     def _on_log_level_changed(self, level_text):
-        """日志级别下拉变化：写盘 + 实时调整运行中 logger 级别。
-
-        实时调整意味着当前 Max 会话内立即生效，不必重启。
-        """
         cfg = self._config.config
         new_level = str(level_text or 'INFO').upper()
         if new_level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):
@@ -399,16 +616,11 @@ class SettingsDialog(QtWidgets.QDialog):
             logging.getLogger(ROOT_NAME).setLevel(
                 getattr(logging, new_level, logging.INFO),
             )
+            logger.info('日志级别已切换为 %s', new_level)
         except Exception:  # pylint: disable=broad-except
-            # 调整失败不阻塞 UI，重启后会按新配置生效
             pass
 
     def _open_log_dir(self):
-        """在系统文件管理器中打开日志目录。
-
-        优先用 QDesktopServices.openUrl 跨平台调起；目录不存在时尝试创建，
-        创建失败再降级提示路径。
-        """
         import os
 
         try:
@@ -419,7 +631,6 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '打开失败', '无法定位日志目录: {}'.format(exc),
             )
             return
-        # 不存在就建一个，避免首次启动还没产生日志时点按钮报错
         if not os.path.isdir(log_dir):
             try:
                 os.makedirs(log_dir)
@@ -436,7 +647,6 @@ class SettingsDialog(QtWidgets.QDialog):
         except Exception:  # pylint: disable=broad-except
             opened = False
         if not opened:
-            # 降级：提示用户复制路径自己打开
             QtWidgets.QMessageBox.information(
                 self, '日志目录',
                 '请手动打开以下目录:\n{}'.format(log_dir),
@@ -459,7 +669,6 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         self.stream_chk.setChecked(bool(prof.stream))
         self.tools_chk.setChecked(bool(prof.supports_tools))
-        # headers
         if prof.extra_headers:
             text = '\n'.join(
                 '{}={}'.format(k, v)
@@ -469,10 +678,9 @@ class SettingsDialog(QtWidgets.QDialog):
             text = ''
         self.headers_edit.setPlainText(text)
         self.test_label.setText('')
+        self._dirty = False
 
     def _read_form(self):
-        """从表单读出一个 LLMProfile 对象。"""
-        # 解析 headers
         headers = {}
         for line in self.headers_edit.toPlainText().splitlines():
             line = line.strip()
@@ -507,7 +715,6 @@ class SettingsDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             )
             if ret != QtWidgets.QMessageBox.Yes:
-                # 回退选中
                 self.profile_list.blockSignals(True)
                 self.profile_list.setCurrentItem(prev)
                 self.profile_list.blockSignals(False)
@@ -516,9 +723,194 @@ class SettingsDialog(QtWidgets.QDialog):
             self._load_to_form(cur.text())
             self._dirty = False
 
-    # ------------------------------------------------------------------ #
-    # 槽：按钮
-    # ------------------------------------------------------------------ #
+    # ================================================================== #
+    # Profile 右键菜单 / 双击重命名
+    # ================================================================== #
+    def _on_profile_context_menu(self, pos):
+        """在 Profile 列表上弹出右键菜单。"""
+        item = self.profile_list.itemAt(pos)
+        if item is None:
+            # 点空白处也支持右键"新建"
+            menu = QtWidgets.QMenu(self.profile_list)
+            menu.addAction('新建 Profile…', self._add_profile)
+            menu.exec_(self.profile_list.mapToGlobal(pos))
+            return
+        name = item.text()
+        is_active = (name == self._config.get_active_profile_name())
+
+        menu = QtWidgets.QMenu(self.profile_list)
+        menu.addAction('重命名…(F2)', lambda: self._rename_profile(name))
+        menu.addAction('复制为副本…', lambda: self._duplicate_profile(name))
+        menu.addSeparator()
+        if not is_active:
+            menu.addAction('设为默认', lambda: self._set_active_profile(name))
+        menu.addAction('测试连接', self._test_connection)
+        menu.addSeparator()
+        del_action = menu.addAction(
+            '删除…(Delete)', lambda: self._del_profile_by_name(name),
+        )
+        if is_active:
+            del_action.setEnabled(False)
+            del_action.setText('删除（当前激活，禁止删除）')
+        menu.exec_(self.profile_list.mapToGlobal(pos))
+
+    def _on_profile_double_clicked(self, item):
+        """双击 = 重命名（多数用户的直觉）。"""
+        if item is None:
+            return
+        self._rename_profile(item.text())
+
+    def keyPressEvent(self, ev):
+        """支持 F2=重命名、Delete=删除（仅当焦点在 profile_list 上）。"""
+        # 仅当 profile_list 拿到焦点时拦截，否则按默认行为
+        if self.profile_list.hasFocus():
+            cur = self.profile_list.currentItem()
+            if cur is not None:
+                if ev.key() == QtCore.Qt.Key_F2:
+                    self._rename_profile(cur.text())
+                    ev.accept()
+                    return
+                if ev.key() in (QtCore.Qt.Key_Delete,):
+                    self._del_profile_by_name(cur.text())
+                    ev.accept()
+                    return
+        super(SettingsDialog, self).keyPressEvent(ev)
+
+    def _rename_profile(self, old_name):
+        """弹 InputDialog 重命名 profile，校验唯一性 + 同步 active。"""
+        new_name, ok = QtWidgets.QInputDialog.getText(
+            self, '重命名 Profile',
+            '新名称（仅英文/数字/连字符）:',
+            text=old_name,
+        )
+        if not ok:
+            return
+        new_name = (new_name or '').strip()
+        if not new_name or new_name == old_name:
+            return
+        if self._config.get_profile(new_name) is not None:
+            QtWidgets.QMessageBox.warning(
+                self, '已存在', '同名 Profile 已存在: {}'.format(new_name),
+            )
+            return
+        # 取出旧 profile，改名后插入；ConfigManager 没有内建 rename，
+        # 这里采用"插新 + 删旧"的方式，必要时同步 active_profile。
+        old_prof = self._config.get_profile(old_name)
+        if old_prof is None:
+            return
+        was_active = (old_name == self._config.get_active_profile_name())
+        new_prof = LLMProfile(
+            name=new_name,
+            base_url=old_prof.base_url,
+            api_key=old_prof.api_key,
+            model=old_prof.model,
+            temperature=old_prof.temperature,
+            max_tokens=old_prof.max_tokens,
+            timeout=old_prof.timeout,
+            max_tool_loops=getattr(old_prof, 'max_tool_loops', 40),
+            max_history_tokens=getattr(old_prof, 'max_history_tokens', 32000),
+            stream=old_prof.stream,
+            supports_tools=old_prof.supports_tools,
+            extra_headers=dict(old_prof.extra_headers or {}),
+        )
+        self._config.upsert_profile(new_prof)
+        if was_active:
+            # 先切到新名称，避免删除"当前激活"被拒
+            try:
+                self._config.set_active_profile(new_name)
+            except Exception:  # pylint: disable=broad-except
+                pass
+        try:
+            self._config.delete_profile(old_name)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('重命名时删除旧 profile 失败: %s', exc)
+        self._reload_profiles()
+        # 选中新建项
+        for i in range(self.profile_list.count()):
+            if self.profile_list.item(i).text() == new_name:
+                self.profile_list.setCurrentRow(i)
+                break
+
+    def _duplicate_profile(self, src_name):
+        """复制为副本：弹框让用户给副本起新名。"""
+        src = self._config.get_profile(src_name)
+        if src is None:
+            return
+        default_new = src_name + '-copy'
+        idx = 2
+        while self._config.get_profile(default_new) is not None:
+            default_new = '{}-copy{}'.format(src_name, idx)
+            idx += 1
+        new_name, ok = QtWidgets.QInputDialog.getText(
+            self, '复制 Profile',
+            '副本名称（仅英文/数字/连字符）:',
+            text=default_new,
+        )
+        if not ok:
+            return
+        new_name = (new_name or '').strip()
+        if not new_name:
+            return
+        if self._config.get_profile(new_name) is not None:
+            QtWidgets.QMessageBox.warning(
+                self, '已存在', '同名 Profile 已存在: {}'.format(new_name),
+            )
+            return
+        copied = LLMProfile(
+            name=new_name,
+            base_url=src.base_url,
+            api_key=src.api_key,
+            model=src.model,
+            temperature=src.temperature,
+            max_tokens=src.max_tokens,
+            timeout=src.timeout,
+            max_tool_loops=getattr(src, 'max_tool_loops', 40),
+            max_history_tokens=getattr(src, 'max_history_tokens', 32000),
+            stream=src.stream,
+            supports_tools=src.supports_tools,
+            extra_headers=dict(src.extra_headers or {}),
+        )
+        self._config.upsert_profile(copied)
+        self._reload_profiles()
+        for i in range(self.profile_list.count()):
+            if self.profile_list.item(i).text() == new_name:
+                self.profile_list.setCurrentRow(i)
+                break
+
+    def _set_active_profile(self, name):
+        try:
+            self._config.set_active_profile(name)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '切换失败', '设为默认失败: {}'.format(exc),
+            )
+            return
+        self._reload_profiles()
+
+    def _del_profile_by_name(self, name):
+        if name == self._config.get_active_profile_name():
+            QtWidgets.QMessageBox.warning(
+                self, '禁止删除', '不能删除当前激活的 Profile，请先切换。',
+            )
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '确认', '确定删除 Profile "{}"？'.format(name),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self._config.delete_profile(name)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '删除失败', '删除失败: {}'.format(exc),
+            )
+            return
+        self._reload_profiles()
+
+    # ================================================================== #
+    # 槽：底部按钮（沿用旧逻辑）
+    # ================================================================== #
     def _add_profile(self):
         text, ok = QtWidgets.QInputDialog.getText(
             self, '新建 Profile', 'Profile 名称（仅英文/数字/连字符）:',
@@ -540,7 +932,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self._config.upsert_profile(prof)
         self._config.save()
         self._reload_profiles()
-        # 选中新建项
         for i in range(self.profile_list.count()):
             if self.profile_list.item(i).text() == name:
                 self.profile_list.setCurrentRow(i)
@@ -550,21 +941,7 @@ class SettingsDialog(QtWidgets.QDialog):
         item = self.profile_list.currentItem()
         if item is None:
             return
-        name = item.text()
-        if name == self._config.get_active_profile_name():
-            QtWidgets.QMessageBox.warning(
-                self, '禁止删除', '不能删除当前激活的 Profile，请先切换。',
-            )
-            return
-        ret = QtWidgets.QMessageBox.question(
-            self, '确认', '确定删除 Profile "{}"？'.format(name),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-        )
-        if ret != QtWidgets.QMessageBox.Yes:
-            return
-        self._config.delete_profile(name)
-        self._config.save()
-        self._reload_profiles()
+        self._del_profile_by_name(item.text())
 
     def _toggle_key_visible(self, checked):
         if checked:
@@ -589,9 +966,7 @@ class SettingsDialog(QtWidgets.QDialog):
         if not prof.model:
             QtWidgets.QMessageBox.warning(self, '缺少模型', '请填写模型名')
             return
-        # 保存
         self._config.upsert_profile(prof)
-        # 如果是当前 active，无需切换；否则保留原 active
         self._config.save()
         self._dirty = False
         self.test_label.setText('✅ 已保存')
@@ -610,7 +985,6 @@ class SettingsDialog(QtWidgets.QDialog):
         QtWidgets.QApplication.processEvents()
         try:
             client = build_client_from_profile(prof)
-            # 发一个最简单的 ping
             resp = client.chat(
                 messages=[
                     {'role': 'user', 'content': '回复一个字: ok'},
@@ -635,10 +1009,6 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _test_connection_full(self):
-        """复刻真实对话的请求形式：流式 + tools schema。
-
-        用于诊断"测试连接通过但实际对话 401 / 400"这类网关/路由问题。
-        """
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
@@ -649,7 +1019,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
 
-        # 尽量复刻 worker 的真实 payload：带 tools schema + 流式
         try:
             from ..tools import build_openai_tools_schema
             tools_schema = build_openai_tools_schema()
@@ -693,7 +1062,6 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setStyleSheet('color:#e57373;')
 
     def _refresh_base_url_hint(self, text):
-        """Base URL 输入框内容变化时刷新静态体检提示。"""
         hint = diagnose_base_url(text)
         if hint:
             self.base_url_hint.setText(hint)
@@ -702,70 +1070,29 @@ class SettingsDialog(QtWidgets.QDialog):
             self.base_url_hint.clear()
             self.base_url_hint.hide()
 
-    # ------------------------------------------------------------------ #
-    # 帮助 (?) 按钮
-    # ------------------------------------------------------------------ #
+    # ================================================================== #
+    # 帮助 (?) 按钮（标题栏）
+    # ================================================================== #
     def event(self, ev):
-        """拦截标题栏 ? 按钮的 WhatsThis 模式触发，改为弹出帮助对话框。
-
-        Qt 给 QDialog 默认带 WindowContextHelpButtonHint，点击 ? 会进入
-        WhatsThis 模式（光标变成问号）。该模式需要为每个控件 setWhatsThis
-        才有反馈，对当前对话框场景过度复杂；改为直接弹出帮助说明更直观。
-        """
+        """拦截标题栏 ? 按钮，避免进入 WhatsThis 模式造成 🚫 光标。"""
         try:
             enter_whats_this = QtCore.QEvent.Type.EnterWhatsThisMode
         except AttributeError:
-            # PySide2 兼容
             enter_whats_this = QtCore.QEvent.EnterWhatsThisMode
         if ev.type() == enter_whats_this:
-            # 立刻退出 WhatsThis 模式，否则 Qt 已经把光标改成 🚫(问号箭头)
-            # 状态，弹完帮助框光标也不会自动复位。
             try:
                 QtWidgets.QWhatsThis.leaveWhatsThisMode()
             except Exception:  # pylint: disable=broad-except
                 pass
-            # 用 0ms 延后弹出帮助，让 Qt 完成 mode 切换后再展示对话框，
-            # 避免帮助框是模态时再次进入 WhatsThis 状态。
-            QtCore.QTimer.singleShot(0, self._show_help)
+            # 直接切到帮助 Tab，不再弹独立的 MessageBox
+            QtCore.QTimer.singleShot(0, self._jump_to_help_tab)
             ev.accept()
             return True
         return super(SettingsDialog, self).event(ev)
 
-    def _show_help(self):
-        """弹出帮助说明，介绍各字段含义与常见配置。"""
-        text = (
-            '<h3>MaxAgent 设置帮助</h3>'
-            '<p><b>Profile 列表</b>：可配置多套大模型连接，常用于切换'
-            ' Ollama / LM Studio / OpenAI / DeepSeek。</p>'
-            '<p><b>Base URL</b>：OpenAI 兼容 API 的根地址，多数服务'
-            '需要带 <code>/v1</code> 后缀。'
-            '<br>· Ollama：<code>http://localhost:11434/v1</code>'
-            '<br>· LM Studio：<code>http://localhost:1234/v1</code>'
-            '<br>· OpenAI：<code>https://api.openai.com/v1</code>'
-            '<br>· DeepSeek：<code>https://api.deepseek.com/v1</code></p>'
-            '<p><b>API Key</b>：本地模型可留空或填占位符；商用 API 必填。</p>'
-            '<p><b>模型</b>：模型名称需与服务端实际可用模型完全一致。</p>'
-            '<p><b>温度</b>：0.0~2.0，越高越发散；建议 0.2 ~ 0.7。</p>'
-            '<p><b>最大输出 token</b>：单次回复的硬上限，避免无限生成。</p>'
-            '<p><b>请求超时</b>：单次请求等待秒数，长上下文/慢模型可调大。</p>'
-            '<p><b>工具调用上限</b>：单轮对话内 LLM 可触发的工具调用次数上限，'
-            '防止无限循环。</p>'
-            '<p><b>历史 token 预算</b>：发送给 LLM 时携带的对话历史 token 上限，'
-            '超出会自动裁剪最早消息。</p>'
-            '<p><b>启用流式输出</b>：勾选后逐字输出，体验更流畅。</p>'
-            '<p><b>启用 Function Calling</b>：勾选后允许模型调用 3ds Max '
-            '工具集，关闭则退化为纯聊天。</p>'
-            '<p><b>自定义 Header</b>：用于网关或代理需要的额外 HTTP 头，'
-            '格式为 <code>KEY=VALUE</code>，每行一个。</p>'
-            '<p><b>日志级别</b>：控制台输出的日志粒度（DEBUG/INFO/'
-            'WARNING/ERROR）；文件日志固定为 DEBUG 全量，便于事后回溯。'
-            '<br><b>打开日志目录</b>：在系统文件管理器中打开日志文件'
-            '所在目录，日志按 2MB 滚动归档，最多保留 5 份。</p>'
-            '<hr>'
-            '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
-            '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
-            '用于排查 “测试连接通过但实际对话失败” 类问题。'
-            '<br><b>应用</b>：保存当前 Profile 修改。</p>'
-        )
-        QtWidgets.QMessageBox.information(self, 'MaxAgent 设置帮助', text)
-
+    def _jump_to_help_tab(self):
+        """快速切到"帮助"Tab。"""
+        for i, (_label, key) in enumerate(self._NAV_ITEMS):
+            if key == 'help':
+                self.nav.setCurrentRow(i)
+                return

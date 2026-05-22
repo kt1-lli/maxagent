@@ -10,6 +10,7 @@
 """
 
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -18,6 +19,11 @@ from typing import Dict
 from typing import Iterator
 from typing import List
 from typing import Optional
+
+from .logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class LLMError(Exception):
@@ -227,6 +233,14 @@ class LLMClient(object):
         headers = self._build_headers()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
+        # DEBUG 埋点：请求摘要（避免打印 messages 全文）
+        if logger.isEnabledFor(10):
+            logger.debug(
+                'HTTP %s model=%s msgs=%d tools=%d stream=%s body=%dB',
+                'POST', self._model, len(messages),
+                len(tools or []), stream, len(body),
+            )
+
         if stream:
             return self._chat_stream(url, headers, body, on_delta, cancel_check)
         return self._chat_blocking(url, headers, body)
@@ -256,13 +270,27 @@ class LLMClient(object):
         body: bytes,
     ) -> Dict[str, Any]:
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        t0 = time.time()
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
+            logger.warning(
+                'HTTP %s blocking failed in %.2fs: %s',
+                self._model, time.time() - t0, exc.code,
+            )
             raise LLMError(_format_http_error(exc, url))
         except urllib.error.URLError as exc:
+            logger.warning(
+                'Network error blocking in %.2fs: %s',
+                time.time() - t0, exc.reason,
+            )
             raise LLMError("网络错误: {}".format(exc.reason))
+        if logger.isEnabledFor(10):
+            logger.debug(
+                'HTTP blocking ok in %.2fs body=%dB',
+                time.time() - t0, len(raw),
+            )
 
         try:
             data = json.loads(raw)
@@ -301,6 +329,9 @@ class LLMClient(object):
             raise LLMError(_format_http_error(exc, url))
         except urllib.error.URLError as exc:
             raise LLMError("网络错误: {}".format(exc.reason))
+
+        if logger.isEnabledFor(10):
+            logger.debug('HTTP stream connected to %s', url)
 
         cancelled = False
         try:
