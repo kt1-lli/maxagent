@@ -180,43 +180,57 @@ def test_chat_renderer_eventfilter_rebroadcasts_on_resize(qapp):
 
 
 # ---------------------------------------------------------------------- #
-# 头像裁剪对话框 drawForeground bug
+# 头像裁剪对话框：选区不再随场景滚动漂移
 # ---------------------------------------------------------------------- #
 def test_avatar_crop_no_clear_composition_mode():
-    """drawForeground 不能再使用 CompositionMode_Clear——
-    那是导致"框内反色为黑"bug 的根因。"""
+    """整个文件中不能再调用 setCompositionMode(...Clear)——
+    那是导致'框内反色为黑'bug 的根因。"""
     import inspect
     import re
-    from maxagent.ui.avatar_crop_dialog import _CropGraphicsView
-    src = inspect.getsource(_CropGraphicsView.drawForeground)
-    # 仅对实际调用语句敏感，不被 docstring 提及干扰：检测
-    # ``setCompositionMode(`` 之后跟 Clear 关键字的真实调用
+    from maxagent.ui import avatar_crop_dialog as mod
+    src = inspect.getsource(mod)
     pattern = re.compile(
         r'setCompositionMode\s*\([^)]*Clear', re.DOTALL,
     )
     assert pattern.search(src) is None, (
-        '裁剪框遮罩不能调用 setCompositionMode(...Clear)，'
-        '应改用 OddEvenFill 路径实现带洞蒙版。'
+        '裁剪对话框不能调用 setCompositionMode(...Clear)。'
     )
 
 
-def test_avatar_crop_uses_oddeven_fill():
-    """drawForeground 应使用 OddEvenFill 来构造带洞蒙版。"""
+def test_avatar_crop_uses_paintevent_overlay():
+    """蒙版改在 paintEvent 中以 viewport 为画布绘制，
+    而不再依赖 drawForeground——后者会受场景坐标变换影响导致漂移。"""
     import inspect
     from maxagent.ui.avatar_crop_dialog import _CropGraphicsView
-    src = inspect.getsource(_CropGraphicsView.drawForeground)
-    assert 'OddEvenFill' in src, (
-        '应使用 Qt.OddEvenFill 奇偶填充规则实现框内透出原图、'
-        '框外半透明黑的视觉效果。'
+    assert hasattr(_CropGraphicsView, 'paintEvent'), (
+        '应重写 paintEvent 直接在 viewport 上绘制蒙版。'
     )
+    src = inspect.getsource(_CropGraphicsView.paintEvent)
+    # 必须以 viewport 为绘制目标（解耦场景坐标系）
+    assert 'QPainter(self.viewport())' in src, (
+        'paintEvent 应使用 QPainter(self.viewport()) 在 viewport 上'
+        '叠加蒙版，避免场景坐标变换造成漂移。'
+    )
+    # 仍保留 OddEvenFill 带洞蒙版策略
+    assert 'OddEvenFill' in src
+
+
+def test_avatar_crop_scrolls_redraws_viewport():
+    """拖动图片时 scrollContentsBy 应触发 viewport.update，
+    保证蒙版与图片同步刷新，不残留旧位置的描边。"""
+    import inspect
+    from maxagent.ui.avatar_crop_dialog import _CropGraphicsView
+    assert hasattr(_CropGraphicsView, 'scrollContentsBy'), (
+        '应重写 scrollContentsBy 在场景滚动时同步刷新 viewport。'
+    )
+    src = inspect.getsource(_CropGraphicsView.scrollContentsBy)
+    assert 'viewport' in src and 'update' in src
 
 
 def test_avatar_crop_resize_event_redraws_overlay():
     """裁剪视图的 resizeEvent 应触发 viewport.update 让选区始终居中。"""
     import inspect
     from maxagent.ui.avatar_crop_dialog import _CropGraphicsView
-    assert hasattr(_CropGraphicsView, 'resizeEvent'), (
-        '应实现 resizeEvent 以便容器尺寸变化时重绘前景蒙版。'
-    )
+    assert hasattr(_CropGraphicsView, 'resizeEvent')
     src = inspect.getsource(_CropGraphicsView.resizeEvent)
     assert 'viewport' in src and 'update' in src

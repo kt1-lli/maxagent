@@ -203,54 +203,72 @@ class _CropGraphicsView(QtWidgets.QGraphicsView):
         self.set_zoom(self._zoom * factor)
         event.accept()
 
-    # ---- 选区遮罩绘制（视图坐标系，覆盖在场景之上） ---- #
-    def drawForeground(self, painter, _rect):
-        """绘制中心镂空蒙版。
+    # ---- 选区遮罩绘制（直接画在 viewport 上，与场景坐标完全解耦） ---- #
+    def paintEvent(self, event):
+        """先让基类把场景画完，再在 viewport 上叠加蒙版与选区描边。
 
-        实现要点：
-        - QGraphicsView 的 viewport 是 opaque（不透明）的，无法用
-          ``CompositionMode_Clear`` 真的擦出"洞"——擦掉之后剩下的是
-          底色（黑色填充），所以会出现"框内反而全黑"的反相 bug。
-        - 正确做法：构造一个 ``QPainterPath``，把"外层视口矩形"和
-          "内层选区矩形"都加进去，再设 ``Qt.OddEvenFill`` 奇偶填充
-          规则——两个矩形重叠的区域（即选区）按奇偶规则不会被填充，
-          天然形成"带洞蒙版"效果。框内保留原图、框外蒙半透明黑。
-        - 选区始终以 viewport 中心为锚，每次重绘时计算，不受滚动/
-          缩放/拖动影响——所以"框固定不动、图片在框下移动"。
+        为什么不用 ``drawForeground``：
+        - ``drawForeground`` 拿到的 painter 默认处在场景坐标系；
+          调用 ``resetTransform`` 仅重置 painter 的变换矩阵，但其逻辑
+          原点仍受 viewport 在场景中的可见区影响。当用户拖动/滚动图
+          片时，``viewport().rect()`` 看似不变（始终是 0~width），但
+          实际绘制位置会随场景视口偏移而漂移——这就是用户截图里看到
+          的"绿色描边框跑到右上角"的原因。
+        - 改成 ``paintEvent`` + ``QPainter(self.viewport())`` 后，画笔
+          直接在 viewport 这块物理 widget 上工作，不沾染任何场景变换，
+          蒙版与选区始终钉死在 viewport 几何中心，无论图片如何平移
+          缩放都不会偏移。
+
+        填充策略：
+        - ``QPainterPath`` + ``Qt.OddEvenFill`` 奇偶规则：外层 viewport
+          矩形与内层选区矩形重叠区域（即选区）不被填充，天然形成
+          "带洞蒙版"——框外半透明黑、框内透出原图。
         """
-        painter.save()
-        painter.resetTransform()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+        super(_CropGraphicsView, self).paintEvent(event)
 
-        vp = self.viewport().rect()
-        cx = vp.width() / 2.0
-        cy = vp.height() / 2.0
-        half = _CROP_FRAME_SIZE / 2.0
-        sel = QtCore.QRectF(
-            cx - half, cy - half,
-            _CROP_FRAME_SIZE, _CROP_FRAME_SIZE,
-        )
+        painter = QtGui.QPainter(self.viewport())
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+            vp = self.viewport().rect()
+            cx = vp.width() / 2.0
+            cy = vp.height() / 2.0
+            half = _CROP_FRAME_SIZE / 2.0
+            sel = QtCore.QRectF(
+                cx - half, cy - half,
+                _CROP_FRAME_SIZE, _CROP_FRAME_SIZE,
+            )
 
-        # 用 OddEvenFill 构造"带洞"路径：外矩形 + 内矩形 → 中间夹层填充
-        path = QtGui.QPainterPath()
-        path.setFillRule(QtCore.Qt.OddEvenFill)
-        path.addRect(QtCore.QRectF(vp))
-        path.addRect(sel)
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(0, 0, 0, 150))
-        painter.drawPath(path)
+            # 带洞蒙版：外层 vp 矩形 + 内层选区矩形 → 奇偶填充夹层
+            path = QtGui.QPainterPath()
+            path.setFillRule(QtCore.Qt.OddEvenFill)
+            path.addRect(QtCore.QRectF(vp))
+            path.addRect(sel)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(QtGui.QColor(0, 0, 0, 150))
+            painter.drawPath(path)
 
-        # 选区描边（视觉提示）
-        pen = QtGui.QPen(QtGui.QColor('#a8e6a8'))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        painter.setBrush(QtCore.Qt.NoBrush)
-        painter.drawRect(sel)
-        painter.restore()
+            # 选区描边
+            pen = QtGui.QPen(QtGui.QColor('#a8e6a8'))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawRect(sel)
+        finally:
+            painter.end()
 
     def resizeEvent(self, event):
-        """视口尺寸变化时强制重绘前景蒙版，确保选区始终居中。"""
+        """视口尺寸变化时强制重绘，确保选区始终居中。"""
         super(_CropGraphicsView, self).resizeEvent(event)
+        self.viewport().update()
+
+    def scrollContentsBy(self, dx, dy):
+        """拖动/滚动场景时也要立即重绘 viewport 上的蒙版。
+
+        ``QGraphicsView`` 拖动时只刷新场景层，viewport 上叠加的蒙版
+        不会自动跟着 update——必须显式触发，否则用户拖动图片瞬间会
+        看到"图片移动 + 蒙版残留"的撕裂感。
+        """
+        super(_CropGraphicsView, self).scrollContentsBy(dx, dy)
         self.viewport().update()
 
     # ---- 输出裁剪结果 ---- #
