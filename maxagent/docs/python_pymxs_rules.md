@@ -567,7 +567,8 @@ try:
         raise ValueError("对象不存在")
     print(obj.name)
 except ValueError as e:
-    print(f"错误: {e}")
+    # 注意：本项目规则禁止 f-string，统一使用 .format() 字符串模板
+    print('错误: {}'.format(e))
 ```
 
 > **注意**: 撤销块中的异常处理需特别注意。不同 3ds Max 版本的撤销块异常处理行为可能不同，建议充分测试。
