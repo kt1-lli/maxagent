@@ -1474,7 +1474,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(0, _run_in_main)
 
-        # 3. 动态心跳等待
+        # 3. 动态心跳等待 + 主线程存活探测
         # 单次窗口 60s，累计上限 = 60s × (1 + max_extensions)
         poll_interval = 0.1
         base_window = 60.0
@@ -1492,9 +1492,40 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             except Exception:  # pylint: disable=broad-except
                 pass
 
+        # ping 探测器：定期向主线程投递一个空 lambda，回包则代表主线程
+        # Qt 事件循环还在转。用于区分"当前 task 自己卡死" vs "Max 主线程
+        # 整体被其他东西卡死（视口刷新 / 模态对话框 / 第三方插件 hang）"。
+        ping_state = {
+            'in_flight': False,        # 是否有 ping 正在路上
+            'sent_at': 0.0,             # 最近一次发出 ping 的时间
+            'last_ack_at': time.time(), # 最近一次成功收到 pong 的时间
+            'rtt_ms': 0.0,              # 最近一次 ping-pong 往返耗时
+            'count_ok': 0,              # 累计成功次数
+            'count_lost': 0,            # 累计未回响（在再次 ping 前未到达）
+        }
+
+        def _do_ping():
+            now = time.time()
+            ping_state['in_flight'] = False
+            ping_state['last_ack_at'] = now
+            ping_state['rtt_ms'] = (now - ping_state['sent_at']) * 1000
+            ping_state['count_ok'] += 1
+
+        def _send_ping():
+            if ping_state['in_flight']:
+                # 上一次还没回，本次不再投递，计为丢失
+                ping_state['count_lost'] += 1
+                return
+            ping_state['in_flight'] = True
+            ping_state['sent_at'] = time.time()
+            QtCore.QTimer.singleShot(0, _do_ping)
+
+        ping_interval = 10.0  # 每 10 秒探测一次
+
         extensions_used = 0
         total_elapsed = 0.0
         last_status_at = 0.0
+        last_ping_at = 0.0
         while True:
             window_elapsed = 0.0
             while window_elapsed < base_window:
@@ -1506,14 +1537,32 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                     )
                 window_elapsed += poll_interval
                 total_elapsed += poll_interval
+
+                # 每 ping_interval 秒探测一次主线程是否还能处理事件
+                if total_elapsed - last_ping_at >= ping_interval:
+                    last_ping_at = total_elapsed
+                    _send_ping()
+
                 # 每 5 秒推一次心跳给 UI（避免信号风暴）
                 if total_elapsed - last_status_at >= 5.0:
                     last_status_at = total_elapsed
-                    _emit_status(
-                        '工具 {} 执行中…已用 {:.0f}s'.format(
-                            tool_name, total_elapsed,
-                        ),
-                    )
+                    since_ack = time.time() - ping_state['last_ack_at']
+                    if ping_state['in_flight'] and since_ack > 5.0:
+                        # ping 派出去 5 秒还没回 → 主线程明显在忙
+                        _emit_status(
+                            '工具 {} 执行中…已用 {:.0f}s（主线程繁忙'
+                            ' {:.0f}s 未响应 ping）'.format(
+                                tool_name, total_elapsed, since_ack,
+                            ),
+                        )
+                    else:
+                        _emit_status(
+                            '工具 {} 执行中…已用 {:.0f}s'
+                            '（主线程心跳 OK, RTT={:.0f}ms）'.format(
+                                tool_name, total_elapsed,
+                                ping_state['rtt_ms'],
+                            ),
+                        )
 
             if done.is_set():
                 break
@@ -1529,16 +1578,41 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 )
                 continue
 
-            # 真正超时：给出可定位错误
+            # 真正超时：先做诊断快照，区分"task 自卡" vs "主线程整体卡死"
+            since_ack = time.time() - ping_state['last_ack_at']
+            if since_ack > ping_interval * 2 and ping_state['count_lost'] > 0:
+                diag = (
+                    '主线程整体卡死（最近 {:.0f}s 未响应 ping，'
+                    '丢失 {} 次，成功 {} 次）—— 可能原因：'
+                    'Max 弹出隐性模态对话框 / 视口大重计算 / 第三方插件 hang'
+                ).format(
+                    since_ack, ping_state['count_lost'],
+                    ping_state['count_ok'],
+                )
+            else:
+                diag = (
+                    '主线程仍在响应 ping（最近回包 {:.1f}s 前，'
+                    '成功 {} 次，丢失 {} 次）—— 是当前工具自身耗时过长，'
+                    '不是事件循环卡死'
+                ).format(
+                    since_ack, ping_state['count_ok'],
+                    ping_state['count_lost'],
+                )
             arg_preview = repr(arguments)
             if len(arg_preview) > 120:
                 arg_preview = arg_preview[:120] + '...'
-            raise RuntimeError(
-                '工具 {} 在主线程执行超时（累计 {:.0f}s，已延期 {} 次），'
-                '参数: {}'.format(
-                    tool_name, total_elapsed, extensions_used, arg_preview,
-                ),
+            err_msg = (
+                '工具 {} 在主线程执行超时（累计 {:.0f}s，已延期 {} 次）；'
+                '诊断: {}；参数: {}'
+            ).format(
+                tool_name, total_elapsed, extensions_used,
+                diag, arg_preview,
             )
+            logger.warning(
+                'tool_sync timeout: tool=%s elapsed=%.0fs ext=%d ping=%s',
+                tool_name, total_elapsed, extensions_used, ping_state,
+            )
+            raise RuntimeError(err_msg)
 
         if 'error' in result_box:
             raise result_box['error']

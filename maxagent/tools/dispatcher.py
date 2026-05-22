@@ -95,7 +95,12 @@ class ToolDispatcher(object):
                 _summarize_args(arguments),
             )
 
+        # 阶段计时收集器：confirm / marshal / undo_enter / func / undo_exit /
+        # serialize / truncate 各占一格；最后汇总打印，方便定位"耗时大头"。
+        stages = {}  # type: Dict[str, float]
+
         # 1. 危险工具确认
+        t_confirm = time.time()
         if spec.dangerous and self._confirm_cb is not None:
             try:
                 if not self._confirm_cb(tool_name, arguments):
@@ -104,24 +109,25 @@ class ToolDispatcher(object):
                 return _err(
                     "确认回调异常: {}".format(exc), "confirm_error",
                 )
+        stages["confirm"] = (time.time() - t_confirm) * 1000
 
-        # 2. 实际执行（带耗时统计）
+        # 2. 实际执行（带阶段计时）
         t0 = time.time()
         try:
-            result = self._invoke(spec, arguments)
+            result = self._invoke(spec, arguments, stages)
         except TimeoutError as exc:
             elapsed = (time.time() - t0) * 1000
             logger.warning(
-                "✗ tool=%s timeout after %.0fms: %s",
-                tool_name, elapsed, exc,
+                "✗ tool=%s timeout after %.0fms stages=%s: %s",
+                tool_name, elapsed, _fmt_stages(stages), exc,
             )
             return _err(str(exc), "timeout")
         except Exception as exc:  # pylint: disable=broad-except
             elapsed = (time.time() - t0) * 1000
             tb = traceback.format_exc()
             logger.error(
-                "✗ tool=%s 执行异常 after %.0fms:\n%s",
-                tool_name, elapsed, tb,
+                "✗ tool=%s 执行异常 after %.0fms stages=%s:\n%s",
+                tool_name, elapsed, _fmt_stages(stages), tb,
             )
             return _err(
                 "{}: {}".format(type(exc).__name__, exc),
@@ -130,25 +136,34 @@ class ToolDispatcher(object):
         elapsed_ms = (time.time() - t0) * 1000
 
         # 3. 序列化兜底：保证返回值可被 json.dumps
+        t_ser = time.time()
         safe = _safe_serialize(result)
         out = {"ok": True, "result": safe}
+        stages["serialize"] = (time.time() - t_ser) * 1000
+
         # 4. 结果体积裁剪：避免 list_scene_objects 这类返回数千项的
         #    工具一次性把上下文打爆。
+        t_trunc = time.time()
         if self._result_max_bytes > 0:
             out = _maybe_truncate_result(
                 out, self._result_max_bytes, tool_name=tool_name,
             )
+        stages["truncate"] = (time.time() - t_trunc) * 1000
 
-        # DEBUG 埋点：出参摘要 + 耗时；超过 500ms 自动升 INFO 级别
-        if elapsed_ms >= 500:
+        # DEBUG 埋点：出参摘要 + 总耗时 + 阶段分布
+        # 超过 500ms 自动升到 INFO，便于线上抓到慢调用现场。
+        total_ms = (time.time() - t_confirm) * 1000
+        if total_ms >= 500:
             logger.info(
-                "✔ tool=%s elapsed=%.0fms result=%s",
-                tool_name, elapsed_ms, _summarize_result(out),
+                "✔ tool=%s total=%.0fms exec=%.0fms stages=%s result=%s",
+                tool_name, total_ms, elapsed_ms,
+                _fmt_stages(stages), _summarize_result(out),
             )
         elif logger.isEnabledFor(10):
             logger.debug(
-                "✔ tool=%s elapsed=%.0fms result=%s",
-                tool_name, elapsed_ms, _summarize_result(out),
+                "✔ tool=%s total=%.0fms exec=%.0fms stages=%s result=%s",
+                tool_name, total_ms, elapsed_ms,
+                _fmt_stages(stages), _summarize_result(out),
             )
         return out
 
@@ -156,19 +171,56 @@ class ToolDispatcher(object):
     # 内部
     # ------------------------------------------------------------------ #
 
-    def _invoke(self, spec, arguments):
-        """根据 spec 决定如何调用 func。"""
+    def _invoke(self, spec, arguments, stages):
+        """根据 spec 决定如何调用 func。
+
+        :param stages: 由 dispatch() 传入的阶段计时字典；本函数会按需
+                       写入 ``marshal_wait`` / ``undo_enter`` /
+                       ``func`` / ``undo_exit`` 等键，便于上层汇总输出。
+        """
         do_undo = self._wrap_undo and spec.wrap_undo
+        on_main = spec.run_on_main_thread and IN_MAX
 
         def _call_with_undo():
+            # undo_enter / func / undo_exit 三段独立计时；不包 undo
+            # 的工具只记 func 一段。
             if do_undo:
+                t_enter = time.time()
                 with undo_block("agent: " + spec.name):
-                    return spec.func(**arguments)
-            return spec.func(**arguments)
+                    stages["undo_enter"] = (time.time() - t_enter) * 1000
+                    t_func = time.time()
+                    try:
+                        return spec.func(**arguments)
+                    finally:
+                        stages["func"] = (time.time() - t_func) * 1000
+                        # undo_exit 在 with 退出后才知道，先记结束时间戳
+                        stages["_undo_exit_t0"] = time.time()
+            t_func = time.time()
+            try:
+                return spec.func(**arguments)
+            finally:
+                stages["func"] = (time.time() - t_func) * 1000
 
-        if spec.run_on_main_thread and IN_MAX:
-            return run_on_main(_call_with_undo, _timeout=self._timeout)
-        return _call_with_undo()
+        if on_main:
+            t_marshal = time.time()
+            try:
+                return run_on_main(_call_with_undo, _timeout=self._timeout)
+            finally:
+                # marshal_wait 包含：投递 emit + 主线程排队 + 整段主线程
+                # 执行（含 undo_enter/func/undo_exit）+ done.set 通知。
+                # 减去 func/undo_enter 后剩下的就是"纯排队 + 主线程切换"开销。
+                stages["marshal_wait"] = (time.time() - t_marshal) * 1000
+                # 补 undo_exit（with 已退出）
+                t0 = stages.pop("_undo_exit_t0", None)
+                if t0 is not None:
+                    stages["undo_exit"] = (time.time() - t0) * 1000
+        else:
+            try:
+                return _call_with_undo()
+            finally:
+                t0 = stages.pop("_undo_exit_t0", None)
+                if t0 is not None:
+                    stages["undo_exit"] = (time.time() - t0) * 1000
 
 
 # ---------------------------------------------------------------------- #
@@ -177,6 +229,26 @@ class ToolDispatcher(object):
 
 def _err(msg, kind):
     return {"ok": False, "error": msg, "type": kind}
+
+
+def _fmt_stages(stages):
+    # type: (Dict[str, float]) -> str
+    """把阶段耗时字典格式化成 ``[k1=12ms k2=345ms]`` 形式，方便日志。
+
+    - 仅打印耗时 >= 1ms 的阶段，避免日志被 0ms 噪声塞满；
+    - 按耗时降序排序，最贵的阶段排最前面，第一眼就能定位瓶颈；
+    - 跳过下划线开头的内部临时键（如 ``_undo_exit_t0``）。
+    """
+    items = [
+        (k, v) for k, v in stages.items()
+        if not k.startswith("_") and v >= 1.0
+    ]
+    if not items:
+        return "[<1ms]"
+    items.sort(key=lambda kv: kv[1], reverse=True)
+    return "[{}]".format(
+        " ".join("{}={:.0f}ms".format(k, v) for k, v in items),
+    )
 
 
 def _safe_serialize(obj):

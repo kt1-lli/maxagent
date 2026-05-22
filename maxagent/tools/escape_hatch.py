@@ -14,13 +14,18 @@ from __future__ import print_function
 
 import io
 import sys
+import time
 import traceback
 from typing import Any
 from typing import Dict
 
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
+from ..logger import get_logger
 from .registry import tool
+
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------- #
@@ -58,6 +63,9 @@ def run_maxscript(code):
     if not IN_MAX:
         return {"success": False, "error": "非 3ds Max 环境"}
 
+    code_len = len(code) if isinstance(code, str) else 0
+    t0 = time.time()
+
     # 入口校验：拦截已知硬性语法错误（如 if-do-else），让 LLM 自纠
     # 校验器位于 agent 层，避免 tools 反向依赖，这里就近导入
     try:
@@ -67,25 +75,56 @@ def run_maxscript(code):
     if validate_maxscript_syntax is not None:
         ok, hint = validate_maxscript_syntax(code)
         if not ok:
+            logger.info(
+                "run_maxscript rejected by validator code_len=%d hint=%s",
+                code_len, hint,
+            )
             return {
                 "success": False,
                 "error": hint,
                 "rejected_by_validator": True,
             }
+    t_validate = (time.time() - t0) * 1000
 
+    # 实际执行
+    t1 = time.time()
     try:
         result = rt.execute(code)
     except Exception as exc:  # pylint: disable=broad-except
+        elapsed = (time.time() - t1) * 1000
+        logger.warning(
+            "run_maxscript rt.execute raised after %.0fms code_len=%d: %s",
+            elapsed, code_len, exc,
+        )
         return {
             "success": False,
             "error": "{}: {}".format(type(exc).__name__, exc),
             "traceback": traceback.format_exc(),
         }
-    # MaxScript 返回值类型多样，统一转字符串供 LLM 阅读
+    t_exec = (time.time() - t1) * 1000
+
+    # 返回值字符串化
+    t2 = time.time()
     try:
         text = str(result)
     except Exception:  # pylint: disable=broad-except
         text = "<unprintable>"
+    t_str = (time.time() - t2) * 1000
+
+    # 仅在 DEBUG 或慢调用时打日志，避免 info 级别刷屏
+    total = t_validate + t_exec + t_str
+    if total >= 500:
+        logger.info(
+            "run_maxscript total=%.0fms validate=%.0fms exec=%.0fms"
+            " str=%.0fms code_len=%d",
+            total, t_validate, t_exec, t_str, code_len,
+        )
+    elif logger.isEnabledFor(10):
+        logger.debug(
+            "run_maxscript total=%.0fms validate=%.0fms exec=%.0fms"
+            " str=%.0fms code_len=%d",
+            total, t_validate, t_exec, t_str, code_len,
+        )
     return {"success": True, "value": text}
 
 
@@ -123,6 +162,9 @@ def run_python(code):
     if not IN_MAX:
         return {"success": False, "error": "非 3ds Max 环境"}
 
+    code_len = len(code) if isinstance(code, str) else 0
+    t0 = time.time()
+
     # 准备执行环境，注入 rt 与 pymxs
     try:
         import pymxs as _pymxs  # type: ignore  # pylint: disable=import-error
@@ -135,15 +177,22 @@ def run_python(code):
         "rt": _pymxs.runtime,
     }  # type: Dict[str, Any]
     sandbox_locals = {}  # type: Dict[str, Any]
+    t_prepare = (time.time() - t0) * 1000
 
     # 重定向 stdout 以便捕获 print
     old_stdout = sys.stdout
     buf = io.StringIO()
     sys.stdout = buf
+    t1 = time.time()
     try:
         exec(code, sandbox_globals, sandbox_locals)  # pylint: disable=exec-used
     except Exception as exc:  # pylint: disable=broad-except
         sys.stdout = old_stdout
+        elapsed = (time.time() - t1) * 1000
+        logger.warning(
+            "run_python exec raised after %.0fms code_len=%d: %s",
+            elapsed, code_len, exc,
+        )
         return {
             "success": False,
             "error": "{}: {}".format(type(exc).__name__, exc),
@@ -152,12 +201,29 @@ def run_python(code):
         }
     finally:
         sys.stdout = old_stdout
+    t_exec = (time.time() - t1) * 1000
 
+    t2 = time.time()
     result_val = sandbox_locals.get("result", None)
     try:
         result_str = repr(result_val)
     except Exception:  # pylint: disable=broad-except
         result_str = "<unrepr>"
+    t_repr = (time.time() - t2) * 1000
+
+    total = t_prepare + t_exec + t_repr
+    if total >= 500:
+        logger.info(
+            "run_python total=%.0fms prepare=%.0fms exec=%.0fms"
+            " repr=%.0fms code_len=%d",
+            total, t_prepare, t_exec, t_repr, code_len,
+        )
+    elif logger.isEnabledFor(10):
+        logger.debug(
+            "run_python total=%.0fms prepare=%.0fms exec=%.0fms"
+            " repr=%.0fms code_len=%d",
+            total, t_prepare, t_exec, t_repr, code_len,
+        )
 
     return {
         "success": True,
