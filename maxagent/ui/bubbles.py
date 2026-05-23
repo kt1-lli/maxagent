@@ -606,7 +606,7 @@ class UserBubble(QtWidgets.QWidget):
             row_layout.addStretch(1)
 
     def _make_thumbnail(self, attachment):
-        """单张缩略图（QLabel + 点击放大）。"""
+        """单张缩略图（QLabel + 点击放大 + 右键菜单复制/另存）。"""
         label = QtWidgets.QLabel()
         label.setStyleSheet(
             'QLabel { background:#1a3a5a; border:1px solid #3d6d9d;'
@@ -626,12 +626,110 @@ class UserBubble(QtWidgets.QWidget):
         )
         label.setPixmap(scaled)
         label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        label.setToolTip('点击查看大图')
-        # 双击放大查看（避免与拖动选区冲突）
+        label.setToolTip('点击查看大图 · 右键菜单可复制/另存')
+        # 单击放大查看
         label.mouseReleaseEvent = (
-            lambda ev, a=attachment: self._open_viewer(a)
+            lambda ev, a=attachment: self._on_thumb_click(ev, a)
+        )
+        # 右键菜单：复制图片 / 复制路径 / 另存为 / 查看大图
+        label.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        # noinspection PyUnresolvedReferences
+        label.customContextMenuRequested.connect(
+            lambda pos, a=attachment, w=label:
+            self._show_image_menu(w, pos, a)
         )
         return label
+
+    @staticmethod
+    def _on_thumb_click(ev, attachment):
+        """缩略图鼠标释放：左键放大，右键交给 contextMenu。"""
+        try:
+            from ..qt_compat import QtCore as _QC
+            if hasattr(ev, 'button') and ev.button() == _QC.Qt.MouseButton.RightButton:
+                # 右键：交给 contextMenu 处理，不要触发放大
+                return
+        except Exception:  # pylint: disable=broad-except
+            pass
+        UserBubble._open_viewer(attachment)
+
+    @staticmethod
+    def _show_image_menu(widget, pos, attachment):
+        """在缩略图上弹出"复制图片 / 复制路径 / 另存为 / 查看大图"菜单。"""
+        menu = QtWidgets.QMenu(widget)
+
+        act_copy_img = menu.addAction('复制图片')
+        act_copy_img.triggered.connect(
+            lambda a=attachment: UserBubble._copy_image(a)
+        )
+
+        act_copy_path = menu.addAction('复制图片路径')
+        act_copy_path.triggered.connect(
+            lambda a=attachment: _copy_to_clipboard(
+                getattr(a, 'path', '') or ''
+            )
+        )
+
+        menu.addSeparator()
+
+        act_save_as = menu.addAction('另存为...')
+        act_save_as.triggered.connect(
+            lambda a=attachment, w=widget:
+            UserBubble._save_image_as(w, a)
+        )
+
+        menu.addSeparator()
+
+        act_view = menu.addAction('查看大图')
+        act_view.triggered.connect(
+            lambda a=attachment: UserBubble._open_viewer(a)
+        )
+
+        menu.exec_(widget.mapToGlobal(pos))
+
+    @staticmethod
+    def _copy_image(attachment):
+        """把图片以多 MIME 形式写入剪贴板。"""
+        try:
+            from .input_attachments import copy_attachment_to_clipboard
+            copy_attachment_to_clipboard(attachment)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    @staticmethod
+    def _save_image_as(widget, attachment):
+        """另存为：选择目标路径后字节级拷贝原文件。"""
+        try:
+            mime = getattr(attachment, 'mime', '') or ''
+            ext = '.png'
+            if 'jpeg' in mime or 'jpg' in mime:
+                ext = '.jpg'
+            elif 'gif' in mime:
+                ext = '.gif'
+            elif 'webp' in mime:
+                ext = '.webp'
+            elif 'bmp' in mime:
+                ext = '.bmp'
+            default_name = attachment.name or 'image'
+            if not default_name.lower().endswith(ext):
+                default_name = default_name + ext
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                widget, '另存为', default_name,
+                'Image (*.png *.jpg *.jpeg *.gif *.webp *.bmp)',
+            )
+            if not path:
+                return
+            with open(attachment.path, 'rb') as src:
+                data = src.read()
+            with open(path, 'wb') as dst:
+                dst.write(data)
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(
+                widget, '保存失败', '写入文件失败: {}'.format(exc),
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     @staticmethod
     def _open_viewer(attachment):

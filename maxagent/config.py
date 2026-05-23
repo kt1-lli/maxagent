@@ -212,8 +212,9 @@ class AppConfig:
         "gpt-4o", "gpt-4-vision", "gpt-4-turbo",
         "claude-3", "claude-4", "claude-sonnet", "claude-opus",
         "gemini-1.5", "gemini-2", "gemini-pro-vision",
-        "qwen-vl", "qwen2-vl", "qwen2.5-vl",
+        "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen-vl-max", "qwen-vl-plus",
         "glm-4v", "yi-vl", "internvl",
+        "deepseek-vl", "pixtral", "llama-3.2-vision",
     ])
 
     def get_active_profile(self) -> Optional[LLMProfile]:

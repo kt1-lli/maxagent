@@ -7,7 +7,12 @@
   缩略图 + 尺寸提示 + 删除按钮，支持横向滚动；
 - ``ImageViewerDialog``：双击缩略图弹出的大图查看器（带"另存为"）；
 - ``pixmap_to_attachment``：把 QPixmap 编码为 PNG 字节并落盘，
-  返回 ``Attachment`` 实例的辅助函数。
+  返回 ``Attachment`` 实例的辅助函数；
+- ``VisionHintBar``：当前 profile 不支持视觉时的提示条
+  （温和提醒图片会被降级为纯文本，并提供"切换 Profile"快捷入口）；
+- ``copy_attachment_to_clipboard``：把单张图片附件以多 MIME
+  形式（image/png + text/uri-list + 路径文本）写入剪贴板，
+  让 Word/微信/PS/资源管理器 都能粘贴。
 
 设计要点：
 - 缩略图统一 80×80，等比缩放保持图片宽高比；
@@ -27,6 +32,41 @@ from ..attachments import save_image_bytes
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+
+
+def copy_attachment_to_clipboard(attachment):
+    # type: (Attachment) -> bool
+    """把单张图片附件复制到系统剪贴板。
+
+    同时写三种 MIME 数据，最大化跨程序粘贴兼容性：
+
+    - ``image/png`` 等位图数据：Word/PPT/PS/微信 这类"图像目标"识别
+    - ``text/uri-list``：资源管理器/某些聊天软件能直接还原为文件
+    - 纯文本（路径）：粘贴到终端/输入框时退化成路径文本
+
+    :param attachment: ``Attachment`` 实例（需为图片类型）
+    :returns: 是否成功写入剪贴板
+    """
+    if attachment is None or not getattr(attachment, 'path', ''):
+        return False
+    pix = QtGui.QPixmap(attachment.path)
+    if pix.isNull():
+        return False
+    mime = QtCore.QMimeData()
+    # 1) 位图：QImage 比 QPixmap 跨平台粘贴更稳
+    img = pix.toImage()
+    mime.setImageData(img)
+    # 2) URI list：资源管理器可识别成文件
+    try:
+        url = QtCore.QUrl.fromLocalFile(attachment.path)
+        mime.setUrls([url])
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # 3) 纯文本兜底：路径文本
+    mime.setText(attachment.path)
+    cb = QtWidgets.QApplication.clipboard()
+    cb.setMimeData(mime)
+    return True
 
 
 def pixmap_to_attachment(pixmap, name=''):
@@ -283,8 +323,104 @@ class ImageViewerDialog(QtWidgets.QDialog):
         dlg.exec_() if hasattr(dlg, 'exec_') else dlg.exec()
 
 
+# ---------------------------------------------------------------------- #
+# 视觉降级提示条
+# ---------------------------------------------------------------------- #
+class VisionHintBar(QtWidgets.QFrame):
+    """非视觉模型 + 已添加附件时显示的温和提示条。
+
+    显示条件由调用方控制（``set_state``），本组件只关心"显示什么"和
+    "点击切换 Profile 时通知谁"。
+
+    布局：
+        ⚠ 当前模型 xxx 不支持视觉，图片将以"[图片] N 张"代为发送   [切换模型 ▾]
+    """
+
+    # 信号：用户点击右侧的"切换模型"按钮
+    switch_profile_requested = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super(VisionHintBar, self).__init__(parent)
+        self.setStyleSheet(
+            'QFrame { background:#3a2f10; border:1px solid #6a5520;'
+            ' border-radius:3px; }'
+        )
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(8, 4, 6, 4)
+        h.setSpacing(6)
+
+        self._label = QtWidgets.QLabel()
+        self._label.setStyleSheet(
+            'QLabel { background:transparent; color:#e0c060;'
+            ' font-size:9pt; }'
+        )
+        self._label.setWordWrap(True)
+        h.addWidget(self._label, 1)
+
+        self._switch_btn = QtWidgets.QPushButton('切换模型')
+        self._switch_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._switch_btn.setStyleSheet(
+            'QPushButton { background:#5a4818; color:#f0d870;'
+            ' border:1px solid #7a6428; border-radius:3px;'
+            ' padding:2px 8px; }'
+            'QPushButton:hover { background:#6a5820; color:#fff0a0; }'
+        )
+        self._switch_btn.clicked.connect(self.switch_profile_requested.emit)
+        h.addWidget(self._switch_btn, 0)
+
+        self.hide()
+
+    def set_state(self, has_attachments, vision_enabled, vision_supported,
+                  model_name=''):
+        # type: (bool, bool, bool, str) -> None
+        """根据三态决定是否显示及显示文案。
+
+        :param has_attachments: 当前是否有待发送图片
+        :param vision_enabled: 全局视觉开关是否打开
+        :param vision_supported: 当前模型是否在视觉白名单内
+        :param model_name: 当前 profile 的 model 名（仅用于展示）
+        """
+        if not has_attachments:
+            self.hide()
+            return
+        # 既开启视觉、模型也支持：不需要提示
+        if vision_enabled and vision_supported:
+            self.hide()
+            return
+        # 走到这里说明：有图片 + （视觉关 或 模型不支持）
+        if not vision_enabled:
+            text = (
+                '⚠ 视觉功能已在设置中关闭，图片将以"[图片] N 张"代为'
+                '发送（LLM 看不到原图）'
+            )
+        else:
+            shown = model_name or '当前模型'
+            text = (
+                '⚠ 当前模型 <b>{}</b> 不支持视觉，图片将以"[图片] N 张"'
+                '代为发送（LLM 看不到原图）'
+            ).format(_html_escape(shown))
+        self._label.setText(text)
+        self.show()
+
+
+def _html_escape(text):
+    # type: (str) -> str
+    """最小 HTML 转义，避免 model 名意外含 ``<`` ``&`` 之类。"""
+    if not text:
+        return ''
+    return (
+        text
+        .replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+        .replace('"', '&quot;')
+    )
+
+
 __all__ = [
     'AttachmentStrip',
     'ImageViewerDialog',
+    'VisionHintBar',
+    'copy_attachment_to_clipboard',
     'pixmap_to_attachment',
 ]

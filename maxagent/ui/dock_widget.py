@@ -645,7 +645,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.input_edit.image_dropped.connect(self._on_image_dropped)
         # 附件预览条（输入框上方，无附件时自动隐藏）
         from .input_attachments import AttachmentStrip
+        from .input_attachments import VisionHintBar
+        # 视觉降级提示条：放在预览条上方，附件数量 + 视觉能力联动显隐
+        self.vision_hint = VisionHintBar(self)
+        self.vision_hint.switch_profile_requested.connect(
+            self._on_vision_hint_switch_profile,
+        )
+        input_layout.addWidget(self.vision_hint, 0)
         self.attachment_strip = AttachmentStrip(self)
+        # 附件增删时同步刷新提示条状态
+        self.attachment_strip.changed.connect(self._refresh_vision_hint)
         input_layout.addWidget(self.attachment_strip, 0)
         input_layout.addWidget(self.input_edit, 1)
 
@@ -1069,6 +1078,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._dispatcher = self._build_dispatcher()
             self._renderer.add_status('已切换到 Profile: {}'.format(name))
             self._refresh_context_label()
+            self._refresh_vision_hint()
         except Exception as exc:  # pylint: disable=broad-except
             self._renderer.add_error('切换 Profile 失败: {}'.format(exc))
 
@@ -1081,6 +1091,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._refresh_profiles()
             self._renderer.add_status('设置已保存')
             self._refresh_context_label()
+            self._refresh_vision_hint()
 
     def _on_reload_clicked(self):
         """触发整个 maxagent 包热重载。
@@ -1694,6 +1705,45 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._renderer.add_status(
                 '图片添加失败（可能过大或读失败）',
             )
+
+    # ------------------------------------------------------------------ #
+    # 视觉降级提示条
+    # ------------------------------------------------------------------ #
+    def _refresh_vision_hint(self):
+        """根据当前 profile + 视觉开关 + 是否有附件，刷新提示条显隐。
+
+        触发点：附件增删（``AttachmentStrip.changed``）、profile 切换、
+        设置对话框保存后。提示条本身只决定文案/可见性，不阻断发送——
+        让 LLM 端拿到"[图片] N 张"占位提示，与现有降级行为保持一致。
+        """
+        try:
+            from ..attachments import model_supports_vision
+            cfg = self._config.config
+            has_atts = bool(self.attachment_strip.attachments())
+            vision_on = bool(getattr(cfg, 'vision_enabled', True))
+            whitelist = list(getattr(cfg, 'vision_model_whitelist', []))
+            prof = self._config.get_active_profile()
+            model_name = ''
+            if prof is not None:
+                model_name = getattr(prof, 'model', '') or ''
+            supported = model_supports_vision(model_name, whitelist)
+            self.vision_hint.set_state(
+                has_attachments=has_atts,
+                vision_enabled=vision_on,
+                vision_supported=supported,
+                model_name=model_name,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('refresh_vision_hint 异常: %s', exc)
+
+    def _on_vision_hint_switch_profile(self):
+        """提示条上"切换模型"按钮：把焦点交给顶部 profile 下拉。"""
+        try:
+            self.profile_combo.setFocus()
+            # 直接展开下拉，让用户一眼看到所有候选
+            self.profile_combo.showPopup()
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     def _on_stop(self):
         if self._worker is not None:
