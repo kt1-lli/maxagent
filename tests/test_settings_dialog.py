@@ -237,3 +237,162 @@ def test_worker_debug_metrics_initialized():
     assert hasattr(w, '_llm_call_started_ts')
     assert w._chunk_count == 0
     assert w._chunk_emit_count == 0
+
+
+# ---------------------------------------------------------------------- #
+# 一键恢复默认（OpenAI 兼容出厂模板）专项回归
+# ---------------------------------------------------------------------- #
+
+
+def test_reset_default_button_is_safe_against_enter(dialog):
+    """恢复默认按钮必须屏蔽回车 default 行为，防止表单回车误触。
+
+    背景：上一轮迭代修复过"回车误触新建 Profile"问题（关闭左侧
+    +/× 按钮的 autoDefault）。这个新加的按钮如果不同步处理，
+    用户在 base_url 框按回车又会被它截胡，导致 Profile 被静默
+    重置——比前一个 bug 更糟糕（直接丢字段）。
+    """
+    btn = dialog.reset_default_btn
+    assert btn.autoDefault() is False
+    assert btn.isDefault() is False
+    # 焦点策略禁用，确保 Tab 键也不会落到这个按钮上
+    from maxagent.qt_compat import QtCore
+    assert btn.focusPolicy() == QtCore.Qt.NoFocus
+
+
+def test_reset_default_template_matches_openai_compat(dialog):
+    """模板必须满足"OpenAI 兼容"语义的硬约束。"""
+    tpl = dialog._RESET_TEMPLATE
+    # Base URL 必须是 OpenAI 官方 v1 路径——这是与三方网关
+    # （DeepSeek / Moonshot / 智谱 / vllm 等）兼容性最高的选择
+    assert tpl['base_url'] == 'https://api.openai.com/v1'
+    # 名称 / 模型必须留空，强制用户重填
+    assert tpl['name'] == ''
+    assert tpl['model'] == ''
+    # 其他参数与 dataclass 默认值对齐，避免出现"代码默认 = X、
+    # UI 恢复默认 = Y"的双重事实
+    from maxagent.config import LLMProfile
+    default_prof = LLMProfile()
+    assert tpl['temperature'] == default_prof.temperature
+    assert tpl['max_tokens'] == default_prof.max_tokens
+    assert tpl['max_tool_loops'] == default_prof.max_tool_loops
+    assert tpl['max_history_tokens'] == default_prof.max_history_tokens
+    assert tpl['stream'] == default_prof.stream
+    assert tpl['supports_tools'] == default_prof.supports_tools
+
+
+def test_reset_default_writes_form_only(dialog, config_mgr, monkeypatch):
+    """恢复默认必须只改 UI，不写盘——名称为空时绝不能 upsert。"""
+    # 准备一个有名字的 profile，记录原始内容供对比
+    active = config_mgr.get_active_profile_name()
+    original_prof = config_mgr.get_profile(active)
+    original_name = original_prof.name
+
+    # 给某些字段填上自定义值，验证重置后 UI 上确实变了
+    dialog.name_edit.setText('custom-name')
+    dialog.base_url_edit.setText('https://my-custom-gw.example/v1')
+    dialog.model_edit.setText('custom-model-v9')
+    dialog.api_key_edit.setText('sk-keep-this-secret')
+    dialog.temperature_spin.setValue(1.5)
+
+    # mock 二次确认 → 用户点"是"
+    from maxagent.qt_compat import QtWidgets
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, 'question',
+        lambda *a, **kw: QtWidgets.QMessageBox.Yes,
+    )
+
+    dialog._reset_profile_to_default()
+
+    # UI 已切到默认模板
+    assert dialog.name_edit.text() == ''
+    assert dialog.base_url_edit.text() == 'https://api.openai.com/v1'
+    assert dialog.model_edit.text() == ''
+    assert dialog.temperature_spin.value() == 0.2
+    # API Key 显式保留——不能被清空
+    assert dialog.api_key_edit.text() == 'sk-keep-this-secret'
+    # 表单标记 dirty，提示用户需要再点应用
+    assert dialog._dirty is True
+
+    # 关键不变量：原 profile 仍在配置中，名称未变，未被静默落盘
+    persisted = config_mgr.get_profile(original_name)
+    assert persisted is not None
+    assert persisted.name == original_name
+    # 而且不应该新建一个名称为空的 profile
+    assert config_mgr.get_profile('') is None
+
+
+def test_reset_default_can_be_cancelled(dialog, config_mgr, monkeypatch):
+    """二次确认点取消时，UI 字段不应被改动。"""
+    dialog.name_edit.setText('keep-this-name')
+    dialog.base_url_edit.setText('https://user-gateway.example')
+    dialog.temperature_spin.setValue(1.7)
+    snapshot = (
+        dialog.name_edit.text(),
+        dialog.base_url_edit.text(),
+        dialog.temperature_spin.value(),
+    )
+
+    from maxagent.qt_compat import QtWidgets
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, 'question',
+        lambda *a, **kw: QtWidgets.QMessageBox.No,
+    )
+
+    dialog._reset_profile_to_default()
+
+    # 字段未动，dirty 未被翻
+    assert (
+        dialog.name_edit.text(),
+        dialog.base_url_edit.text(),
+        dialog.temperature_spin.value(),
+    ) == snapshot
+
+
+def test_reset_default_preserves_api_key_even_when_empty(
+        dialog, config_mgr, monkeypatch,
+):
+    """API Key 原本为空时，重置后仍是空——不应误注入任何"默认 Key"。
+
+    这条防御针对未来万一有人在 _RESET_TEMPLATE 里加了 'api_key' 字段
+    导致密钥被覆盖的情况。
+    """
+    dialog.api_key_edit.setText('')
+
+    from maxagent.qt_compat import QtWidgets
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, 'question',
+        lambda *a, **kw: QtWidgets.QMessageBox.Yes,
+    )
+
+    dialog._reset_profile_to_default()
+    assert dialog.api_key_edit.text() == ''
+    # 模板里也不应该有 api_key 字段——属于"密钥隔离"的硬约束
+    assert 'api_key' not in dialog._RESET_TEMPLATE
+
+
+def test_reset_default_focus_lands_on_name_edit(dialog, monkeypatch):
+    """重置后必须显式 setFocus 到名称输入框，让用户可以直接打字续填。
+
+    注：offscreen 平台不传播窗口焦点事件，``hasFocus`` /
+    ``QApplication.focusWidget`` 都不可靠；这里通过 monkeypatch
+    探针验证 ``setFocus`` 确实被调用过——足以保证生产环境下焦点
+    会正确落在 name_edit 上。
+    """
+    from maxagent.qt_compat import QtWidgets
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, 'question',
+        lambda *a, **kw: QtWidgets.QMessageBox.Yes,
+    )
+
+    calls = {'count': 0}
+    original_set_focus = dialog.name_edit.setFocus
+
+    def _spy_set_focus(*args, **kwargs):
+        calls['count'] += 1
+        return original_set_focus(*args, **kwargs)
+
+    monkeypatch.setattr(dialog.name_edit, 'setFocus', _spy_set_focus)
+    dialog._reset_profile_to_default()
+    assert calls['count'] >= 1, 'setFocus 未被调用，重置后焦点不会落到名称框'

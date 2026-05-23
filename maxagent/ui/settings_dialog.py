@@ -468,6 +468,33 @@ class SettingsDialog(QtWidgets.QDialog):
                 QtWidgets.QSizePolicy.Policy.Fixed,
             )
 
+        # 恢复默认：把当前 profile 表单字段重置为"OpenAI 兼容"出厂模板
+        # （名称 / 模型空，由用户重填；Base URL = https://api.openai.com/v1；
+        #  其他参数全部回 dataclass 默认值；API Key 保留不动避免误清密钥）。
+        # 关键点：
+        # 1) 不写盘——只改 UI，避免把"名称为空的 profile"硬塞进配置文件
+        #    破坏 profile 索引；用户填完后点"应用"才真正落盘。
+        # 2) autoDefault=False + focusPolicy=NoFocus，回车永远不会落到这个
+        #    按钮上（与之前修复 show_key_btn / 新建按钮误触的策略一致）。
+        # 3) 弹二次确认——单击代价不小，避免手滑。
+        self.reset_default_btn = QtWidgets.QPushButton(
+            _btn_label('🔄', '恢复默认'),
+        )
+        self.reset_default_btn.setToolTip(
+            '把当前 Profile 字段重置为 OpenAI 兼容出厂模板：\n'
+            '  • 名称 / 模型 → 留空，由你重填\n'
+            '  • Base URL → https://api.openai.com/v1\n'
+            '  • API Key → 保留不变（避免误清密钥）\n'
+            '  • 其他参数全部恢复默认\n'
+            '注：仅修改表单显示，需点击"应用"才会落盘。',
+        )
+        self.reset_default_btn.clicked.connect(self._reset_profile_to_default)
+        self.reset_default_btn.setAutoDefault(False)
+        self.reset_default_btn.setDefault(False)
+        self.reset_default_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        _shape_btn(self.reset_default_btn)
+        op_row.addWidget(self.reset_default_btn)
+
         self.test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试连接'))
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
@@ -2006,6 +2033,18 @@ class SettingsDialog(QtWidgets.QDialog):
             '用于排查"测试连接通过但实际对话失败"类问题。'
             '<br>失败时错误信息可<b>鼠标选中复制</b>（含 HTTP code / body / '
             'request-id / 关键 headers），方便排查"测试通过、对话失败"差异。</p>'
+
+            '<p><b>🔄 恢复默认</b>：把当前 Profile 字段一键重置为 OpenAI '
+            '兼容出厂模板。'
+            '<br>· 名称 / 模型 → 留空，请你重填'
+            '<br>· Base URL → <code>https://api.openai.com/v1</code>'
+            '（与 DeepSeek / Moonshot / 智谱 / 自建 vllm 等绝大多数 OpenAI '
+            '兼容网关开箱可用）'
+            '<br>· API Key → <b>保留不变</b>（避免误清密钥）'
+            '<br>· 其他参数（温度 / token / 超时 / 工具上限 / 流式 / Function '
+            'Calling / 自定义 Header）→ 全部回到默认值'
+            '<br>注：仅修改表单显示，需点击「应用」才会写盘——避免误把'
+            '名称为空的 Profile 强行落盘破坏配置。</p>'
         )
 
     # ================================================================== #
@@ -2482,6 +2521,105 @@ class SettingsDialog(QtWidgets.QDialog):
         # （避免 UI 不暴露的字段 kind / 计费 / tool_result_max_bytes / 等
         # 在每次「应用」时被 dataclass 默认值悄悄擦掉）
         self._current_profile = profile_name
+
+    # ================================================================== #
+    # 一键恢复默认（OpenAI 兼容出厂模板）
+    # ================================================================== #
+
+    # OpenAI 兼容出厂默认模板：
+    # - 名称 / 模型留空，强制由用户重填，避免出现两个 "Default" 这种重名
+    # - base_url = OpenAI 官方 v1 路径，与绝大多数三方网关
+    #   （DeepSeek / Moonshot / 智谱 / Together / 自建 vllm 等）开箱兼容
+    # - 其他参数照搬 LLMProfile dataclass 默认值，与代码内"出厂"语义对齐
+    # 注：API Key 不在模板里——重置时显式保留旧值，避免误清密钥
+    _RESET_TEMPLATE = {
+        'name': '',
+        'base_url': 'https://api.openai.com/v1',
+        'model': '',
+        'temperature': 0.2,
+        'max_tokens': 4096,
+        'timeout': 120,
+        'max_tool_loops': 40,
+        'max_history_tokens': 32000,
+        'stream': True,
+        'supports_tools': True,
+        'extra_headers': '',
+    }
+
+    def _reset_profile_to_default(self):
+        """一键恢复默认：把当前 profile 表单字段重置为 OpenAI 兼容模板。
+
+        交互链路：
+        1. 弹二次确认（API Key 保留 + 改动尚未落盘 → 用户可放心点）；
+        2. 按 _RESET_TEMPLATE 重写每个表单 widget；
+        3. 标记 dirty=True，焦点跳到名称输入框，提示用户重填名称/模型；
+        4. 不调用 self._config.upsert_profile / save——避免把名字为空的
+           profile 写进配置文件破坏索引。用户填完点"应用"才真正落盘。
+
+        日志：记录被重置的 profile 名 + 是否保留了非空 API Key，便于
+        日后排查"我刚才好像点了什么按钮 token 没了"这类幻觉问题。
+        """
+        ret = QtWidgets.QMessageBox.question(
+            self, '恢复默认',
+            '将当前 Profile 字段重置为 OpenAI 兼容出厂模板：\n\n'
+            '  • 名称 / 模型 → 留空，请你重填\n'
+            '  • Base URL → https://api.openai.com/v1\n'
+            '  • API Key → 保留不变\n'
+            '  • 其他参数 → 全部恢复默认\n\n'
+            '注：仅修改表单显示，未点击"应用"前不会落盘。',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            logger.info('恢复默认 → 用户在确认对话框点了取消')
+            return
+
+        tpl = self._RESET_TEMPLATE
+        # 名称 / 模型 / Base URL：直接清空或写模板字符串
+        self.name_edit.setText(tpl['name'])
+        self.base_url_edit.setText(tpl['base_url'])
+        self.model_edit.setText(tpl['model'])
+        # API Key 显式保留，不动 self.api_key_edit
+        had_key = bool((self.api_key_edit.text() or '').strip())
+
+        # 数值控件：用 setValue 而不是 setText，避免 QSpinBox 触发
+        # 类型转换异常
+        self.temperature_spin.setValue(float(tpl['temperature']))
+        self.max_tokens_spin.setValue(int(tpl['max_tokens']))
+        self.timeout_spin.setValue(int(tpl['timeout']))
+        self.max_loops_spin.setValue(int(tpl['max_tool_loops']))
+        self.max_history_tokens_spin.setValue(int(tpl['max_history_tokens']))
+
+        # 复选框
+        self.stream_chk.setChecked(bool(tpl['stream']))
+        self.tools_chk.setChecked(bool(tpl['supports_tools']))
+
+        # 自定义 Header 清空
+        self.headers_edit.setPlainText(tpl['extra_headers'])
+
+        # 状态栏提示——绿色让用户确认动作生效
+        self.test_label.setText(
+            '{} 已重置为 OpenAI 兼容默认模板，请填写名称 / 模型后点「应用」'.format(
+                _ee('✅'),
+            ),
+        )
+        self.test_label.setStyleSheet('color:#8fce8f;')
+
+        self._dirty = True
+        # 焦点跳到名称输入框，下一步直接打字即可
+        self.name_edit.setFocus()
+        self.name_edit.selectAll()
+
+        # 注：base_url_edit.setText 会自动触发 textChanged 信号驱动
+        # _refresh_base_url_hint，因此这里不需要再手动调用——
+        # OpenAI 官方 v1 路径属于"无问题"分支，hint 会被自动隐藏。
+
+        logger.info(
+            '恢复默认 → profile=%s api_key_kept=%s base_url=%s',
+            self._current_profile,
+            had_key,
+            tpl['base_url'],
+        )
 
     # ================================================================== #
     # 联网设置加载 / 写盘
