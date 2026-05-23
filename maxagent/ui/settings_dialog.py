@@ -363,7 +363,16 @@ class SettingsDialog(QtWidgets.QDialog):
         self.headers_edit.setPlaceholderText(
             '可选：每行一个 KEY=VALUE，例如\nX-Org-Id=foo\n',
         )
-        self.headers_edit.setMaximumHeight(80)
+        # 垂直方向允许跟随对话框尺寸扩张：
+        # - 最小高度 80（保留约 4 行可视区，避免太矮）
+        # - SizePolicy=Expanding 让它在 form 拿到 stretch 时
+        #   独享多余的纵向空间（其他行都是 Fixed/Preferred，
+        #   不会跟着拉伸，因此 API Key 等行不会再漂移）
+        self.headers_edit.setMinimumHeight(80)
+        self.headers_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding,
+        )
         right.addRow('自定义 Header:', self.headers_edit)
 
         # 测试连接结果
@@ -419,12 +428,12 @@ class SettingsDialog(QtWidgets.QDialog):
         op_row.addWidget(self.apply_btn)
 
         right_box = QtWidgets.QVBoxLayout()
-        # form 不再 stretch=1：让它只占 sizeHint 高度，
-        # 多余的纵向空间由 addStretch 吸收。
-        # 这样窗口 resize 时，每一行高度严格按 sizeHint 决定，
-        # 不会出现 API Key 行被分摊到多余高度而漂移的问题。
-        right_box.addLayout(right)
-        right_box.addStretch(1)
+        # form 重新拿回 stretch=1，把整列纵向空间交给它。
+        # 关键：QFormLayout 只会拉伸 SizePolicy=Expanding 的字段，
+        # 因此多余空间只被 headers_edit 吸收（用户希望随窗口
+        # 调整而变高），其他行（API Key / Base URL 等）SizePolicy
+        # 是 Fixed/Preferred，高度严格按 sizeHint，不会漂移。
+        right_box.addLayout(right, 1)
         right_box.addLayout(op_row)
 
         right_widget = QtWidgets.QWidget()

@@ -231,6 +231,66 @@ class TestModelTabLayout(unittest.TestCase):
             'to lock its size, got {}'.format(max_h),
         )
 
+    # ------------------------------------------------------------------ #
+    # 10) 自定义 Header 输入框允许垂直扩张：随窗口 resize 变高
+    # ------------------------------------------------------------------ #
+    def test_headers_edit_grows_with_window(self):
+        """窗口高度增大时，自定义 Header 输入框应跟着变高。"""
+        d = self.dialog
+        d.resize(900, 600)
+        QtWidgets.QApplication.processEvents()
+        h_small = d.headers_edit.height()
+        d.resize(900, 1100)
+        QtWidgets.QApplication.processEvents()
+        h_large = d.headers_edit.height()
+        # 期望：窗口加高 500px，Header 输入框至少能多吃 200px
+        self.assertGreater(
+            h_large - h_small, 200,
+            'headers_edit should grow with window height '
+            '(got {} -> {})'.format(h_small, h_large),
+        )
+
+    # ------------------------------------------------------------------ #
+    # 11) Headers 输入框 SizePolicy 必须是垂直 Expanding
+    # ------------------------------------------------------------------ #
+    def test_headers_edit_expanding_policy(self):
+        policy = self.dialog.headers_edit.sizePolicy()
+        self.assertEqual(
+            policy.verticalPolicy(), QtWidgets.QSizePolicy.Expanding,
+            'headers_edit must allow vertical expansion '
+            'so it grows with window resize',
+        )
+
+    # ------------------------------------------------------------------ #
+    # 12) Headers 不再被 maximumHeight=80 锁死
+    # ------------------------------------------------------------------ #
+    def test_headers_edit_no_artificial_height_cap(self):
+        """maximumHeight 不能小于 200，否则视为又被锁死了。"""
+        max_h = self.dialog.headers_edit.maximumHeight()
+        self.assertGreater(
+            max_h, 200,
+            'headers_edit maximumHeight should not be capped, '
+            'got {}'.format(max_h),
+        )
+
+    # ------------------------------------------------------------------ #
+    # 13) Headers 拉伸不会反过来影响 API Key 行高
+    # ------------------------------------------------------------------ #
+    def test_headers_grow_does_not_drift_api_key(self):
+        """Headers 跟着窗口拉伸时，API Key 行应保持稳定。"""
+        d = self.dialog
+        api_key_field = d.api_key_edit.parentWidget()
+        for w, h in [(900, 600), (900, 900), (900, 1200), (900, 1500)]:
+            d.resize(w, h)
+            QtWidgets.QApplication.processEvents()
+        # 最后一个尺寸下，API Key 行高仍接近 LineEdit 自身 sizeHint
+        expected = d.api_key_edit.sizeHint().height()
+        self.assertLessEqual(
+            abs(api_key_field.height() - expected), 6,
+            'api_key row height ({}) deviates from sizeHint ({}) '
+            'after headers grew'.format(api_key_field.height(), expected),
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
