@@ -39,10 +39,12 @@ import os
 from typing import Any
 from typing import Optional
 
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
 from .employee import AVATAR_DISPLAY_SIZE
 from .employee import DEFAULT_EMOJI
@@ -52,6 +54,9 @@ from .employee import SUGGESTED_EMOJIS
 from .employee import get_avatar_image_full_path
 from .employee import remove_avatar_image
 from .employee import save_avatar_image
+
+
+logger = get_logger(__name__)
 
 
 class EmployeeTab(QtWidgets.QWidget):
@@ -151,11 +156,21 @@ class EmployeeTab(QtWidgets.QWidget):
         self._image_preview.setText('（无）')
         img_row.addWidget(self._image_preview)
 
-        self._upload_btn = QtWidgets.QPushButton('选择图片')
+        self._upload_btn = QtWidgets.QPushButton(
+            _btn_label('📷', '选择图片'),
+        )
+        self._upload_btn.setToolTip(
+            '从本地选一张图片作为头像，会弹出裁剪对话框让你框出方形区域',
+        )
         self._upload_btn.clicked.connect(self._on_pick_image)
         img_row.addWidget(self._upload_btn)
 
-        self._clear_img_btn = QtWidgets.QPushButton('清除')
+        self._clear_img_btn = QtWidgets.QPushButton(
+            _btn_label('🗑', '清除'),
+        )
+        self._clear_img_btn.setToolTip(
+            '清除当前已上传的头像图片，回到 emoji 头像',
+        )
         self._clear_img_btn.clicked.connect(self._on_clear_image)
         img_row.addWidget(self._clear_img_btn)
 
@@ -329,14 +344,18 @@ class EmployeeTab(QtWidgets.QWidget):
             '图片文件 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*.*)',
         )
         if not path:
+            logger.debug('选择头像图片：用户取消文件对话框')
             return
+        logger.info('选择头像图片：path=%s', path)
         # 弹裁剪对话框
         from .avatar_crop_dialog import AvatarCropDialog
         dlg = AvatarCropDialog(path, parent=self)
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            logger.debug('裁剪对话框：用户取消')
             return
         cropped = dlg.cropped_pixmap()
         if cropped is None or cropped.isNull():
+            logger.warning('裁剪失败：cropped pixmap is null, src=%s', path)
             QtWidgets.QMessageBox.warning(
                 self, '裁剪失败',
                 '未能从图片中提取头像。',
@@ -354,6 +373,7 @@ class EmployeeTab(QtWidgets.QWidget):
             QtCore.Qt.SmoothTransformation,
         )
         if not scaled.save(tmp_path, 'PNG'):
+            logger.error('裁剪后保存临时文件失败：%s', tmp_path)
             QtWidgets.QMessageBox.warning(
                 self, '保存失败',
                 '无法写入临时文件：{}'.format(tmp_path),
@@ -364,6 +384,10 @@ class EmployeeTab(QtWidgets.QWidget):
         self._kind_image_radio.setChecked(True)
         self._refresh_image_preview()
         self._refresh_preview()
+        logger.info(
+            '头像图片暂存完成：tmp=%s scaled=%dx%d',
+            tmp_path, AVATAR_STORE_SIZE, AVATAR_STORE_SIZE,
+        )
 
     def _on_clear_image(self):
         self._pending_image_path = ''
@@ -372,6 +396,7 @@ class EmployeeTab(QtWidgets.QWidget):
         self._kind_emoji_radio.setChecked(True)
         self._refresh_image_preview()
         self._refresh_preview()
+        logger.info('清除头像图片，回退到 emoji 模式')
 
     def _on_reset(self):
         ret = QtWidgets.QMessageBox.question(

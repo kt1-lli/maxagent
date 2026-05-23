@@ -21,9 +21,15 @@ from __future__ import print_function
 
 from typing import Optional
 
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from .emoji_compat import apply_font_fallback as _apply_font_fallback
+from .emoji_compat import btn_label as _btn_label
+
+
+logger = get_logger(__name__)
 
 
 # 视觉选区边长（像素）：用户在这个框内对齐图片
@@ -62,6 +68,15 @@ class AvatarCropDialog(QtWidgets.QDialog):
 
         self._build_ui()
         self._fit_initial()
+        # PySide2 + Win 嵌入 Max 时，独立 QDialog 不会从父 widget
+        # 继承字体回退族；不显式 apply 一次的话，dialog 内的中文 /
+        # emoji（缩放滑块旁的提示标签等）在 PySide2 上可能渲染异常
+        # 或出现"豆腐块"。
+        _apply_font_fallback(self, recursive=True)
+        logger.info(
+            'AvatarCropDialog 打开：image=%s size=%dx%d',
+            image_path, self._original.width(), self._original.height(),
+        )
 
     # ------------------------------------------------------------------ #
     # UI 构建
@@ -100,10 +115,21 @@ class AvatarCropDialog(QtWidgets.QDialog):
         # 底部按钮
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
-        self._cancel_btn = QtWidgets.QPushButton('取消')
+        # 取消 / 确定：跟随全局 emoji 兜底机制（PySide2 自动降级为 BMP 字符）
+        # 同时显式关闭 autoDefault，防止编辑滑块时 Enter 误触发"取消"
+        self._cancel_btn = QtWidgets.QPushButton(
+            _btn_label('✖', '取消'),
+        )
+        self._cancel_btn.setToolTip('放弃裁剪，关闭对话框')
+        self._cancel_btn.setAutoDefault(False)
         self._cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._cancel_btn)
-        self._ok_btn = QtWidgets.QPushButton('确定')
+        self._ok_btn = QtWidgets.QPushButton(
+            _btn_label('✔', '确定'),
+        )
+        self._ok_btn.setToolTip('使用方框内的内容作为头像')
+        # 这里仍然保留 default=True：当用户操作完成想"确认"时，
+        # Enter 可以提交，是最常见的良性默认行为。
         self._ok_btn.setDefault(True)
         self._ok_btn.clicked.connect(self.accept)
         btn_row.addWidget(self._ok_btn)
