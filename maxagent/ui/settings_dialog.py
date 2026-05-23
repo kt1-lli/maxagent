@@ -683,6 +683,58 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         self.vision_enabled_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.vision_enabled_chk)
+
+        # ---- 视觉白名单（每行一个，子串匹配，不区分大小写） ---- #
+        self.vision_whitelist_edit = QtWidgets.QPlainTextEdit()
+        self.vision_whitelist_edit.setPlaceholderText(
+            '每行一个模型名子串，例如：\n'
+            'gpt-4o\nclaude-3\nqwen-vl\nyoutu-vita',
+        )
+        self.vision_whitelist_edit.setToolTip(
+            '当 profile 的"模型"字段包含此处任一子串（不区分大小写）'
+            '时，发送图片时会启用 image_url 多模态协议。\n'
+            '修改后立即生效，无需重启。'
+            '如需恢复内置默认列表，点击右侧"恢复默认"按钮。',
+        )
+        # 控制最小高度，避免占据整页；同时允许向下扩张
+        self.vision_whitelist_edit.setMinimumHeight(96)
+        self.vision_whitelist_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Preferred,
+        )
+        # 文本变化 -> 标记 dirty -> 保存（避免每键击都写盘，使用
+        # textChanged 触发 + 保存合并到 _on_app_setting_changed 链路）
+        self.vision_whitelist_edit.textChanged.connect(
+            self._on_vision_whitelist_changed,
+        )
+
+        # 右侧按钮：恢复默认
+        wl_row = QtWidgets.QWidget()
+        wl_h = QtWidgets.QHBoxLayout(wl_row)
+        wl_h.setContentsMargins(0, 0, 0, 0)
+        wl_h.setSpacing(6)
+        wl_h.addWidget(self.vision_whitelist_edit, 1)
+        self.vision_whitelist_reset_btn = QtWidgets.QPushButton(
+            _btn_label('🔄', '恢复默认'),
+        )
+        self.vision_whitelist_reset_btn.setToolTip(
+            '清空当前编辑区，恢复为内置的默认视觉模型白名单。\n'
+            '默认列表会随版本升级自动扩充新机型支持。',
+        )
+        self.vision_whitelist_reset_btn.setAutoDefault(False)
+        self.vision_whitelist_reset_btn.setDefault(False)
+        # 给一个稳妥的最小宽度，避免按钮文字被截断
+        self.vision_whitelist_reset_btn.setMinimumWidth(96)
+        self.vision_whitelist_reset_btn.clicked.connect(
+            self._on_vision_whitelist_reset,
+        )
+        # 按钮跟编辑框顶部对齐，视觉更整齐
+        v_btn_box = QtWidgets.QVBoxLayout()
+        v_btn_box.setContentsMargins(0, 0, 0, 0)
+        v_btn_box.addWidget(self.vision_whitelist_reset_btn)
+        v_btn_box.addStretch(1)
+        wl_h.addLayout(v_btn_box)
+        form.addRow('视觉模型白名单:', wl_row)
         return page
 
     # ================================================================== #
@@ -1746,16 +1798,36 @@ class SettingsDialog(QtWidgets.QDialog):
             '<hr>'
 
             # ---- 视觉 / 图片 ----
-            '<h4>图片与视觉</h4>'
-            '<p>支持 4 种插入方式：📎 工具栏选图 / ✂️ 截图 / Ctrl+V 粘贴 / '
-            '直接拖拽到输入框。</p>'
-            '<p>当前 profile 模型属于<b>视觉白名单</b>（如 GPT-4o / '
-            'Claude-3+ / Gemini / DeepSeek-VL 等）时图片会原图发送；'
-            '<span class="warn">不支持视觉时</span>会自动降级为'
-            '<code>[图片] N 张</code> 的文本提示，并在输入框上方显示'
-            '黄色提示条，可一键切换 Profile。</p>'
-            '<p><b>气泡里的图片</b>：右键可<b>复制图片 / 复制路径 / '
-            '另存为 / 查看大图</b>，方便粘贴到 Word / 微信 / PS。</p>'
+            '<h4>🖼️ 图片与视觉</h4>'
+
+            '<p><b>① 插入图片</b>（4 种方式任选）：'
+            '<br>· 📎 工具栏「选图」按钮 → 文件对话框'
+            '<br>· ✂️ 截图工具 → 自动入栏'
+            '<br>· <code>Ctrl+V</code> 直接粘贴剪贴板图片'
+            '<br>· 直接拖拽图片文件 / 网页缩略图到输入框</p>'
+
+            '<p><b>② 多模态识别 = 三道开关同时打开</b>：'
+            '<br>· <b>应用设置 → 启用图片视觉</b>（全局总开关）'
+            '<br>· <b>当前 Profile 模型</b>命中下方"视觉模型白名单"任一子串'
+            '<br>· <b>模型本身确实支持</b> OpenAI <code>image_url</code> 协议'
+            '<br>三者全开 → 图片以原图发送给 LLM；任一不满足 → 自动降级为'
+            '<code>[图片] N 张</code> 文本占位，输入框上方显示黄色提示条，'
+            '可一键切换到支持视觉的 Profile。</p>'
+
+            '<p><b>③ 视觉模型白名单</b>（应用设置页可编辑）：'
+            '<br>· 每行一个<b>子串</b>，子串匹配且不区分大小写'
+            '<br>· 内置覆盖 <code>gpt-4o</code> / <code>claude-3+</code>'
+            ' / <code>gemini-1.5+</code> / <code>qwen-vl</code> /'
+            ' <code>glm-4v</code> / <code>internvl</code> /'
+            ' <code>youtu-vita</code> 等主流模型'
+            '<br>· 新机型上线？直接添加一行子串即可识别（如新品牌的'
+            ' <code>llava-next</code>）'
+            '<br>· 修改即时生效，无需重启；一键「🔄 恢复默认」可回到出厂值</p>'
+
+            '<p><b>④ 气泡里的图片操作</b>：'
+            '<br>· 用户气泡：右键 → 复制图片 / 复制路径 / 另存为 / 查看大图'
+            '<br>· 助手气泡：图片可点击放大查看'
+            '<br>· 方便粘贴到 Word / 微信 / PS 工作流</p>'
 
             '<hr>'
 
@@ -1949,6 +2021,14 @@ class SettingsDialog(QtWidgets.QDialog):
         # ---- 联网设置 ---- #
         self._load_web_settings()
 
+        # ---- 视觉白名单（每行一个） ---- #
+        wl_list = list(getattr(cfg, 'vision_model_whitelist', []) or [])
+        text = '\n'.join(wl_list)
+        # 阻止 textChanged 触发"用户改设置"路径
+        self.vision_whitelist_edit.blockSignals(True)
+        self.vision_whitelist_edit.setPlainText(text)
+        self.vision_whitelist_edit.blockSignals(False)
+
     def _on_app_setting_changed(self, _checked):
         cfg = self._config.config
         cfg.auto_show_on_startup = bool(self.auto_show_chk.isChecked())
@@ -1962,6 +2042,74 @@ class SettingsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, '保存失败', '应用设置写盘失败: {}'.format(exc),
             )
+
+    # ------------------------------------------------------------------ #
+    # 视觉白名单：编辑 / 重置
+    # ------------------------------------------------------------------ #
+    def _parse_vision_whitelist(self, text):
+        # type: (str) -> list
+        """把多行文本解析成规范化的白名单列表。
+
+        - 按行拆分；每行去首尾空白
+        - 跳过空行 / 以 ``#`` 开头的注释行
+        - 全部转为小写（``model_supports_vision`` 是按小写子串匹配的）
+        - 去重并保留输入顺序
+        """
+        seen = set()
+        items = []
+        for raw in (text or '').splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+            line_l = line.lower()
+            if line_l in seen:
+                continue
+            seen.add(line_l)
+            items.append(line_l)
+        return items
+
+    def _on_vision_whitelist_changed(self):
+        """编辑器内容变化时把白名单写回 cfg 并落盘 + 记日志。"""
+        cfg = self._config.config
+        text = self.vision_whitelist_edit.toPlainText()
+        new_list = self._parse_vision_whitelist(text)
+        # 与旧值相同时不做无意义写盘
+        old_list = list(getattr(cfg, 'vision_model_whitelist', []) or [])
+        if new_list == old_list:
+            return
+        cfg.vision_model_whitelist = new_list
+        try:
+            self._config.save()
+            logger.info(
+                '视觉白名单已更新：%d 项 -> %d 项（%s）',
+                len(old_list), len(new_list),
+                ', '.join(new_list[:5])
+                + ('...' if len(new_list) > 5 else ''),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('视觉白名单写盘失败：%s', exc)
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '视觉白名单写盘失败: {}'.format(exc),
+            )
+
+    def _on_vision_whitelist_reset(self):
+        """恢复为内置默认白名单（取自 AppConfig 的 dataclass 默认值）。"""
+        from ..config import AppConfig as _AppConfig
+        defaults = list(_AppConfig().vision_model_whitelist)
+        # 用户确认避免误操作
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            '恢复默认视觉白名单',
+            '将清空当前编辑区，恢复为内置默认白名单（共 {n} 项）。\n'
+            '是否继续？'.format(n=len(defaults)),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+        # 写入编辑框会自动触发 textChanged -> _on_vision_whitelist_changed
+        self.vision_whitelist_edit.setPlainText('\n'.join(defaults))
+        logger.info('视觉白名单已恢复为内置默认（共 %d 项）', len(defaults))
 
     def _on_log_state_radio_toggled(self, checked):
         # type: (bool) -> None
