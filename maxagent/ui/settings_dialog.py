@@ -24,6 +24,7 @@ UI 布局（v2 改造为左侧导航 + 右侧 Stacked Page）::
 from __future__ import absolute_import
 from __future__ import print_function
 
+import os
 import time
 from typing import Any
 from typing import Optional
@@ -82,13 +83,16 @@ class SettingsDialog(QtWidgets.QDialog):
     # emoji 走 _ee() 兜底：PySide2 + Win 上 emoji 与中文混排可能导致整行
     # 字体异常，因此提供 BMP 单字符兜底（参见 emoji_compat.EMOJI_FALLBACK_TABLE），
     # 确保按钮文字可读。
+    #
+    # 注：原"我的规则"和"工具与技能"两项已合并为单个"我的资源"主 Tab，
+    # 内部用横向子 Tab 切换 规则 / 技能 / 工具 / 导入导出 四个视图，
+    # 既精简了左侧导航，又给每类资源都提供了"启用/禁用"开关。
     _NAV_ITEMS = [
         (_ee('🤖') + '  模型', 'model'),
         (_ee('🌐') + '  联网', 'network'),
         (_ee('🎨') + '  应用', 'app'),
         (_ee('👤') + '  助手形象', 'employee'),
-        (_ee('📋') + '  我的规则', 'rules'),
-        (_ee('📦') + '  工具与技能', 'pack'),
+        (_ee('📦') + '  我的资源', 'resources'),
         (_ee('📜') + '  日志', 'log'),
         (_ee('🔌') + '  IDE 接口', 'bridge'),
         (_ee('❓') + '  帮助', 'help'),
@@ -138,8 +142,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_network())
         self.stack.addWidget(self._build_page_app())
         self.stack.addWidget(self._build_page_employee())
-        self.stack.addWidget(self._build_page_rules())
-        self.stack.addWidget(self._build_page_pack())
+        self.stack.addWidget(self._build_page_resources())
         self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_bridge())
         self.stack.addWidget(self._build_page_help())
@@ -1731,33 +1734,49 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<hr>'
 
-            # ---- 工具与技能：导入导出 ----
-            '<h4>工具与技能（导入导出）📦</h4>'
-            '<p>把你积累的<b>自定义工具 / 技能 / 规则</b>打包为单个 '
-            '<code>.maxagent-pack</code> 文件，方便：</p>'
+            # ---- 我的资源：规则 / 技能 / 工具 / 导入导出 ----
+            '<h4>我的资源 📦</h4>'
+            '<p>这一个 Tab 集中管理你为 AI 准备的 <b>规则 / 技能 / 工具</b>，'
+            '内部用横向子 Tab 切换 4 个视图：</p>'
             '<table>'
-            '<tr><th>场景</th><th>使用方式</th></tr>'
-            '<tr><td>跨电脑同步</td>'
-            '<td>家里导出 → U 盘 / 网盘 → 公司导入</td></tr>'
-            '<tr><td>团队分享</td>'
-            '<td>把成熟工作流打包给同事，对方可选择要采纳哪些条目</td></tr>'
-            '<tr><td>项目存档</td>'
-            '<td>每个商业项目独立一个 pack，避免环境互相污染</td></tr>'
+            '<tr><th>子 Tab</th><th>用途</th></tr>'
+            '<tr><td><b>规则</b></td>'
+            '<td>从对话中沉淀的 LLM 行为规则；启停 / 删除 / 跨设备分享</td></tr>'
+            '<tr><td><b>技能</b></td>'
+            '<td>触发关键词命中时注入的流程模板；启停 / 查看 / 单项导出</td></tr>'
+            '<tr><td><b>工具</b></td>'
+            '<td>对话中"学习"出来的可执行 Python 工具；启停 / 查看源码 / 单项导出</td></tr>'
+            '<tr><td><b>导入/导出</b></td>'
+            '<td>三类一并打包成 <code>.maxagent-pack</code> 跨设备同步 / 团队分享</td></tr>'
             '</table>'
+            '<p><b>启用 / 禁用语义（关键）</b>：勾选项即"启用"，'
+            '取消勾选即"禁用"——'
+            '<b>禁用后 LLM 完全感知不到该资源</b>：'
+            '工具不会出现在 schema、技能不会出现在简介或被关键词触发、'
+            '规则不会进入 system prompt。但磁盘文件保留，'
+            '随时可重新启用。禁用名单存于 '
+            '<code>{config_dir}/disabled.json</code>，'
+            '删除该文件即可一键恢复全部。</p>'
 
-            '<p><b>使用步骤</b>：</p>'
-            '<p>① 打开「工具与技能」Tab，三栏勾选要导出的内容'
-            '<br>② 在底部填写包名 / 作者 / 描述（可选）'
-            '<br>③ 点「<b>导出选中…</b>」选保存路径'
+            '<p><b>跨设备同步 / 团队分享</b>：</p>'
+            '<p>① 打开「我的资源 → 导入/导出」子 Tab'
+            '<br>② 三栏勾选要导出的项目（可只选某一类，也可三类一起）'
+            '<br>③ 填写包名 / 作者 / 描述（可选） → 点「<b>导出选中…</b>」'
             '<br>④ 对方点「<b>导入资源包…</b>」→ 在预览对话框勾选要采纳的项目'
             '<br>⑤ 同名冲突时勾选「覆盖」可强制更新，不勾默认跳过</p>'
+
+            '<p><b>单项导出</b>：在「技能」或「工具」子 Tab 选中某一项后点'
+            '「导出选中」，可只导出该项，无需切换到导入导出页。'
+            '便于同事间临时分享单个工具。</p>'
 
             '<p class="warn"><b>⚠ 安全提示</b>：</p>'
             '<p>· 自定义工具是<b>可执行 Python 代码</b>，会在 Max 内运行——'
             '只导入<b>信任来源</b>的资源包；'
             '<br>· 包<b>不</b>含 API Key / Profile 配置 / 会话历史，避免敏感信息泄露；'
-            '<br>· 导入对话框对工具会强制二次确认，并按 <code>new / existing / invalid</code> '
-            '颜色标注每条状态。</p>'
+            '<br>· 包<b>不</b>含启用/禁用状态——导入到对方机器后默认全部启用，'
+            '让对方自行决定要不要某项；'
+            '<br>· 导入对话框对工具会强制二次确认，并按 '
+            '<code>new / existing / invalid</code> 颜色标注每条状态。</p>'
 
             '<hr>'
 
@@ -2911,3 +2930,554 @@ class SettingsDialog(QtWidgets.QDialog):
             if key == 'help':
                 self.nav.setCurrentRow(i)
                 return
+
+    # ================================================================== #
+    # Page: 我的资源（统一入口 = 规则 / 技能 / 工具 / 导入导出）
+    # ================================================================== #
+    def _build_page_resources(self):
+        # type: () -> QtWidgets.QWidget
+        """新的「我的资源」主 Tab。
+
+        把原来分散在两个左侧 Tab 的"我的规则"+"工具与技能"合并，
+        内部用横向 QTabBar 切换 4 个视图：
+
+        - 规则：复用 ``_build_page_rules`` 已有列表/启停/导入导出
+        - 技能：新建管理界面（含禁用复选框、详情、删除、单项导出）
+        - 工具：新建管理界面（同上）
+        - 导入/导出：复用 ``_build_page_pack`` 的批量打包能力
+
+        每个子页都明确：
+        1. 列表展示（保持单一职责，不在标题前堆砌大标题）；
+        2. 单项 enabled 开关——禁用后 LLM 完全感知不到该资源；
+        3. 单项导出（点一下导出 .maxagent-pack 单文件）。
+        """
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # 顶部统一标题
+        title = QtWidgets.QLabel(_ee('📦') + '  我的资源')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        intro = QtWidgets.QLabel(
+            '集中管理你为 AI 准备的 <b>规则</b> / <b>技能</b> / <b>工具</b>。'
+            '每个项目都有<b>启用</b>开关——禁用后 LLM 完全感知不到该资源；'
+            '在 <b>导入/导出</b> 子页可以批量打包跨设备同步。'
+        )
+        intro.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        intro.setWordWrap(True)
+        intro.setStyleSheet(
+            'QLabel { color:#aaa; padding:4px 0; }',
+        )
+        layout.addWidget(intro)
+
+        # 横向子 Tab：顺序 = 规则 / 技能 / 工具 / 导入导出
+        self.resources_tabs = QtWidgets.QTabWidget()
+        self.resources_tabs.setObjectName('ResourcesTabs')
+        self.resources_tabs.setTabPosition(QtWidgets.QTabWidget.North)
+        self.resources_tabs.setDocumentMode(True)
+        # 子 Tab 切换日志：方便排查"用户改了某 Tab 后哪个动作未生效"
+        self.resources_tabs.currentChanged.connect(
+            self._on_resources_tab_changed,
+        )
+
+        self.resources_tabs.addTab(
+            self._build_page_rules(),
+            _ee('📋') + ' 规则',
+        )
+        self.resources_tabs.addTab(
+            self._build_subtab_skills(),
+            _ee('🎓') + ' 技能',
+        )
+        self.resources_tabs.addTab(
+            self._build_subtab_tools(),
+            _ee('🧰') + ' 工具',
+        )
+        self.resources_tabs.addTab(
+            self._build_page_pack(),
+            _ee('📤') + ' 导入/导出',
+        )
+
+        layout.addWidget(self.resources_tabs, 1)
+        return page
+
+    def _on_resources_tab_changed(self, idx):
+        # type: (int) -> None
+        try:
+            label = self.resources_tabs.tabText(idx)
+        except Exception:  # pylint: disable=broad-except
+            label = '?'
+        logger.info('我的资源 → 切换子 Tab: idx=%s text=%s', idx, label)
+
+    # ------------------------------------------------------------------ #
+    # 子 Tab：技能管理
+    # ------------------------------------------------------------------ #
+    def _build_subtab_skills(self):
+        # type: () -> QtWidgets.QWidget
+        """技能管理子页：列表 + 启用复选框 + 详情 / 删除 / 单项导出。
+
+        与「导入/导出」子页的差异：本子页面向"日常启停 + 单项分享"，
+        不要求批量；导入导出走那个子页的统一入口。
+        """
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        hint = QtWidgets.QLabel(
+            '勾选 <b>启用</b> 才会被注入到 system prompt；取消勾选后 '
+            'LLM 完全看不到该技能（不出现在简介，触发词也不会命中）。'
+        )
+        hint.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color:#aaa; padding:2px 0;')
+        layout.addWidget(hint)
+
+        self._skills_list = QtWidgets.QListWidget()
+        self._skills_list.setStyleSheet(
+            'QListWidget { background:#252525; color:#d4d4d4;'
+            ' border:1px solid #444; }'
+            'QListWidget::item { padding:6px;'
+            ' border-bottom:1px solid #333; }'
+            'QListWidget::item:selected { background:#3a5d8f; }'
+        )
+        self._skills_list.itemChanged.connect(self._on_skill_check_changed)
+        layout.addWidget(self._skills_list, 1)
+
+        # 操作按钮
+        btn_row = QtWidgets.QHBoxLayout()
+        view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看详情'))
+        view_btn.clicked.connect(self._on_skill_view_detail)
+        btn_row.addWidget(view_btn)
+        del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        del_btn.setStyleSheet('color:#ff8888;')
+        del_btn.clicked.connect(self._on_skill_delete)
+        btn_row.addWidget(del_btn)
+        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
+        export_btn.setToolTip(
+            '把选中的技能单独导出为 .maxagent-pack 文件，便于分享给同事',
+        )
+        export_btn.clicked.connect(self._on_skill_export_one)
+        btn_row.addWidget(export_btn)
+        btn_row.addStretch(1)
+        refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        refresh_btn.clicked.connect(self._refresh_skills_list)
+        btn_row.addWidget(refresh_btn)
+        layout.addLayout(btn_row)
+
+        # 初次加载
+        self._refresh_skills_list()
+        return page
+
+    def _refresh_skills_list(self):
+        """重新扫盘并刷新技能列表（含禁用项）。"""
+        try:
+            from .. import skills as skills_mod
+            from .. import disabled_registry as dr
+            mgr = skills_mod.SkillManager()
+            all_skills = mgr.list_all_skills()
+            disabled = dr.get_disabled_skills_set()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('刷新技能列表失败: %s', exc)
+            all_skills = []
+            disabled = set()
+
+        self._skills_list.blockSignals(True)
+        try:
+            self._skills_list.clear()
+            for sk in all_skills:
+                desc = (sk.description or '').strip().replace('\n', ' ')
+                if len(desc) > 60:
+                    desc = desc[:60] + '…'
+                label = sk.name + (
+                    '  —  ' + desc if desc else ''
+                )
+                item = QtWidgets.QListWidgetItem(label)
+                item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                if sk.name in disabled:
+                    item.setCheckState(QtCore.Qt.Unchecked)
+                    item.setForeground(QtGui.QBrush(QtGui.QColor('#888')))
+                else:
+                    item.setCheckState(QtCore.Qt.Checked)
+                    item.setForeground(
+                        QtGui.QBrush(QtGui.QColor('#a8e6a8')),
+                    )
+                item.setData(QtCore.Qt.UserRole, sk.name)
+                self._skills_list.addItem(item)
+            if not all_skills:
+                placeholder = QtWidgets.QListWidgetItem('（暂无技能）')
+                placeholder.setFlags(QtCore.Qt.NoItemFlags)
+                self._skills_list.addItem(placeholder)
+        finally:
+            self._skills_list.blockSignals(False)
+        logger.debug(
+            '技能列表已刷新: total=%d disabled=%d',
+            len(all_skills), len(disabled),
+        )
+
+    def _on_skill_check_changed(self, item):
+        # type: (QtWidgets.QListWidgetItem) -> None
+        """复选框切换 → 写入禁用名单。"""
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        try:
+            from .. import disabled_registry as dr
+            disabled = item.checkState() != QtCore.Qt.Checked
+            dr.set_skill_disabled(name, disabled)
+            color = '#888' if disabled else '#a8e6a8'
+            item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+            logger.info(
+                '技能启用状态切换: %s → %s', name,
+                'disabled' if disabled else 'enabled',
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('切换技能启用状态失败: %s', exc)
+            QtWidgets.QMessageBox.warning(
+                self, '操作失败', '切换启用状态时出错：{}'.format(exc),
+            )
+
+    def _on_skill_view_detail(self):
+        item = self._skills_list.currentItem()
+        if not item:
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个技能。',
+            )
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        try:
+            from .. import skills as skills_mod
+            sk = skills_mod.SkillManager().get(name)
+            # get() 走 _scan，被禁用项会拿不到——回退到 list_all
+            if sk is None:
+                for s in skills_mod.SkillManager().list_all_skills():
+                    if s.name == name:
+                        sk = s
+                        break
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                self, '加载失败', '读取技能失败：{}'.format(exc),
+            )
+            return
+        if sk is None:
+            QtWidgets.QMessageBox.warning(
+                self, '不存在', '该技能可能已被删除，请刷新列表。',
+            )
+            return
+        text = '名称：{}\n触发词：{}\n描述：{}\n\n--- 流程 ---\n{}'.format(
+            sk.name,
+            ' / '.join(sk.trigger_keywords) or '（无）',
+            sk.description or '（无）',
+            sk.instructions,
+        )
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('技能详情：{}'.format(sk.name))
+        dlg.resize(680, 480)
+        v = QtWidgets.QVBoxLayout(dlg)
+        edit = QtWidgets.QPlainTextEdit()
+        edit.setReadOnly(True)
+        edit.setPlainText(text)
+        v.addWidget(edit, 1)
+        close = QtWidgets.QPushButton('关闭')
+        close.clicked.connect(dlg.accept)
+        v.addWidget(close, 0, QtCore.Qt.AlignRight)
+        dlg.exec_()
+
+    def _on_skill_delete(self):
+        item = self._skills_list.currentItem()
+        if not item:
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '确认删除',
+            '确认删除技能 "{}" 吗？此操作不可撤销。'.format(name),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            from .. import skills as skills_mod
+            from .. import disabled_registry as dr
+            skills_mod.SkillManager().delete(name)
+            # 同步从禁用名单清掉，避免遗留垃圾条目
+            dr.set_skill_disabled(name, False)
+            logger.info('删除技能: %s', name)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                self, '删除失败', str(exc),
+            )
+            return
+        self._refresh_skills_list()
+
+    def _on_skill_export_one(self):
+        item = self._skills_list.currentItem()
+        if not item:
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个技能。',
+            )
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        from .. import pack as pack_mod
+        suggested = name + pack_mod.PACK_SUFFIX
+        path, _f = QtWidgets.QFileDialog.getSaveFileName(
+            self, '导出技能',
+            suggested,
+            'MaxAgent Pack (*{})'.format(pack_mod.PACK_SUFFIX),
+        )
+        if not path:
+            return
+        if not path.endswith(pack_mod.PACK_SUFFIX):
+            path += pack_mod.PACK_SUFFIX
+        try:
+            res = pack_mod.export_pack(
+                output_path=path,
+                tool_names=[],
+                skill_names=[name],
+                rule_ids=[],
+                pack_name=name,
+            )
+            logger.info(
+                '单项导出技能 %s → %s (size=%dB)',
+                name, res['path'], res['size'],
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('单项导出技能失败')
+            QtWidgets.QMessageBox.critical(self, '导出失败', str(exc))
+            return
+        QtWidgets.QMessageBox.information(
+            self, '导出成功', '已写入: {}'.format(res['path']),
+        )
+
+    # ------------------------------------------------------------------ #
+    # 子 Tab：工具管理
+    # ------------------------------------------------------------------ #
+    def _build_subtab_tools(self):
+        # type: () -> QtWidgets.QWidget
+        """工具管理子页：列表 + 启用复选框 + 详情 / 删除 / 单项导出。
+
+        本子页只管"用户学习沉淀的工具"（user_tools 目录下的 .py），
+        内置工具不展示也无法禁用。这与"启用/禁用 = 用户偏好"语义一致。
+        """
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        hint = QtWidgets.QLabel(
+            '勾选 <b>启用</b> 才会被注册到 LLM 的可调用工具表；'
+            '取消后 LLM 完全看不到该工具（schema 中也不会出现）。'
+            '<br><span style="color:#888;">注：内置工具不在此处展示——只管理你通过对话沉淀的自定义工具。</span>'
+        )
+        hint.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        hint.setWordWrap(True)
+        hint.setStyleSheet('color:#aaa; padding:2px 0;')
+        layout.addWidget(hint)
+
+        self._tools_list = QtWidgets.QListWidget()
+        self._tools_list.setStyleSheet(
+            'QListWidget { background:#252525; color:#d4d4d4;'
+            ' border:1px solid #444; }'
+            'QListWidget::item { padding:6px;'
+            ' border-bottom:1px solid #333; }'
+            'QListWidget::item:selected { background:#3a5d8f; }'
+        )
+        self._tools_list.itemChanged.connect(self._on_tool_check_changed)
+        layout.addWidget(self._tools_list, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看源码'))
+        view_btn.clicked.connect(self._on_tool_view_source)
+        btn_row.addWidget(view_btn)
+        del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        del_btn.setStyleSheet('color:#ff8888;')
+        del_btn.clicked.connect(self._on_tool_delete)
+        btn_row.addWidget(del_btn)
+        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
+        export_btn.setToolTip(
+            '把选中的工具单独导出为 .maxagent-pack 文件，便于分享给同事',
+        )
+        export_btn.clicked.connect(self._on_tool_export_one)
+        btn_row.addWidget(export_btn)
+        btn_row.addStretch(1)
+        refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        refresh_btn.clicked.connect(self._refresh_tools_list)
+        btn_row.addWidget(refresh_btn)
+        layout.addLayout(btn_row)
+
+        self._refresh_tools_list()
+        return page
+
+    def _refresh_tools_list(self):
+        try:
+            from .. import user_tools_loader as utl
+            from .. import disabled_registry as dr
+            tools = utl.list_user_tools(include_meta=True)
+            disabled = dr.get_disabled_tools_set()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('刷新工具列表失败: %s', exc)
+            tools = []
+            disabled = set()
+
+        self._tools_list.blockSignals(True)
+        try:
+            self._tools_list.clear()
+            for entry in tools:
+                name = entry['name']
+                meta = entry.get('meta') or {}
+                desc = (meta.get('description') or '').strip()
+                if len(desc) > 60:
+                    desc = desc[:60] + '…'
+                label = name + ('  —  ' + desc if desc else '')
+                item = QtWidgets.QListWidgetItem(label)
+                item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                if name in disabled:
+                    item.setCheckState(QtCore.Qt.Unchecked)
+                    item.setForeground(QtGui.QBrush(QtGui.QColor('#888')))
+                else:
+                    item.setCheckState(QtCore.Qt.Checked)
+                    item.setForeground(
+                        QtGui.QBrush(QtGui.QColor('#a8e6a8')),
+                    )
+                item.setData(QtCore.Qt.UserRole, name)
+                self._tools_list.addItem(item)
+            if not tools:
+                placeholder = QtWidgets.QListWidgetItem('（暂无自定义工具）')
+                placeholder.setFlags(QtCore.Qt.NoItemFlags)
+                self._tools_list.addItem(placeholder)
+        finally:
+            self._tools_list.blockSignals(False)
+        logger.debug(
+            '工具列表已刷新: total=%d disabled=%d',
+            len(tools), len(disabled),
+        )
+
+    def _on_tool_check_changed(self, item):
+        # type: (QtWidgets.QListWidgetItem) -> None
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        try:
+            from .. import disabled_registry as dr
+            disabled = item.checkState() != QtCore.Qt.Checked
+            dr.set_tool_disabled(name, disabled)
+            color = '#888' if disabled else '#a8e6a8'
+            item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+            logger.info(
+                '工具启用状态切换: %s → %s', name,
+                'disabled' if disabled else 'enabled',
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('切换工具启用状态失败: %s', exc)
+            QtWidgets.QMessageBox.warning(
+                self, '操作失败', '切换启用状态时出错：{}'.format(exc),
+            )
+
+    def _on_tool_view_source(self):
+        item = self._tools_list.currentItem()
+        if not item:
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个工具。',
+            )
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        try:
+            from .. import user_tools_loader as utl
+            base = utl.get_user_tools_dir()
+            py_path = os.path.join(base, name + '.py')
+            if not os.path.isfile(py_path):
+                raise FileNotFoundError(py_path)
+            with open(py_path, 'r', encoding='utf-8') as fh:
+                code = fh.read()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                self, '读取失败', '读取工具源码失败：{}'.format(exc),
+            )
+            return
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('工具源码：{}'.format(name))
+        dlg.resize(720, 520)
+        v = QtWidgets.QVBoxLayout(dlg)
+        edit = QtWidgets.QPlainTextEdit()
+        edit.setReadOnly(True)
+        font = QtGui.QFont('Consolas, Menlo, monospace')
+        font.setStyleHint(QtGui.QFont.Monospace)
+        edit.setFont(font)
+        edit.setPlainText(code)
+        v.addWidget(edit, 1)
+        close = QtWidgets.QPushButton('关闭')
+        close.clicked.connect(dlg.accept)
+        v.addWidget(close, 0, QtCore.Qt.AlignRight)
+        dlg.exec_()
+
+    def _on_tool_delete(self):
+        item = self._tools_list.currentItem()
+        if not item:
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        ret = QtWidgets.QMessageBox.question(
+            self, '确认删除',
+            '确认删除工具 "{}" 吗？此操作不可撤销。'.format(name),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            from .. import user_tools_loader as utl
+            from .. import disabled_registry as dr
+            utl.delete_user_tool(name)
+            dr.set_tool_disabled(name, False)
+            logger.info('删除自定义工具: %s', name)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(self, '删除失败', str(exc))
+            return
+        self._refresh_tools_list()
+
+    def _on_tool_export_one(self):
+        item = self._tools_list.currentItem()
+        if not item:
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个工具。',
+            )
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        from .. import pack as pack_mod
+        suggested = name + pack_mod.PACK_SUFFIX
+        path, _f = QtWidgets.QFileDialog.getSaveFileName(
+            self, '导出工具', suggested,
+            'MaxAgent Pack (*{})'.format(pack_mod.PACK_SUFFIX),
+        )
+        if not path:
+            return
+        if not path.endswith(pack_mod.PACK_SUFFIX):
+            path += pack_mod.PACK_SUFFIX
+        try:
+            res = pack_mod.export_pack(
+                output_path=path,
+                tool_names=[name],
+                skill_names=[],
+                rule_ids=[],
+                pack_name=name,
+            )
+            logger.info(
+                '单项导出工具 %s → %s (size=%dB)',
+                name, res['path'], res['size'],
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('单项导出工具失败')
+            QtWidgets.QMessageBox.critical(self, '导出失败', str(exc))
+            return
+        QtWidgets.QMessageBox.information(
+            self, '导出成功', '已写入: {}'.format(res['path']),
+        )

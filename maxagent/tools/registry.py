@@ -249,12 +249,25 @@ def list_tools(category=None, include_dangerous=True):
 
 
 def build_openai_tools_schema(category=None, include_dangerous=True):
-    """生成 OpenAI tools 数组，可直接塞给 chat.completions。"""
+    """生成 OpenAI tools 数组，可直接塞给 chat.completions。
+
+    会过滤掉「我的资源 → 工具」里被用户禁用的项，让 LLM 完全感知不到
+    禁用工具的存在（既不会在 schema 中出现，也无法被自然语言触发）。
+    禁用名单读取失败时按"无禁用项"处理，避免循环依赖在启动期阻塞。
+    """
+    # 延迟 import 防止 ``maxagent.disabled_registry`` <-> ``maxagent.tools``
+    # 形成启动期循环依赖（registry 在 tools 包内，被 tools/__init__ 引用）。
+    try:
+        from ..disabled_registry import get_disabled_tools_set
+        disabled = get_disabled_tools_set()
+    except Exception:  # pylint: disable=broad-except
+        disabled = set()
     return [
         spec.to_openai_schema()
         for spec in list_tools(
             category=category, include_dangerous=include_dangerous,
         )
+        if spec.name not in disabled
     ]
 
 

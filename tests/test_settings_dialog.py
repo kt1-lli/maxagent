@@ -58,19 +58,55 @@ def dialog(qapp, config_mgr):
 
 
 def test_nav_has_six_tabs(dialog):
-    """左侧导航必须有 9 个 Tab：模型/联网/应用/助手形象/我的规则/工具与技能/日志/IDE 接口/帮助。"""
-    assert dialog.nav.count() == 9
-    assert dialog.stack.count() == 9
+    """左侧导航现在有 8 个 Tab：模型/联网/应用/助手形象/我的资源/日志/IDE 接口/帮助。
+
+    注：原"我的规则"和"工具与技能"两项已合并为单个"我的资源"主 Tab，
+    内部用横向子 Tab 切换 4 个视图。这是 v3 重构后的稳定结构。
+    """
+    assert dialog.nav.count() == 8
+    assert dialog.stack.count() == 8
     labels = [dialog.nav.item(i).text() for i in range(dialog.nav.count())]
     assert any('模型' in t for t in labels)
     assert any('联网' in t for t in labels)
     assert any('应用' in t for t in labels)
     assert any('助手形象' in t for t in labels)
-    assert any('我的规则' in t for t in labels)
-    assert any('工具与技能' in t for t in labels)
+    assert any('我的资源' in t for t in labels)
     assert any('日志' in t for t in labels)
     assert any('IDE 接口' in t for t in labels)
     assert any('帮助' in t for t in labels)
+    # 旧两个 Tab 已被并入"我的资源"，不应再独立存在
+    assert not any('我的规则' == t.split()[-1] for t in labels)
+    assert not any('工具与技能' == t.split()[-1] for t in labels)
+
+
+def test_resources_subtabs_have_four_pages(dialog):
+    """「我的资源」内部必须有 4 个横向子 Tab：规则/技能/工具/导入导出。"""
+    # 切到"我的资源"主 Tab
+    res_idx = next(
+        i for i, (_l, k) in enumerate(dialog._NAV_ITEMS) if k == 'resources'
+    )
+    dialog.nav.setCurrentRow(res_idx)
+    assert hasattr(dialog, 'resources_tabs')
+    assert dialog.resources_tabs.count() == 4
+    sub_labels = [
+        dialog.resources_tabs.tabText(i)
+        for i in range(dialog.resources_tabs.count())
+    ]
+    assert any('规则' in t for t in sub_labels)
+    assert any('技能' in t for t in sub_labels)
+    assert any('工具' in t for t in sub_labels)
+    assert any('导入' in t and '导出' in t for t in sub_labels)
+
+
+def test_resources_subtab_lists_initialized(dialog):
+    """技能/工具子页的列表 widget 必须被构建出来。"""
+    # 触发主 Tab 切换以确保子页已构建（lazy 场景下也必须可用）
+    res_idx = next(
+        i for i, (_l, k) in enumerate(dialog._NAV_ITEMS) if k == 'resources'
+    )
+    dialog.nav.setCurrentRow(res_idx)
+    assert hasattr(dialog, '_skills_list')
+    assert hasattr(dialog, '_tools_list')
 
 
 def test_nav_switch_changes_stack_index(dialog):

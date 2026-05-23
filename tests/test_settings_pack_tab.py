@@ -73,10 +73,31 @@ def dialog(qapp, config_mgr, isolate_dirs):
 # ---------------------------------------------------------------------- #
 class TestPackTab:
     def test_pack_tab_present(self, dialog):
+        """v3 重构后："工具与技能"主 Tab 已被合并到"我的资源"。
+
+        旧测试断言"工具与技能"作为左侧主 Tab 存在；新结构下它变成了
+        "我的资源"主 Tab 内的一个横向子 Tab（导入/导出）。这里改成
+        断言新的存在性条件，同时保留对 ``pack_*_list`` 这三个核心
+        widget 的存在性检查（它们由原 _build_page_pack 创建，被合并
+        进子 Tab 后名字未变）。
+        """
         labels = [
             dialog.nav.item(i).text() for i in range(dialog.nav.count())
         ]
-        assert any('工具与技能' in t for t in labels)
+        assert any('我的资源' in t for t in labels)
+        # 切换到"我的资源"以确保子 Tab 被构建（此处构建是同步的）
+        res_idx = next(
+            i for i, (_l, k) in enumerate(dialog._NAV_ITEMS)
+            if k == 'resources'
+        )
+        dialog.nav.setCurrentRow(res_idx)
+        # 子 Tab 中必须能找到"导入/导出"
+        sub_labels = [
+            dialog.resources_tabs.tabText(i)
+            for i in range(dialog.resources_tabs.count())
+        ]
+        assert any('导入' in t and '导出' in t for t in sub_labels)
+        # 原打包列表 widget 仍然存在（行为不变，仅位置变更）
         assert hasattr(dialog, 'pack_tool_list')
         assert hasattr(dialog, 'pack_skill_list')
         assert hasattr(dialog, 'pack_rule_list')

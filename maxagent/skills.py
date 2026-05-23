@@ -166,6 +166,52 @@ class SkillManager(object):
         out = []
         if not os.path.isdir(self._base):
             return out
+        # 拉取一次禁用名单（O(1) 集合查询）；模块异常时按空集处理。
+        try:
+            from .disabled_registry import get_disabled_skills_set
+            disabled = get_disabled_skills_set()
+        except Exception:  # pylint: disable=broad-except
+            disabled = set()
+        for fname in os.listdir(self._base):
+            if fname == INDEX_FILENAME or not fname.endswith('.json'):
+                continue
+            full = os.path.join(self._base, fname)
+            try:
+                with open(full, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                s = Skill.from_dict(data)
+                # 禁用项对 LLM 完全不可见——既不进 system prompt，也不
+                # 出现在 list_skills 工具的返回；但仍然保留磁盘文件，
+                # 用户在「我的资源」面板能看到并随时启用。
+                if s.name in disabled:
+                    continue
+                s.file_path = full
+                out.append(s)
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    'skip 损坏的 skill 文件 %s: %s', fname, exc,
+                )
+        out.sort(key=lambda s: s.updated_at, reverse=True)
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 公共 API
+    # ------------------------------------------------------------------ #
+    def list_skills(self):
+        # type: () -> List[Skill]
+        return self._scan()
+
+    def list_all_skills(self):
+        # type: () -> List[Skill]
+        """列出所有技能（**含被禁用**），仅供管理 UI / 导入导出使用。
+
+        与 ``list_skills`` 的差异：``list_skills`` 走 ``_scan`` 会过滤
+        掉禁用项（保证 LLM 看不到）；本方法绕过过滤直接读盘，让设置
+        面板能展示完整清单并提供"启用"开关。
+        """
+        out = []
+        if not os.path.isdir(self._base):
+            return out
         for fname in os.listdir(self._base):
             if fname == INDEX_FILENAME or not fname.endswith('.json'):
                 continue
@@ -182,13 +228,6 @@ class SkillManager(object):
                 )
         out.sort(key=lambda s: s.updated_at, reverse=True)
         return out
-
-    # ------------------------------------------------------------------ #
-    # 公共 API
-    # ------------------------------------------------------------------ #
-    def list_skills(self):
-        # type: () -> List[Skill]
-        return self._scan()
 
     def get(self, name):
         # type: (str) -> Optional[Skill]

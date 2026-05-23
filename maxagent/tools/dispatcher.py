@@ -81,6 +81,21 @@ class ToolDispatcher(object):
             logger.warning("调用未知工具: %s", tool_name)
             return _err("未知工具: {}".format(tool_name), "unknown_tool")
 
+        # 禁用名单兜底：即便 LLM 通过历史 tool_call_id 试图调用已禁用工具，
+        # 这里也直接拒绝。schema 过滤是"让 LLM 看不到"，dispatch 拦截是
+        # "看到也调不动"——双层防御。
+        try:
+            from ..disabled_registry import is_tool_disabled
+            if is_tool_disabled(tool_name):
+                logger.info("拦截已禁用工具调用: %s", tool_name)
+                return _err(
+                    "工具 {} 已被用户在「我的资源」中禁用".format(tool_name),
+                    "tool_disabled",
+                )
+        except Exception:  # pylint: disable=broad-except
+            # 禁用模块异常不应阻塞正常调用
+            pass
+
         if not isinstance(arguments, dict):
             return _err(
                 "参数必须是对象，收到: {}".format(type(arguments).__name__),
