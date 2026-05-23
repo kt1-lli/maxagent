@@ -11,3 +11,6 @@ _userdata/
 
 # 对话上传的临时图片（用户问问题附带的截图，非项目资产）
 chat_uploads/
+
+# coredump 文件，禁止入库
+core.*
