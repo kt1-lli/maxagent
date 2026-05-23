@@ -14,3 +14,9 @@ chat_uploads/
 
 # coredump 文件，禁止入库
 core.*
+
+# 引用 / 双仓协作工作区（不属于 maxagent 仓库）
+_ref/
+dcc-mcp/
+dcc-mcp-work/
+dcc-mcp-ref/

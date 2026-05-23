@@ -217,6 +217,24 @@ class AppConfig:
         "deepseek-vl", "pixtral", "llama-3.2-vision",
     ])
 
+    # ---------- IDE Bridge（给外部 IDE / dcc-mcp 用的本地 TCP 端口）---------- #
+    # 默认关闭：用户必须在设置面板手动启用，避免默认监听端口被误用
+    bridge_enabled: bool = False
+    # 监听地址（强烈建议保持 127.0.0.1 防止外网访问）
+    bridge_host: str = "127.0.0.1"
+    # 监听端口；与 dcc-mcp DCC_PRESETS["3dsMax"]=7003 对齐
+    bridge_port: int = 7003
+    # 可选访问令牌，非空时所有请求必须带匹配的 token 字段
+    # 本机回环场景默认空字符串免鉴权
+    bridge_token: str = ""
+    # 是否暴露 dispatch_task 方法（让 IDE 把整个任务派给 maxagent 自己跑）
+    # 关闭时只保留 execute_python 这个单纯执行通道
+    bridge_dispatch_enabled: bool = True
+    # dispatch_task 单任务最大工具循环轮数（安全护栏）
+    bridge_dispatch_max_rounds: int = 20
+    # dispatch_task 单任务总超时（秒）
+    bridge_dispatch_timeout_sec: int = 300
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -245,6 +263,13 @@ class AppConfig:
             "employee_avatar_image": self.employee_avatar_image,
             "vision_enabled": self.vision_enabled,
             "vision_model_whitelist": list(self.vision_model_whitelist),
+            "bridge_enabled": self.bridge_enabled,
+            "bridge_host": self.bridge_host,
+            "bridge_port": self.bridge_port,
+            "bridge_token": self.bridge_token,
+            "bridge_dispatch_enabled": self.bridge_dispatch_enabled,
+            "bridge_dispatch_max_rounds": self.bridge_dispatch_max_rounds,
+            "bridge_dispatch_timeout_sec": self.bridge_dispatch_timeout_sec,
         }
 
     @classmethod
@@ -321,6 +346,33 @@ class AppConfig:
                 str(x).strip().lower() for x in raw_wl if str(x).strip()
             ]
         # else 走 dataclass 默认值
+        # ---- IDE Bridge ---- #
+        cfg.bridge_enabled = bool(data.get("bridge_enabled", False))
+        cfg.bridge_host = str(
+            data.get("bridge_host", "127.0.0.1") or "127.0.0.1",
+        )
+        try:
+            port = int(data.get("bridge_port", 7003) or 7003)
+            # 端口范围兜底，非法值回落默认
+            cfg.bridge_port = port if 1 <= port <= 65535 else 7003
+        except (TypeError, ValueError):
+            cfg.bridge_port = 7003
+        cfg.bridge_token = str(data.get("bridge_token", "") or "")
+        cfg.bridge_dispatch_enabled = bool(
+            data.get("bridge_dispatch_enabled", True),
+        )
+        try:
+            cfg.bridge_dispatch_max_rounds = max(1, min(100, int(
+                data.get("bridge_dispatch_max_rounds", 20) or 20,
+            )))
+        except (TypeError, ValueError):
+            cfg.bridge_dispatch_max_rounds = 20
+        try:
+            cfg.bridge_dispatch_timeout_sec = max(10, min(3600, int(
+                data.get("bridge_dispatch_timeout_sec", 300) or 300,
+            )))
+        except (TypeError, ValueError):
+            cfg.bridge_dispatch_timeout_sec = 300
         return cfg
 
 

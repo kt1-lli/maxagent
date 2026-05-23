@@ -89,6 +89,7 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('👤') + '  助手形象', 'employee'),
         (_ee('📋') + '  我的规则', 'rules'),
         (_ee('📜') + '  日志', 'log'),
+        (_ee('🔌') + '  IDE 接口', 'bridge'),
         (_ee('❓') + '  帮助', 'help'),
     ]
 
@@ -138,6 +139,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_employee())
         self.stack.addWidget(self._build_page_rules())
         self.stack.addWidget(self._build_page_log())
+        self.stack.addWidget(self._build_page_bridge())
         self.stack.addWidget(self._build_page_help())
         right_box.addWidget(self.stack, 1)
 
@@ -697,6 +699,155 @@ class SettingsDialog(QtWidgets.QDialog):
         info.setTextFormat(QtCore.Qt.RichText)
         layout.addWidget(info)
         layout.addStretch(1)
+        return page
+
+    # ================================================================== #
+    # Page 6: IDE 接口（本地 TCP 桥接，对接 dcc-mcp / Cursor）
+    # ================================================================== #
+    def _build_page_bridge(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        title = QtWidgets.QLabel(_ee('🔌') + '  IDE 接口（Bridge）')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        intro = QtWidgets.QLabel(
+            '在 Max 内开启一个本地 TCP 端口，让外部 IDE（通过 '
+            '<a href="https://gitee.com/cmqll/dcc-mcp" '
+            'style="color:#4da6ff;">dcc-mcp</a> 这类 MCP Server）'
+            '调用 maxagent 能力：<br>'
+            '&nbsp;&nbsp;• <b>execute_python</b>：在 Max 主线程执行任意'
+            ' Python 代码（pymxs 安全）<br>'
+            '&nbsp;&nbsp;• <b>dispatch_task</b>：把整个自然语言任务派给'
+            ' maxagent 自己跑（IDE Agent ↔ maxagent Agent 协作）<br>'
+            '<span style="color:#888;">仅监听 127.0.0.1，不暴露外网。'
+            '建议默认关闭，只在需要时手动开启。</span>',
+        )
+        intro.setWordWrap(True)
+        intro.setTextFormat(QtCore.Qt.RichText)
+        intro.setOpenExternalLinks(True)
+        intro.setStyleSheet('color:#ccc;')
+        layout.addWidget(intro)
+
+        # ---- 主开关 + 状态指示 ---- #
+        head_row = QtWidgets.QHBoxLayout()
+        self.bridge_enabled_chk = QtWidgets.QCheckBox('启用 IDE Bridge')
+        self.bridge_enabled_chk.setToolTip(
+            '勾选后立即开启本地 TCP 监听端口；取消勾选立即停止。\n'
+            '关闭时所有外部连接会被拒绝。',
+        )
+        self.bridge_enabled_chk.toggled.connect(
+            self._on_bridge_enabled_toggled,
+        )
+        head_row.addWidget(self.bridge_enabled_chk)
+        self.bridge_status_lbl = QtWidgets.QLabel('● 未启动')
+        self.bridge_status_lbl.setStyleSheet('color:#888;')
+        head_row.addWidget(self.bridge_status_lbl)
+        head_row.addStretch(1)
+        layout.addLayout(head_row)
+
+        # ---- 表单：端口 / token ---- #
+        form = QtWidgets.QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setFormAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop,
+        )
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
+
+        self.bridge_port_spin = QtWidgets.QSpinBox()
+        self.bridge_port_spin.setRange(1, 65535)
+        self.bridge_port_spin.setValue(7003)
+        self.bridge_port_spin.setToolTip(
+            '本地监听端口（默认 7003，与 dcc-mcp 3dsMax 预设一致）。\n'
+            '修改后需关闭再重新启用 Bridge 才生效。',
+        )
+        form.addRow('监听端口:', self.bridge_port_spin)
+
+        self.bridge_token_edit = QtWidgets.QLineEdit()
+        self.bridge_token_edit.setPlaceholderText(
+            '可选；留空时本机回环免鉴权',
+        )
+        self.bridge_token_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.bridge_token_edit.setToolTip(
+            '非空时，所有请求必须在 JSON 中带 token 字段且匹配。\n'
+            '本机使用通常无需填写；多人共用机器或担心误连可设。',
+        )
+        form.addRow('访问令牌:', self.bridge_token_edit)
+
+        # ---- 任务派发设置 ---- #
+        sep = QtWidgets.QLabel(
+            '<span style="color:#aaa;">────  任务派发（dispatch_task） ────</span>',
+        )
+        sep.setTextFormat(QtCore.Qt.RichText)
+        form.addRow(sep)
+
+        self.bridge_dispatch_chk = QtWidgets.QCheckBox(
+            '允许 IDE 派发自然语言任务',
+        )
+        self.bridge_dispatch_chk.setToolTip(
+            '关闭时只暴露 execute_python（IDE 自己写代码）；\n'
+            '开启时额外暴露 dispatch_task：IDE 把任务以自然语言派给\n'
+            'maxagent，由 maxagent 自己跑 LLM + 工具循环出结果。',
+        )
+        form.addRow('', self.bridge_dispatch_chk)
+
+        self.bridge_max_rounds_spin = QtWidgets.QSpinBox()
+        self.bridge_max_rounds_spin.setRange(1, 100)
+        self.bridge_max_rounds_spin.setValue(20)
+        self.bridge_max_rounds_spin.setToolTip(
+            '单次 dispatch_task 内 LLM ↔ 工具循环的最大轮数。\n'
+            '防 LLM 死循环；超出后自动结束并附 reached_max_rounds 标记。',
+        )
+        form.addRow('最大轮数:', self.bridge_max_rounds_spin)
+
+        self.bridge_timeout_spin = QtWidgets.QSpinBox()
+        self.bridge_timeout_spin.setRange(10, 3600)
+        self.bridge_timeout_spin.setValue(300)
+        self.bridge_timeout_spin.setSuffix(' 秒')
+        self.bridge_timeout_spin.setToolTip(
+            '单次 dispatch_task 总超时；触发后立刻返回当前已收集的部分结果。',
+        )
+        form.addRow('超时:', self.bridge_timeout_spin)
+
+        layout.addLayout(form)
+
+        # ---- 按钮行 ---- #
+        btn_row = QtWidgets.QHBoxLayout()
+        self.bridge_apply_btn = QtWidgets.QPushButton('应用并重启 Bridge')
+        self.bridge_apply_btn.setToolTip(
+            '保存当前端口/令牌/派发设置，并按需重启监听线程。',
+        )
+        self.bridge_apply_btn.clicked.connect(self._on_bridge_apply)
+        btn_row.addWidget(self.bridge_apply_btn)
+
+        self.bridge_copy_cfg_btn = QtWidgets.QPushButton(
+            _btn_label('📋', '复制 dcc-mcp / Cursor 配置示例'),
+        )
+        self.bridge_copy_cfg_btn.setToolTip(
+            '把推荐的 IDE MCP 配置 JSON 复制到剪贴板，\n'
+            '粘贴到 ~/.cursor/mcp.json 即可使用。',
+        )
+        self.bridge_copy_cfg_btn.clicked.connect(self._on_bridge_copy_config)
+        btn_row.addWidget(self.bridge_copy_cfg_btn)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        layout.addStretch(1)
+
+        # 初值加载 + 实时状态
+        self._load_bridge_settings()
+        self._refresh_bridge_status()
+        # 启动一个 1Hz QTimer 周期刷新状态（连接计数等）
+        self._bridge_status_timer = QtCore.QTimer(self)
+        self._bridge_status_timer.setInterval(1000)
+        self._bridge_status_timer.timeout.connect(self._refresh_bridge_status)
+        self._bridge_status_timer.start()
         return page
 
     # ================================================================== #
@@ -1281,6 +1432,197 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '日志目录',
                 '请手动打开以下目录:\n{}'.format(log_dir),
             )
+
+    # ================================================================== #
+    # IDE Bridge 槽函数
+    # ================================================================== #
+    def _load_bridge_settings(self):
+        """从 AppConfig 读取 bridge_* 字段填到 UI。"""
+        cfg = self._config.config
+        for w in (
+            self.bridge_enabled_chk, self.bridge_port_spin,
+            self.bridge_token_edit, self.bridge_dispatch_chk,
+            self.bridge_max_rounds_spin, self.bridge_timeout_spin,
+        ):
+            w.blockSignals(True)
+        try:
+            self.bridge_enabled_chk.setChecked(
+                bool(getattr(cfg, 'bridge_enabled', False)),
+            )
+            self.bridge_port_spin.setValue(
+                int(getattr(cfg, 'bridge_port', 7003) or 7003),
+            )
+            self.bridge_token_edit.setText(
+                str(getattr(cfg, 'bridge_token', '') or ''),
+            )
+            self.bridge_dispatch_chk.setChecked(
+                bool(getattr(cfg, 'bridge_dispatch_enabled', True)),
+            )
+            self.bridge_max_rounds_spin.setValue(
+                int(getattr(cfg, 'bridge_dispatch_max_rounds', 20) or 20),
+            )
+            self.bridge_timeout_spin.setValue(
+                int(getattr(cfg, 'bridge_dispatch_timeout_sec', 300) or 300),
+            )
+        finally:
+            for w in (
+                self.bridge_enabled_chk, self.bridge_port_spin,
+                self.bridge_token_edit, self.bridge_dispatch_chk,
+                self.bridge_max_rounds_spin, self.bridge_timeout_spin,
+            ):
+                w.blockSignals(False)
+
+    def _refresh_bridge_status(self):
+        """1Hz 刷新状态指示灯：未启动 / 运行中 / 错误。"""
+        try:
+            from ..bridge import get_global_server
+            srv = get_global_server()
+        except Exception:  # pylint: disable=broad-except
+            srv = None
+        if srv is not None and srv.is_running():
+            try:
+                conns = srv.active_connections()
+            except Exception:  # pylint: disable=broad-except
+                conns = 0
+            self.bridge_status_lbl.setText(
+                '● 运行中 {}:{} (活跃连接 {})'.format(
+                    srv.host, srv.port, conns,
+                ),
+            )
+            self.bridge_status_lbl.setStyleSheet(
+                'color:#7ec07a; font-weight:bold;',
+            )
+        else:
+            self.bridge_status_lbl.setText('● 未启动')
+            self.bridge_status_lbl.setStyleSheet('color:#888;')
+
+    def _on_bridge_enabled_toggled(self, checked):
+        """主开关：立即生效（启停 bridge）。"""
+        cfg = self._config.config
+        cfg.bridge_enabled = bool(checked)
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('save bridge_enabled failed: %s', exc)
+        self._apply_bridge_runtime(start=bool(checked))
+
+    def _on_bridge_apply(self):
+        """应用按钮：保存当前 UI 值并按需重启 bridge。"""
+        cfg = self._config.config
+        cfg.bridge_port = int(self.bridge_port_spin.value())
+        cfg.bridge_token = str(self.bridge_token_edit.text() or '')
+        cfg.bridge_dispatch_enabled = bool(
+            self.bridge_dispatch_chk.isChecked(),
+        )
+        cfg.bridge_dispatch_max_rounds = int(
+            self.bridge_max_rounds_spin.value(),
+        )
+        cfg.bridge_dispatch_timeout_sec = int(
+            self.bridge_timeout_spin.value(),
+        )
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '设置写盘失败: {}'.format(exc),
+            )
+            return
+        # 当前 enabled 才需要重启
+        if cfg.bridge_enabled:
+            self._apply_bridge_runtime(start=True)
+        QtWidgets.QMessageBox.information(
+            self, '已应用',
+            '设置已保存。' + (
+                ' Bridge 已按新参数重启。' if cfg.bridge_enabled else ''
+            ),
+        )
+
+    def _apply_bridge_runtime(self, start):
+        """启动或停止 bridge 全局实例。"""
+        try:
+            from ..bridge import start_global_server
+            from ..bridge import stop_global_server
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('import bridge failed: %s', exc)
+            QtWidgets.QMessageBox.warning(
+                self, '启动失败', '加载 bridge 模块失败: {}'.format(exc),
+            )
+            return
+        cfg = self._config.config
+        if not start:
+            try:
+                stop_global_server()
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning('stop bridge failed: %s', exc)
+            self._refresh_bridge_status()
+            return
+        try:
+            start_global_server(
+                host=cfg.bridge_host,
+                port=cfg.bridge_port,
+                token=cfg.bridge_token,
+                config_manager=self._config,
+                dispatch_enabled=cfg.bridge_dispatch_enabled,
+                dispatch_max_rounds=cfg.bridge_dispatch_max_rounds,
+                dispatch_timeout_sec=cfg.bridge_dispatch_timeout_sec,
+            )
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(
+                self, '启动失败',
+                '端口 {} 可能被占用：{}\n请尝试更换端口。'.format(
+                    cfg.bridge_port, exc,
+                ),
+            )
+            # 失败时把开关回退到关闭，避免 UI 与现实不一致
+            self.bridge_enabled_chk.blockSignals(True)
+            self.bridge_enabled_chk.setChecked(False)
+            self.bridge_enabled_chk.blockSignals(False)
+            cfg.bridge_enabled = False
+            try:
+                self._config.save()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('start bridge failed: %s', exc)
+            QtWidgets.QMessageBox.warning(
+                self, '启动失败', '启动 Bridge 失败: {}'.format(exc),
+            )
+        self._refresh_bridge_status()
+
+    def _on_bridge_copy_config(self):
+        """把推荐的 dcc-mcp / Cursor MCP 配置 JSON 复制到剪贴板。"""
+        cfg = self._config.config
+        port = int(self.bridge_port_spin.value() or cfg.bridge_port or 7003)
+        env = {
+            'DCC_MCP_NAME': '3dsMax',
+            'DCC_MCP_BRIDGE_HOST': '127.0.0.1',
+            'DCC_MCP_BRIDGE_PORT': str(port),
+        }
+        snippet = {
+            'mcpServers': {
+                'maxagent': {
+                    'command': 'uvx',
+                    'args': ['dcc-mcp'],
+                    'env': env,
+                },
+            },
+        }
+        import json as _json
+        text = _json.dumps(snippet, indent=2, ensure_ascii=False)
+        try:
+            QtWidgets.QApplication.clipboard().setText(text)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '复制失败', '剪贴板不可用: {}'.format(exc),
+            )
+            return
+        QtWidgets.QMessageBox.information(
+            self, '已复制',
+            '已复制 mcp.json 配置到剪贴板。\n\n'
+            '粘贴到 ~/.cursor/mcp.json（或对应 IDE 的 MCP 配置文件），\n'
+            '然后重启 IDE 即可识别 maxagent。\n\n'
+            '前提：先 pip / pipx 安装 dcc-mcp（或用 uvx 自动拉取）。',
+        )
 
     def _load_to_form(self, profile_name):
         prof = self._config.get_profile(profile_name)

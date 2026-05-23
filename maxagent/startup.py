@@ -361,7 +361,47 @@ def show_panel(force=False):
         _DOCK_WIDGET = dock_widget
         _QDOCK_HOLDER = None
 
+    # 4. 按配置启动 IDE bridge（默认关闭；用户在设置面板手动开启）
+    try:
+        _maybe_start_bridge(config)
+    except Exception:  # pylint: disable=broad-except
+        # bridge 启动失败不应阻塞面板显示
+        traceback.print_exc()
+
     return _DOCK_WIDGET
+
+
+def _maybe_start_bridge(config_manager):
+    """根据 AppConfig.bridge_enabled 决定是否启动桥接服务。"""
+    cfg = config_manager.config
+    if not bool(getattr(cfg, 'bridge_enabled', False)):
+        return
+    try:
+        from maxagent.bridge import start_global_server
+    except Exception:  # pylint: disable=broad-except
+        # 模块缺失（极端情况）静默跳过
+        return
+    try:
+        start_global_server(
+            host=getattr(cfg, 'bridge_host', '127.0.0.1'),
+            port=int(getattr(cfg, 'bridge_port', 7003) or 7003),
+            token=str(getattr(cfg, 'bridge_token', '') or ''),
+            config_manager=config_manager,
+            dispatch_enabled=bool(
+                getattr(cfg, 'bridge_dispatch_enabled', True),
+            ),
+            dispatch_max_rounds=int(
+                getattr(cfg, 'bridge_dispatch_max_rounds', 20) or 20,
+            ),
+            dispatch_timeout_sec=int(
+                getattr(cfg, 'bridge_dispatch_timeout_sec', 300) or 300,
+            ),
+        )
+    except OSError as exc:
+        # 端口冲突等：仅打日志，不弹框打断启动
+        print('[MaxAgent] bridge 启动失败（端口冲突？）: {}'.format(exc))
+    except Exception as exc:  # pylint: disable=broad-except
+        print('[MaxAgent] bridge 启动失败: {}'.format(exc))
 
 
 def hide_panel():
