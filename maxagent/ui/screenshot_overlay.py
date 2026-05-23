@@ -50,15 +50,16 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         # 结果：用户松开鼠标后保存的最终选区像素图，None 表示已取消
         self._result_pix = None  # type: Optional[QtGui.QPixmap]
 
-        # 无边框 + 置顶 + 不在任务栏显示
+        # 无边框 + 置顶。注意：不用 Tool flag —— 部分窗口管理器下 Tool
+        # 窗口拿不到键盘焦点（ESC 失效）；统一用普通 Window 即可。
         flags = (
-            QtCore.Qt.WindowType.FramelessWindowHint
+            QtCore.Qt.WindowType.Window
+            | QtCore.Qt.WindowType.FramelessWindowHint
             | QtCore.Qt.WindowType.WindowStaysOnTopHint
-            | QtCore.Qt.WindowType.Tool
         )
         self.setWindowFlags(flags)
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
-        # 让蒙层覆盖整个主屏
+        # 让蒙层覆盖整个虚拟桌面（含多屏），避免在多屏环境下漏角
         self.setGeometry(self._snapshot.rect())
 
     # ------------------------------------------------------------------ #
@@ -140,6 +141,16 @@ class ScreenshotOverlay(QtWidgets.QWidget):
             return
         super(ScreenshotOverlay, self).keyPressEvent(event)
 
+    def closeEvent(self, event):  # noqa: D401
+        # capture_interactive 注入的 hook：用于退出嵌套事件循环
+        hook = getattr(self, '_on_close_hook', None)
+        if callable(hook):
+            try:
+                hook(event)
+            except Exception:  # pylint: disable=broad-except
+                pass
+        super(ScreenshotOverlay, self).closeEvent(event)
+
     def _cancel(self):
         self._result_pix = None
         self.close()
@@ -167,21 +178,35 @@ class ScreenshotOverlay(QtWidgets.QWidget):
             return None
 
         overlay = cls(snap, parent=parent)
-        # 进入嵌套事件循环阻塞，直到 close()
+        # 不依赖 destroyed 信号——destroyed 触发时 C++ 对象已析构，
+        # 取结果会 RuntimeError。改为在 closeEvent 里主动 quit 嵌套 loop。
         loop = QtCore.QEventLoop()
-        # close 后窗口被销毁前先取结果，再退出循环
-        result_holder = {'pix': None}
 
-        def _on_destroyed():
-            result_holder['pix'] = overlay.get_result()
-            loop.quit()
+        def _on_close(_event):
+            if loop.isRunning():
+                loop.quit()
 
-        overlay.destroyed.connect(_on_destroyed)
+        overlay._on_close_hook = _on_close  # 注入到子类的 hook 槽
+
         overlay.showFullScreen()
         overlay.raise_()
         overlay.activateWindow()
-        loop.exec_() if hasattr(loop, 'exec_') else loop.exec()
-        return result_holder['pix']
+        # 抢一次键盘焦点，确保 ESC 取消生效
+        try:
+            overlay.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        if hasattr(loop, 'exec_'):
+            loop.exec_()
+        else:
+            loop.exec()
+        result = overlay.get_result()
+        # 显式销毁，释放主屏快照
+        try:
+            overlay.deleteLater()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return result
 
 
 __all__ = ['ScreenshotOverlay']

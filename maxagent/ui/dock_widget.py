@@ -1629,7 +1629,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 )
 
     def _on_snip(self):
-        """✂️ 截图：进程内 Qt 全屏框选，结果加入预览条。"""
+        """✂️ 截图：进程内 Qt 全屏框选，结果加入预览条。
+
+        重要：不调用 self.window().hide() —— 在 3ds Max 内嵌 / docked
+        场景下 hide 主窗会破坏 docked 状态甚至导致主 UI 不再显示。
+        改为"先抓屏再起蒙层"，让蒙层完全盖住主窗，主窗保持原样不动。
+        """
         if self._is_running:
             return
         try:
@@ -1640,18 +1645,30 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 '截图模块加载失败: {}'.format(exc),
             )
             return
-        # 在主面板上 hide 一下，避免把自身截到图里
-        self.window().hide()
+        # 抓屏 + 蒙层全部交给 ScreenshotOverlay 处理，调用方不再 hide 主窗。
+        # 为了避免把自己截进去，在抓屏前把主窗临时设为不可见（透明）。
+        top = self.window()
+        prev_opacity = None
         try:
-            QtCore.QCoreApplication.processEvents()
-        except Exception:  # pylint: disable=broad-except
-            pass
-        try:
+            try:
+                prev_opacity = top.windowOpacity()
+                top.setWindowOpacity(0.0)
+                # 强制刷一次绘制，确保抓屏拿到的是无主窗画面
+                QtCore.QCoreApplication.processEvents(
+                    QtCore.QEventLoop.AllEvents, 50,
+                )
+            except Exception:  # pylint: disable=broad-except
+                prev_opacity = None
             pix = ScreenshotOverlay.capture_interactive()
         finally:
-            self.window().show()
-            self.window().raise_()
-            self.window().activateWindow()
+            # 任何分支都要把主窗恢复回来
+            try:
+                if prev_opacity is not None:
+                    top.setWindowOpacity(prev_opacity)
+                else:
+                    top.setWindowOpacity(1.0)
+            except Exception:  # pylint: disable=broad-except
+                pass
         if pix is None or pix.isNull():
             return
         att = pixmap_to_attachment(pix, name='screenshot')
