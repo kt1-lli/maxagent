@@ -421,3 +421,57 @@ def test_btn_label_new_table_entries_present():
     new_required = ['🔄', '💬', '🗜️', '👁', '🔌', '💾', '📂']
     missing = [e for e in new_required if e not in ec.EMOJI_FALLBACK_TABLE]
     assert not missing, '本次按钮美化用 emoji 缺失表条目: {}'.format(missing)
+
+
+def test_show_hide_pair_have_distinct_fallback():
+    """API Key 显示按钮在 PySide2 下切换"显示↔隐藏"必须有清晰可辨的兜底。
+
+    背景：上一轮迭代给 show_key_btn 加了"切图标"视觉反馈
+    （👁 显示 ↔ 🙈 隐藏），但当时只把 👁 加进了表，🙈 漏掉了。
+    PySide2 + Win 字体回退族中没有 🙈 的字形，按钮切到隐藏态后会变
+    豆腐块，这次必须确保两端都有 BMP 兜底，且兜底字符不能相同——否则
+    用户在 PySide2 上完全看不出按钮"切了态"。
+    """
+    assert '🙈' in ec.EMOJI_FALLBACK_TABLE, (
+        '🙈 缺少 BMP 兜底，PySide2 上隐藏态会渲染异常'
+    )
+    show_fb = ec.EMOJI_FALLBACK_TABLE['👁']
+    hide_fb = ec.EMOJI_FALLBACK_TABLE['🙈']
+    assert show_fb != hide_fb, (
+        '👁 / 🙈 兜底字符冲突 ({!r})，PySide2 上"显示↔隐藏"切态用户'
+        '完全看不出区别'.format(show_fb)
+    )
+
+
+def test_resource_management_emojis_have_fallback():
+    """「我的资源」相关的全部 SMP emoji 都必须有 BMP 兜底。
+
+    重构「我的资源」Tab 时新增了一批 SMP 平面 emoji（📦/🎓/🧰/📤/📥
+    等），如果漏在表外，PySide2 上整页 Tab 标题与按钮都会变豆腐块。
+    """
+    required = ['📦', '🎓', '🧰', '📤', '📥', '📎', '📷', '🗑️', '✂️']
+    missing = [
+        e for e in required if e not in ec.EMOJI_FALLBACK_TABLE
+    ]
+    assert not missing, (
+        '资源管理类 emoji 缺失表条目: {}（PySide2 上会变豆腐块）'.format(
+            missing,
+        )
+    )
+
+
+def test_all_fallback_chars_are_bmp_only():
+    """整张表的兜底字符都必须落在 BMP 平面（≤ U+FFFF）。
+
+    一旦兜底字符自身又是 SMP 平面字符，就会和原 emoji 在 PySide2 上
+    一起糊，整个兜底机制白费。
+    """
+    smp_offenders = []
+    for src, fb in ec.EMOJI_FALLBACK_TABLE.items():
+        for ch in fb:
+            if ord(ch) > 0xFFFF:
+                smp_offenders.append((src, fb, hex(ord(ch))))
+    assert not smp_offenders, (
+        '以下兜底字符落在 SMP 平面，无法在 PySide2 + Win 稳定渲染: '
+        '{}'.format(smp_offenders)
+    )
