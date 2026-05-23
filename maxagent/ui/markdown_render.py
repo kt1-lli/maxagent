@@ -39,6 +39,61 @@ def html_escape(text):
 
 
 # ---------------------------------------------------------------------- #
+# 文本归一化：把 Qt5 渲染不稳定的 emoji 序列改写成 BMP 等价物
+# ---------------------------------------------------------------------- #
+# 背景：LLM 经常输出 keycap 序列（"1️⃣"="1" + U+FE0F + U+20E3），它由
+# 三段 codepoint 组合而成，PySide2 (Qt5) 的字体回退栈在 Windows 上无法
+# 把这种"组合 keycap"画出来——要么是 "1" + 方块，要么整段被画成残缺图形。
+# 此外 Apple Symbol 的 ⃣ 修饰符在中文字体里也常常缺字。
+#
+# 处理：在 markdown 渲染入口提前把这些组合替换为 BMP 圆圈数字 ① ② ③ …，
+# 它们在 Win10+ 自带的 Segoe UI Symbol / Microsoft YaHei 都能稳定渲染，
+# 并和现有 emoji_compat.EMOJI_FALLBACK_TABLE 的"圆圈/方块"美学一致。
+_KEYCAP_DIGIT_MAP = {
+    '0': '⓪', '1': '①', '2': '②', '3': '③', '4': '④',
+    '5': '⑤', '6': '⑥', '7': '⑦', '8': '⑧', '9': '⑨',
+}
+# (?:\uFE0F)? 因为 LLM 输出有时省略 VS16，仍保留 \u20E3 keycap 修饰
+_RE_KEYCAP = re.compile(r'([0-9])\uFE0F?\u20E3')
+
+# 11~20 keycap（"🔟" 等）非常少见，但 11. 之类有时也被 LLM 写成
+# "1️⃣1️⃣"——按基数字分别替换即可，无需特殊处理。
+
+# Qt5 上"#️⃣ / *️⃣"几乎肯定显示为豆腐块，统一去掉 keycap 修饰，留下
+# 基础符号。
+_RE_KEYCAP_SYMBOL = re.compile(r'([#*])\uFE0F?\u20E3')
+
+
+def _normalize_text_for_qt(text):
+    # type: (str) -> str
+    """把 Qt RichText 渲染不稳的 emoji 组合序列改写成 BMP 等价字符。
+
+    本函数只动"已知会渲染失败"的字符序列；其它内容（包括普通 emoji）
+    一律保持原样，避免破坏 LLM 输出的可读性。
+
+    关于 PySide2 / PySide6 的差异：
+    - keycap 序列 (digit + U+FE0F + U+20E3) 在 Qt5 + Win 上**几乎必崩**，
+      所以无论 PySide2 还是 PySide6 都直接转成 BMP 圆圈数字 —— 圆圈数字
+      ① 在两端视觉接近且字体支持都很好。
+    - 裸 U+FE0F 只对 PySide2 有害（影响字体回退），PySide6 上是合法的
+      emoji 变体选择符，**不要丢**。
+    """
+    if not text:
+        return text
+    text = _RE_KEYCAP.sub(lambda m: _KEYCAP_DIGIT_MAP[m.group(1)], text)
+    text = _RE_KEYCAP_SYMBOL.sub(r'\1', text)
+    # 仅在 PySide2 上把单独的 VS16 丢掉（PySide6 / 浏览器需要保留它来
+    # 触发真彩 emoji 字形）。延迟导入避免循环：emoji_compat 不依赖本模块。
+    try:
+        from .emoji_compat import use_real_emoji
+        if not use_real_emoji() and '\ufe0f' in text:
+            text = text.replace('\ufe0f', '')
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return text
+
+
+# ---------------------------------------------------------------------- #
 # 行内 markdown
 # ---------------------------------------------------------------------- #
 # 顺序很重要：先 inline code，再 bold/italic/link，避免误伤 code 内的
@@ -124,6 +179,8 @@ def render_markdown(text):
     """
     if not text:
         return ''
+    # 渲染前先做 emoji 序列归一化（详见 _normalize_text_for_qt 注释）
+    text = _normalize_text_for_qt(text)
     lines = text.split('\n')
     out = []  # type: List[str]
     i = 0

@@ -169,3 +169,98 @@ class TestNumberedHeadingSpacing:
         out = render_markdown('先做 1. 再做 2.')
         # 段落正文不走 heading 规则，"1." 不应被插入间距
         assert '先做 1.' in out
+
+
+# ---------------------------------------------------------------------- #
+# Keycap emoji 归一化（issue: PySide2 上 1️⃣2️⃣3️⃣ 渲染为豆腐块）
+# ---------------------------------------------------------------------- #
+class TestKeycapEmojiNormalization:
+    """LLM 输出的 keycap 序列 (digit + U+FE0F + U+20E3) 在 Qt5 上必糊，
+    必须在渲染入口替换为 BMP 圆圈数字 ① ② ③，并保证：
+    - 同样的逻辑也作用于"复制全部"按钮的剪贴板内容
+    - 不影响真 emoji 的输出（PySide6 路径上）
+    """
+
+    def test_keycap_digits_replaced_in_render(self):
+        # "## 2️⃣ 技能（Skills）" 必须被改写成 "## ② 技能（Skills）"
+        out = render_markdown('## 2\ufe0f\u20e3 技能（Skills）')
+        # 不再包含原始 keycap 序列
+        assert '\u20e3' not in out
+        # 圆圈数字已就位
+        assert '②' in out
+
+    def test_keycap_without_vs16_still_replaced(self):
+        # 部分 LLM 省略 U+FE0F，只发 "1\u20E3"
+        out = render_markdown('1\u20e3 第一')
+        assert '\u20e3' not in out
+        assert '①' in out
+
+    def test_all_ten_digits_mapped(self):
+        # 0~9 全数字都要有兜底
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        for d, circled in zip(
+            '0123456789',
+            '⓪①②③④⑤⑥⑦⑧⑨',
+        ):
+            assert _normalize_text_for_qt(d + '\ufe0f\u20e3') == circled
+
+    def test_hash_keycap_strips_modifier(self):
+        # "#️⃣" 在 Qt5 同样糊，去掉修饰符保留 "#"
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        assert _normalize_text_for_qt('#\ufe0f\u20e3') == '#'
+        assert _normalize_text_for_qt('*\ufe0f\u20e3') == '*'
+
+    def test_preserve_real_emoji_under_pyside6(self):
+        # use_real_emoji=True 路径不应丢 VS16（emoji 变体选择符）
+        from maxagent.ui import emoji_compat
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        old = emoji_compat.use_real_emoji()
+        try:
+            emoji_compat.set_use_real_emoji(True)
+            # 真 emoji ⚠️ (U+26A0 U+FE0F) 在 PySide6 应保留 VS16
+            out = _normalize_text_for_qt('⚠\ufe0f 警告')
+            assert '\ufe0f' in out
+        finally:
+            emoji_compat.set_use_real_emoji(old)
+
+    def test_strip_vs16_under_pyside2(self):
+        from maxagent.ui import emoji_compat
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        old = emoji_compat.use_real_emoji()
+        try:
+            emoji_compat.set_use_real_emoji(False)
+            out = _normalize_text_for_qt('⚠\ufe0f 警告')
+            assert '\ufe0f' not in out
+            assert '⚠' in out and '警告' in out
+        finally:
+            emoji_compat.set_use_real_emoji(old)
+
+    def test_no_keycap_text_unchanged(self):
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        # 没有 keycap 也没有 VS16 的纯文本应原样返回
+        s = 'Hello 你好 1.2.3 (a) [b]'
+        # 注意：本测试同时覆盖 PySide6 路径（不丢 VS16 也无影响）
+        out = _normalize_text_for_qt(s)
+        assert out == s
+
+    def test_empty_input(self):
+        from maxagent.ui.markdown_render import _normalize_text_for_qt
+        assert _normalize_text_for_qt('') == ''
+        assert _normalize_text_for_qt(None) is None
+
+    def test_render_full_skill_help_paragraph(self):
+        """模拟用户截图里的真实场景：LLM 输出 "1️⃣ 工具（Tools）" 等。"""
+        md = (
+            '## 1\ufe0f\u20e3 工具（Tools）\n'
+            '通过 save_skill 保存的技能流程存放在...\n\n'
+            '## 2\ufe0f\u20e3 技能（Skills）\n'
+            '通过 save_skill 保存的技能流程存放在：\n'
+        )
+        out = render_markdown(md)
+        # 渲染结果不应再含 keycap codepoint
+        assert '\u20e3' not in out
+        assert '①' in out
+        assert '②' in out
+        # 标题文字仍然完整
+        assert '工具' in out
+        assert '技能' in out

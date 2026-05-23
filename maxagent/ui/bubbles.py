@@ -424,6 +424,11 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         """
         if not chunk or self._closed:
             return
+        # 流式同样要避开 keycap emoji 渲染陷阱：把"1️⃣"提前换成"①"。
+        # 注意：跨 chunk 切片不会切到组合序列中间——LLM 的 SSE 切片
+        # 在码点边界，但保险起见调用方传完整 chunk 即可。
+        from .markdown_render import _normalize_text_for_qt
+        chunk = _normalize_text_for_qt(chunk)
         self._buffer += chunk
         # insertText 是 O(chunk_len)：只在末尾追加，不重排版历史文本
         cursor = self._editor.textCursor()
@@ -512,7 +517,13 @@ class AssistantBubble(QtWidgets.QWidget):
 
         copy_btn = QtWidgets.QPushButton('⎘ 复制全部')
         copy_btn.setStyleSheet(_mini_btn_style())
-        copy_btn.clicked.connect(lambda: _copy_to_clipboard(text))
+        # 复制前对 keycap emoji (1️⃣ / 2️⃣ / #️⃣) 做归一化——这些组合
+        # 序列在 Qt5 渲染会糊，复制到 IDE / 文档里也常引发字体问题；
+        # 统一替换为 BMP 圆圈数字 ① ②，与气泡内显示保持一致。
+        from .markdown_render import _normalize_text_for_qt
+        copy_btn.clicked.connect(
+            lambda: _copy_to_clipboard(_normalize_text_for_qt(text)),
+        )
         title_row.addWidget(copy_btn)
 
         bubble.add_layout(title_row)
