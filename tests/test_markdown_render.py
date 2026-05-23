@@ -121,3 +121,51 @@ class TestCodeBlocksExtract:
         blocks = extract_code_blocks(md)
         assert len(blocks) == 1
         assert 'unclosed' in blocks[0][1]
+
+
+# ---------------------------------------------------------------------- #
+# 序号 / 中文粘连修复（issue: "1自定义工具" 渲染遮挡）
+# ---------------------------------------------------------------------- #
+class TestNumberedHeadingSpacing:
+    """h2/h3 标题里"数字+点+中文"必须留出可见间距，
+    否则 Qt RichText 在大字号 + 粗体下会把 "1." 和后续中文挤在一起。"""
+
+    def test_h2_with_digit_dot_chinese(self):
+        out = render_markdown('## 1. 自定义工具 (Learned Tools)')
+        # 渲染必须包含数字、内容
+        assert '自定义工具' in out
+        # 关键：标题正文里 "1." 与汉字之间必须有非普通空格的硬间距
+        # （NBSP \u00a0 或 全角空格 \u3000）确保 Qt RichText 不会压缩。
+        assert '1.\u00a0\u00a0自定义工具' in out or \
+               '1.\u00a0自定义工具' in out or \
+               '1.\u3000自定义工具' in out
+
+    def test_h2_no_space_between_digit_and_chinese(self):
+        """LLM 偶尔输出 "## 1自定义工具"（直接贴），渲染层应自动补点+间距。"""
+        out = render_markdown('## 1自定义工具')
+        assert '1.\u00a0\u00a0自定义工具' in out or \
+               '1.\u00a0自定义工具' in out
+
+    def test_circled_number_still_padded(self):
+        """老的圈圈数字逻辑不能被新规则破坏。"""
+        out = render_markdown('## ① 自定义工具')
+        assert '自定义工具' in out
+        # 圈圈数字与汉字之间也要补半角空格
+        assert '① 自定义工具' in out
+
+    def test_ordered_list_padding_left(self):
+        """有序列表 <ol> 必须有 padding-left，让序号 marker 与文字隔开。"""
+        out = render_markdown('1. one\n2. two')
+        assert '<ol' in out
+        assert 'padding-left' in out
+
+    def test_unordered_list_padding_left(self):
+        out = render_markdown('- a\n- b')
+        assert '<ul' in out
+        assert 'padding-left' in out
+
+    def test_normal_paragraph_unaffected(self):
+        """普通正文里的 "1." 不会被错误改写。"""
+        out = render_markdown('先做 1. 再做 2.')
+        # 段落正文不走 heading 规则，"1." 不应被插入间距
+        assert '先做 1.' in out

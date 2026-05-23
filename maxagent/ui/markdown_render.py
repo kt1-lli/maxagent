@@ -138,10 +138,18 @@ def render_markdown(text):
         if not list_buf:
             return
         tag = 'ul' if list_kind == 'ul' else 'ol'
-        out.append('<{tag} style="margin:4px 0 4px 18px;padding:0;">'.format(tag=tag))
+        # 列表 marker（圆点 / 数字）与第一行文字之间需要充足的视觉间距：
+        # Qt RichText 默认 padding 较小，序号字号一旦受周围标题影响就会
+        # 与中文紧贴。这里用 margin-left 把整段列表整体右移，再用 padding-left
+        # 给 marker 留专门的"槽位"。
+        out.append(
+            '<{tag} style="margin:6px 0 6px 4px;'
+            'padding-left:24px;line-height:1.7;">'.format(tag=tag)
+        )
         for item_html in list_buf:
             out.append(
-                '<li style="margin:2px 0;">' + item_html + '</li>'
+                '<li style="margin:3px 0;padding-left:4px;">'
+                + item_html + '</li>'
             )
         out.append('</{tag}>'.format(tag=tag))
         del list_buf[:]
@@ -202,13 +210,26 @@ def render_markdown(text):
                 r'\1 \2',
                 raw_content,
             )
+            # 标题里"数字+点"开头紧贴中文（"1.自定义工具" / "1. 自定义工具"），
+            # Qt 在大字号 + 粗体时空格被压窄甚至吞掉，看起来序号"贴"到文字上。
+            # 统一改写为"序号 · 标题"形式：在 "(\d+)\.?\s*" 之后强制补两个
+            # NBSP 来稳定视觉间距；并保留多空格不变。
+            # 注意：re.sub 的 replacement 不允许写 \u 转义，直接拼真实字符。
+            _NBSP = '\u00a0'
+            raw_content = re.sub(
+                r'^(\d+)\.?\s*([\u4e00-\u9fff])',
+                lambda m: '{}.{}{}{}'.format(
+                    m.group(1), _NBSP, _NBSP, m.group(2),
+                ),
+                raw_content,
+            )
             content = _render_inline(html_escape(raw_content))
             # 字号收敛：h1=14, h2=13, h3=12, h4+=11，避免大字号引起 emoji
             # / 圈圈字符的方块外溢。line-height 给行高留呼吸空间。
             size_pt = max(11, 15 - level)
             out.append(
                 '<div style="font-size:{sz}pt;font-weight:bold;'
-                'margin:8px 0 4px 0;line-height:1.5;color:#ffffff;">'
+                'margin:10px 0 6px 0;line-height:1.6;color:#ffffff;">'
                 '{c}</div>'.format(
                     sz=size_pt, c=content,
                 )

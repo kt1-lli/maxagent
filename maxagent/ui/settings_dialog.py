@@ -88,6 +88,7 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('🎨') + '  应用', 'app'),
         (_ee('👤') + '  助手形象', 'employee'),
         (_ee('📋') + '  我的规则', 'rules'),
+        (_ee('📦') + '  工具与技能', 'pack'),
         (_ee('📜') + '  日志', 'log'),
         (_ee('🔌') + '  IDE 接口', 'bridge'),
         (_ee('❓') + '  帮助', 'help'),
@@ -138,6 +139,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_app())
         self.stack.addWidget(self._build_page_employee())
         self.stack.addWidget(self._build_page_rules())
+        self.stack.addWidget(self._build_page_pack())
         self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_bridge())
         self.stack.addWidget(self._build_page_help())
@@ -379,6 +381,12 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label = QtWidgets.QLabel('')
         self.test_label.setStyleSheet('color:#888;')
         self.test_label.setWordWrap(True)
+        # 错误信息可能很长（HTTP body + headers），允许用户用鼠标选中复制
+        # 排错时把错误粘到搜索引擎或群里。
+        self.test_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            | QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard,
+        )
         right.addRow('', self.test_label)
 
         # 操作按钮：测试连接 / 完整测试 / 应用
@@ -671,7 +679,332 @@ class SettingsDialog(QtWidgets.QDialog):
         return tab
 
     # ================================================================== #
-    # Page 5: 日志（三态：关闭 / 开启 / DEBUG）
+    # Page 6: 工具与技能（导入 / 导出 .maxagent-pack）
+    # ================================================================== #
+    def _build_page_pack(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        title = QtWidgets.QLabel(_ee('📦') + '  工具与技能')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        intro = QtWidgets.QLabel(
+            '把<b>自定义工具</b>、<b>技能</b>、<b>自定义规则</b>打包为 '
+            '<code>.maxagent-pack</code> 文件，用于跨电脑同步、'
+            '团队分享或社区交换。<br>'
+            '<span style="color:#ff9090;">⚠ 不会包含 API Key / Profile / '
+            '会话历史</span>，避免泄露敏感信息。',
+        )
+        intro.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        intro.setWordWrap(True)
+        intro.setStyleSheet(
+            'QLabel { background:#2a2a2a; color:#e8e8e8;'
+            ' border:1px solid #3a3a3a; padding:8px; border-radius:4px; }',
+        )
+        layout.addWidget(intro)
+
+        # 三栏勾选 + 数量统计
+        body = QtWidgets.QHBoxLayout()
+        body.setSpacing(10)
+
+        self.pack_tool_list = self._make_pack_export_list(body, '🧰 自定义工具')
+        self.pack_skill_list = self._make_pack_export_list(body, '🎓 技能')
+        self.pack_rule_list = self._make_pack_export_list(body, '📋 自定义规则')
+
+        layout.addLayout(body, 1)
+
+        # 操作按钮
+        op_row = QtWidgets.QHBoxLayout()
+        op_row.setSpacing(8)
+        refresh_btn = QtWidgets.QPushButton(_ee('🔄') + ' 刷新')
+        refresh_btn.clicked.connect(self._reload_pack_lists)
+        op_row.addWidget(refresh_btn)
+        select_all_btn = QtWidgets.QPushButton('全选')
+        select_all_btn.clicked.connect(self._pack_select_all)
+        op_row.addWidget(select_all_btn)
+        clear_btn = QtWidgets.QPushButton('清空选择')
+        clear_btn.clicked.connect(self._pack_clear)
+        op_row.addWidget(clear_btn)
+        op_row.addStretch(1)
+        export_btn = QtWidgets.QPushButton(_ee('📤') + ' 导出选中…')
+        export_btn.setStyleSheet(
+            'QPushButton { background:#2d7d46; color:white;'
+            ' border:1px solid #3a9c5a; padding:6px 12px; border-radius:3px; }'
+            'QPushButton:hover { background:#3a9c5a; }'
+        )
+        export_btn.clicked.connect(self._on_pack_export)
+        op_row.addWidget(export_btn)
+        import_btn = QtWidgets.QPushButton(_ee('📥') + ' 导入资源包…')
+        import_btn.clicked.connect(self._on_pack_import)
+        op_row.addWidget(import_btn)
+        layout.addLayout(op_row)
+
+        # 包元信息输入（可选）
+        meta_box = QtWidgets.QGroupBox('包元信息（可选）')
+        meta_form = QtWidgets.QFormLayout(meta_box)
+        meta_form.setLabelAlignment(QtCore.Qt.AlignLeft)
+        meta_form.setFormAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        meta_form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
+        self.pack_name_edit = QtWidgets.QLineEdit()
+        self.pack_name_edit.setPlaceholderText('如 "我的渲染工作流 v1"')
+        meta_form.addRow('包名:', self.pack_name_edit)
+        self.pack_author_edit = QtWidgets.QLineEdit()
+        self.pack_author_edit.setPlaceholderText('作者署名（可空）')
+        meta_form.addRow('作者:', self.pack_author_edit)
+        self.pack_desc_edit = QtWidgets.QLineEdit()
+        self.pack_desc_edit.setPlaceholderText('一句话说明该包的用途（可空）')
+        meta_form.addRow('描述:', self.pack_desc_edit)
+        layout.addWidget(meta_box)
+
+        # 首次加载
+        self._reload_pack_lists()
+
+        return page
+
+    def _make_pack_export_list(self, parent_layout, title):
+        # type: (QtWidgets.QHBoxLayout, str) -> QtWidgets.QListWidget
+        wrap = QtWidgets.QVBoxLayout()
+        wrap.setSpacing(4)
+        title_lbl = QtWidgets.QLabel(title)
+        title_lbl.setStyleSheet(
+            'QLabel { color:#ffd166; font-weight:bold; }'
+        )
+        wrap.addWidget(title_lbl)
+        lst = QtWidgets.QListWidget()
+        lst.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        wrap.addWidget(lst, 1)
+        parent_layout.addLayout(wrap, 1)
+        return lst
+
+    def _reload_pack_lists(self):
+        """从磁盘扫描已有的工具 / 技能 / 规则，刷新三栏。"""
+        try:
+            from .. import user_tools_loader as utl
+            tools = utl.list_user_tools(include_meta=True)
+        except Exception as exc:  # pylint: disable=broad-except
+            tools = []
+            logger.warning('扫描自定义工具失败: %s', exc)
+        try:
+            from .. import skills as skills_mod
+            skill_objs = skills_mod.SkillManager().list_skills()
+        except Exception as exc:  # pylint: disable=broad-except
+            skill_objs = []
+            logger.warning('扫描技能失败: %s', exc)
+        try:
+            from .. import user_rules_loader as url_mod
+            rules = url_mod.list_rules()
+        except Exception as exc:  # pylint: disable=broad-except
+            rules = []
+            logger.warning('扫描自定义规则失败: %s', exc)
+
+        self.pack_tool_list.clear()
+        for item in tools:
+            name = item['name']
+            meta = item.get('meta') or {}
+            desc = (meta.get('description') or '').strip()
+            label = name + ('  —  ' + desc if desc else '')
+            it = QtWidgets.QListWidgetItem(label)
+            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+            it.setCheckState(QtCore.Qt.Unchecked)
+            it.setData(QtCore.Qt.UserRole, name)
+            self.pack_tool_list.addItem(it)
+        if not tools:
+            placeholder = QtWidgets.QListWidgetItem('（暂无自定义工具）')
+            placeholder.setFlags(QtCore.Qt.NoItemFlags)
+            self.pack_tool_list.addItem(placeholder)
+
+        self.pack_skill_list.clear()
+        for sk in skill_objs:
+            desc = (sk.description or '').strip().replace('\n', ' ')
+            if len(desc) > 40:
+                desc = desc[:40] + '…'
+            label = sk.name + ('  —  ' + desc if desc else '')
+            it = QtWidgets.QListWidgetItem(label)
+            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+            it.setCheckState(QtCore.Qt.Unchecked)
+            it.setData(QtCore.Qt.UserRole, sk.name)
+            self.pack_skill_list.addItem(it)
+        if not skill_objs:
+            placeholder = QtWidgets.QListWidgetItem('（暂无技能）')
+            placeholder.setFlags(QtCore.Qt.NoItemFlags)
+            self.pack_skill_list.addItem(placeholder)
+
+        self.pack_rule_list.clear()
+        for r in rules:
+            rid = r.get('id') or ''
+            title_txt = (r.get('title') or '').strip()
+            label = rid + ('  —  ' + title_txt if title_txt else '')
+            it = QtWidgets.QListWidgetItem(label)
+            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+            it.setCheckState(QtCore.Qt.Unchecked)
+            it.setData(QtCore.Qt.UserRole, rid)
+            self.pack_rule_list.addItem(it)
+        if not rules:
+            placeholder = QtWidgets.QListWidgetItem('（暂无自定义规则）')
+            placeholder.setFlags(QtCore.Qt.NoItemFlags)
+            self.pack_rule_list.addItem(placeholder)
+
+    def _pack_select_all(self):
+        for lst in (self.pack_tool_list, self.pack_skill_list,
+                    self.pack_rule_list):
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
+                    continue
+                it.setCheckState(QtCore.Qt.Checked)
+
+    def _pack_clear(self):
+        for lst in (self.pack_tool_list, self.pack_skill_list,
+                    self.pack_rule_list):
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
+                    continue
+                it.setCheckState(QtCore.Qt.Unchecked)
+
+    @staticmethod
+    def _collect_checked_data(lst):
+        # type: (QtWidgets.QListWidget) -> list
+        out = []
+        for i in range(lst.count()):
+            it = lst.item(i)
+            if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
+                continue
+            if it.checkState() == QtCore.Qt.Checked:
+                out.append(it.data(QtCore.Qt.UserRole))
+        return out
+
+    def _on_pack_export(self):
+        tools = self._collect_checked_data(self.pack_tool_list)
+        skills = self._collect_checked_data(self.pack_skill_list)
+        rules = self._collect_checked_data(self.pack_rule_list)
+        if not (tools or skills or rules):
+            QtWidgets.QMessageBox.information(
+                self, '未选择',
+                '请先在三个列表里勾选要导出的资源（至少一个）。',
+            )
+            return
+        # 选保存路径
+        from .. import pack as pack_mod
+        suggested = (self.pack_name_edit.text().strip()
+                     or 'maxagent_export') + pack_mod.PACK_SUFFIX
+        path, _filter = QtWidgets.QFileDialog.getSaveFileName(
+            self, '保存资源包', suggested,
+            'MaxAgent Pack (*{})'.format(pack_mod.PACK_SUFFIX),
+        )
+        if not path:
+            return
+        if not path.endswith(pack_mod.PACK_SUFFIX):
+            path += pack_mod.PACK_SUFFIX
+        try:
+            res = pack_mod.export_pack(
+                output_path=path,
+                tool_names=tools,
+                skill_names=skills,
+                rule_ids=rules,
+                pack_name=self.pack_name_edit.text().strip(),
+                description=self.pack_desc_edit.text().strip(),
+                author=self.pack_author_edit.text().strip(),
+            )
+        except pack_mod.PackError as exc:
+            QtWidgets.QMessageBox.warning(self, '导出失败', str(exc))
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('导出资源包失败')
+            QtWidgets.QMessageBox.critical(self, '导出异常', str(exc))
+            return
+        size_kb = max(1, res['size'] // 1024)
+        QtWidgets.QMessageBox.information(
+            self, '导出成功',
+            '已写入: {}\n\n'
+            '工具 {} 个 / 技能 {} 个 / 规则 {} 个\n大小: {} KB'.format(
+                res['path'],
+                len(res['tools']),
+                len(res['skills']),
+                len(res['rules']),
+                size_kb,
+            ),
+        )
+
+    def _on_pack_import(self):
+        from .. import pack as pack_mod
+        path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+            self, '选择资源包', '',
+            'MaxAgent Pack (*{} *.zip)'.format(pack_mod.PACK_SUFFIX),
+        )
+        if not path:
+            return
+        try:
+            parsed = pack_mod.parse_pack(path)
+        except pack_mod.PackError as exc:
+            QtWidgets.QMessageBox.warning(self, '解析失败', str(exc))
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('解析资源包失败')
+            QtWidgets.QMessageBox.critical(self, '解析异常', str(exc))
+            return
+
+        from .pack_dialog import PackImportDialog
+        dlg = PackImportDialog(parsed, path, parent=self)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        sel = dlg.selection() or {}
+        try:
+            summary = pack_mod.import_pack(
+                pack_path=path,
+                selected_tools=sel.get('tools'),
+                selected_skills=sel.get('skills'),
+                selected_rules=sel.get('rules'),
+                overwrite=bool(sel.get('overwrite', False)),
+            )
+        except pack_mod.PackError as exc:
+            QtWidgets.QMessageBox.warning(self, '导入失败', str(exc))
+            return
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('导入资源包失败')
+            QtWidgets.QMessageBox.critical(self, '导入异常', str(exc))
+            return
+
+        # 汇总结果
+        def _fmt(group):
+            parts = []
+            for k in ('imported', 'overwritten', 'skipped'):
+                v = group.get(k) or []
+                if v:
+                    parts.append('{}={}'.format(k, len(v)))
+            errs = group.get('errors') or []
+            if errs:
+                parts.append('错误={}'.format(len(errs)))
+            return '、'.join(parts) or '无'
+
+        msg = (
+            '工具: {}\n技能: {}\n规则: {}'.format(
+                _fmt(summary['tools']),
+                _fmt(summary['skills']),
+                _fmt(summary['rules']),
+            )
+        )
+        # 列出错误细节（前 5 条）
+        all_errs = (
+            summary['tools'].get('errors', [])
+            + summary['skills'].get('errors', [])
+            + summary['rules'].get('errors', [])
+        )
+        if all_errs:
+            msg += '\n\n错误详情（前 5 条）:'
+            for e in all_errs[:5]:
+                key = e.get('name') or e.get('rule_id') or '?'
+                msg += '\n· {}: {}'.format(key, e.get('reason', ''))
+        QtWidgets.QMessageBox.information(self, '导入完成', msg)
+        self._reload_pack_lists()
+
+    # ================================================================== #
+    # Page 7: 日志（三态：关闭 / 开启 / DEBUG）
     # ================================================================== #
     def _build_page_log(self):
         # type: () -> QtWidgets.QWidget
@@ -1398,6 +1731,36 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<hr>'
 
+            # ---- 工具与技能：导入导出 ----
+            '<h4>工具与技能（导入导出）📦</h4>'
+            '<p>把你积累的<b>自定义工具 / 技能 / 规则</b>打包为单个 '
+            '<code>.maxagent-pack</code> 文件，方便：</p>'
+            '<table>'
+            '<tr><th>场景</th><th>使用方式</th></tr>'
+            '<tr><td>跨电脑同步</td>'
+            '<td>家里导出 → U 盘 / 网盘 → 公司导入</td></tr>'
+            '<tr><td>团队分享</td>'
+            '<td>把成熟工作流打包给同事，对方可选择要采纳哪些条目</td></tr>'
+            '<tr><td>项目存档</td>'
+            '<td>每个商业项目独立一个 pack，避免环境互相污染</td></tr>'
+            '</table>'
+
+            '<p><b>使用步骤</b>：</p>'
+            '<p>① 打开「工具与技能」Tab，三栏勾选要导出的内容'
+            '<br>② 在底部填写包名 / 作者 / 描述（可选）'
+            '<br>③ 点「<b>导出选中…</b>」选保存路径'
+            '<br>④ 对方点「<b>导入资源包…</b>」→ 在预览对话框勾选要采纳的项目'
+            '<br>⑤ 同名冲突时勾选「覆盖」可强制更新，不勾默认跳过</p>'
+
+            '<p class="warn"><b>⚠ 安全提示</b>：</p>'
+            '<p>· 自定义工具是<b>可执行 Python 代码</b>，会在 Max 内运行——'
+            '只导入<b>信任来源</b>的资源包；'
+            '<br>· 包<b>不</b>含 API Key / Profile 配置 / 会话历史，避免敏感信息泄露；'
+            '<br>· 导入对话框对工具会强制二次确认，并按 <code>new / existing / invalid</code> '
+            '颜色标注每条状态。</p>'
+
+            '<hr>'
+
             # ---- 日志 / 测试 ----
             '<h4>日志与诊断</h4>'
             '<p><b>日志 Tab</b>：三态切换 <b>关闭 / 开启 / DEBUG</b>。'
@@ -1406,8 +1769,11 @@ class SettingsDialog(QtWidgets.QDialog):
             '方便排查偶发问题。'
             '日志只写文件不进控制台，路径见日志页底部。</p>'
             '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
-            '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
-            '用于排查"测试连接通过但实际对话失败"类问题。</p>'
+            '<br><b>完整测试</b>：复刻真实对话请求'
+            '（流式 + 全部工具 schema + <b>真实 system prompt</b>），'
+            '用于排查"测试连接通过但实际对话失败"类问题。'
+            '<br>失败时错误信息可<b>鼠标选中复制</b>（含 HTTP code / body / '
+            'request-id / 关键 headers），方便排查"测试通过、对话失败"差异。</p>'
         )
 
     # ================================================================== #
@@ -2418,11 +2784,16 @@ class SettingsDialog(QtWidgets.QDialog):
                 self.test_label.setText('{} 连接成功（响应为空）'.format(_ee('✅')))
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('{} 连接失败: {}'.format(_ee('❌'), exc))
+            err_text = str(exc)
+            logger.warning('测试连接失败: %s', err_text)
+            self.test_label.setText('{} 连接失败: {}'.format(_ee('❌'), err_text))
             self.test_label.setStyleSheet('color:#e57373;')
+            self.test_label.setToolTip(err_text)
         except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('测试连接异常')
             self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
+            self.test_label.setToolTip(str(exc))
 
     def _test_connection_full(self):
         try:
@@ -2431,7 +2802,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
-        self.test_label.setText('⏳ 完整测试中（流式+tools）...')
+        self.test_label.setText('⏳ 完整测试中（流式+tools+真实 prompt）...')
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
 
@@ -2443,6 +2814,16 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setStyleSheet('color:#e57373;')
             return
 
+        # 用真实对话的 system prompt 复刻请求体——只有这样
+        # "完整测试通过 == 真实对话不会因 prompt/schema 体积而被拒"。
+        # 一些网关只在 messages[0] 较长 / 同时带 tools 时才返回 4xx。
+        try:
+            from ..agent.conversation import build_default_system_prompt
+            system_prompt = build_default_system_prompt()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('加载默认 system prompt 失败，降级到短文本: %s', exc)
+            system_prompt = 'You are a helpful assistant.'
+
         chunks = []
 
         def _on_delta(text):
@@ -2450,9 +2831,14 @@ class SettingsDialog(QtWidgets.QDialog):
 
         try:
             client = build_client_from_profile(prof)
+            logger.info(
+                '完整测试: model=%s base_url=%s sys_prompt=%dB tools=%d',
+                prof.model, prof.base_url,
+                len(system_prompt), len(tools_schema or []),
+            )
             resp = client.chat(
                 messages=[
-                    {'role': 'system', 'content': 'You are a helpful assistant.'},
+                    {'role': 'system', 'content': system_prompt},
                     {'role': 'user', 'content': '回复一个字: ok'},
                 ],
                 tools=tools_schema,
@@ -2475,11 +2861,20 @@ class SettingsDialog(QtWidgets.QDialog):
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
-            self.test_label.setText('{} 完整测试失败: {}'.format(_ee('❌'), exc))
+            # 错误已经是格式化好的 HTTP code + body + headers + url，
+            # 这里直接展示给用户，不再二次包装；同时落 warning 日志方便取证。
+            err_text = str(exc)
+            logger.warning('完整测试失败: %s', err_text)
+            self.test_label.setText(
+                '{} 完整测试失败: {}'.format(_ee('❌'), err_text),
+            )
             self.test_label.setStyleSheet('color:#e57373;')
+            self.test_label.setToolTip(err_text)
         except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('完整测试异常')
             self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
+            self.test_label.setToolTip(str(exc))
 
     def _refresh_base_url_hint(self, text):
         hint = diagnose_base_url(text)

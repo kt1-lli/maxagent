@@ -58,15 +58,16 @@ def dialog(qapp, config_mgr):
 
 
 def test_nav_has_six_tabs(dialog):
-    """左侧导航必须有 8 个 Tab：模型/联网/应用/助手形象/我的规则/日志/IDE 接口/帮助。"""
-    assert dialog.nav.count() == 8
-    assert dialog.stack.count() == 8
+    """左侧导航必须有 9 个 Tab：模型/联网/应用/助手形象/我的规则/工具与技能/日志/IDE 接口/帮助。"""
+    assert dialog.nav.count() == 9
+    assert dialog.stack.count() == 9
     labels = [dialog.nav.item(i).text() for i in range(dialog.nav.count())]
     assert any('模型' in t for t in labels)
     assert any('联网' in t for t in labels)
     assert any('应用' in t for t in labels)
     assert any('助手形象' in t for t in labels)
     assert any('我的规则' in t for t in labels)
+    assert any('工具与技能' in t for t in labels)
     assert any('日志' in t for t in labels)
     assert any('IDE 接口' in t for t in labels)
     assert any('帮助' in t for t in labels)
