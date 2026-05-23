@@ -238,19 +238,40 @@ class SettingsDialog(QtWidgets.QDialog):
         self.base_url_edit.setPlaceholderText(
             '如: https://api.deepseek.com',
         )
-        right.addRow('Base URL:', self.base_url_edit)
 
-        # base_url 静态体检提示（路径错填等常见问题）
+        # base_url 静态体检提示（路径错填等常见问题）：
+        # 把 base_url 输入框 + 提示 label 包在同一个 widget 里
+        # 作为整体加入 form，避免提示 hide 时仍占用 form 行高，
+        # 把下一行（API Key）的字段单元拉成超高块。
+        base_url_box = QtWidgets.QWidget()
+        base_url_box_layout = QtWidgets.QVBoxLayout(base_url_box)
+        base_url_box_layout.setContentsMargins(0, 0, 0, 0)
+        base_url_box_layout.setSpacing(2)
+        # 子项顶部对齐，避免 form 给该单元分配多余高度时
+        # base_url_edit 被向下推（resize 时表现为"漂移"）
+        base_url_box_layout.setAlignment(QtCore.Qt.AlignTop)
+        base_url_box_layout.addWidget(self.base_url_edit)
+
         self.base_url_hint = QtWidgets.QLabel('')
         self.base_url_hint.setStyleSheet('color:#b8923a;')
         self.base_url_hint.setWordWrap(True)
         self.base_url_hint.hide()
-        right.addRow('', self.base_url_hint)
+        base_url_box_layout.addWidget(self.base_url_hint)
+
+        base_url_box.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        right.addRow('Base URL:', base_url_box)
         self.base_url_edit.textChanged.connect(self._refresh_base_url_hint)
 
         # API Key + 显示/隐藏
         key_row = QtWidgets.QHBoxLayout()
+        key_row.setContentsMargins(0, 0, 0, 0)
         key_row.setSpacing(4)
+        # 强制水平排列时垂直居中，避免 resize 时按钮和输入框
+        # 在垂直方向出现错位（"脱节"）
+        key_row.setAlignment(QtCore.Qt.AlignVCenter)
         self.api_key_edit = QtWidgets.QLineEdit()
         self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self.api_key_edit.setPlaceholderText(
@@ -263,6 +284,21 @@ class SettingsDialog(QtWidgets.QDialog):
         key_row.addWidget(self.show_key_btn)
         key_widget = QtWidgets.QWidget()
         key_widget.setLayout(key_row)
+        # 限定 key_widget 垂直高度：使用 Fixed + 显式 maximumHeight
+        # 锁死，避免 form 在 resize 时对该行重新分配高度，
+        # 导致输入框相对相邻行漂移、与按钮脱节。
+        key_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        # sizeHint 高度由内部 QLineEdit + QPushButton 中较高者决定
+        # 这里直接让容器跟随该 hint，避免被 form 拉伸
+        key_widget.setMaximumHeight(
+            max(
+                self.api_key_edit.sizeHint().height(),
+                self.show_key_btn.sizeHint().height(),
+            ),
+        )
         right.addRow('API Key:', key_widget)
 
         self.model_edit = QtWidgets.QLineEdit()
@@ -383,7 +419,12 @@ class SettingsDialog(QtWidgets.QDialog):
         op_row.addWidget(self.apply_btn)
 
         right_box = QtWidgets.QVBoxLayout()
-        right_box.addLayout(right, 1)
+        # form 不再 stretch=1：让它只占 sizeHint 高度，
+        # 多余的纵向空间由 addStretch 吸收。
+        # 这样窗口 resize 时，每一行高度严格按 sizeHint 决定，
+        # 不会出现 API Key 行被分摊到多余高度而漂移的问题。
+        right_box.addLayout(right)
+        right_box.addStretch(1)
         right_box.addLayout(op_row)
 
         right_widget = QtWidgets.QWidget()
