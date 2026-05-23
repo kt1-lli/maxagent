@@ -1013,40 +1013,131 @@ class SettingsDialog(QtWidgets.QDialog):
 
         text = QtWidgets.QTextBrowser()
         text.setOpenExternalLinks(True)
+        # 直接给 QTextBrowser 设置高对比度的暗色调色板，避免依赖
+        # 系统主题——某些 Max 主题下默认正文偏灰，<code> 无背景，
+        # 阅读吃力。这里统一固定背景 + 高亮文字色。
+        text.setStyleSheet(
+            'QTextBrowser {'
+            ' background:#1e1e1e;'
+            ' color:#e8e8e8;'
+            ' border:1px solid #3a3a3a;'
+            ' padding:8px;'
+            ' font-size:10pt;'
+            ' line-height:160%;'
+            '}'
+        )
         text.setHtml(self._help_html())
         layout.addWidget(text, 1)
         return page
 
     @staticmethod
     def _help_html():
+        # 颜色规范（与界面整体暗色主题对齐，确保 ≥ AA 级对比度）：
+        #   正文       #e8e8e8（浅灰，对比 #1e1e1e ≈ 12:1）
+        #   小标题     #ffd166（暖黄，吸引眼球）
+        #   代码片段   背景 #2a2a2a + 文字 #ffe082
+        #   强调      #a8e6a8（浅绿）
+        #   警示      #ff9090（浅红）
         return (
+            '<style>'
+            'body { color:#e8e8e8; }'
+            'h3 { color:#ffd166; margin:6px 0 4px 0; }'
+            'h4 { color:#ffd166; margin:10px 0 4px 0;'
+            '     border-left:3px solid #ffd166; padding-left:6px; }'
+            'p { color:#e8e8e8; line-height:160%; }'
+            'b { color:#ffffff; }'
+            'code { background:#2a2a2a; color:#ffe082;'
+            '       padding:1px 4px; border-radius:2px; }'
+            '.tip { color:#a8e6a8; }'
+            '.warn { color:#ff9090; }'
+            'hr { border:0; border-top:1px solid #3a3a3a; margin:10px 0; }'
+            'table { border-collapse:collapse; margin:4px 0; }'
+            'td { padding:3px 8px; border:1px solid #3a3a3a;'
+            '     color:#e8e8e8; }'
+            'th { padding:3px 8px; border:1px solid #3a3a3a;'
+            '     background:#2a2a2a; color:#ffd166; text-align:left; }'
+            '</style>'
             '<h3>MaxAgent 设置帮助</h3>'
-            '<p><b>模型 Tab</b>：管理多套大模型连接（Ollama / LM Studio /'
-            ' OpenAI / DeepSeek 等），右键 Profile 可重命名 / 复制 / 设为默认。</p>'
+
+            '<h4>模型 Tab</h4>'
+            '<p>管理多套大模型连接（Ollama / LM Studio / OpenAI / '
+            'DeepSeek 等），右键 Profile 可<b>重命名 / 复制 / 设为默认</b>。</p>'
+
             '<p><b>Base URL</b>：OpenAI 兼容 API 的根地址，多数服务'
             '需要带 <code>/v1</code> 后缀（DeepSeek 官方推荐使用根域名）。'
             '<br>· Ollama：<code>http://localhost:11434/v1</code>'
             '<br>· LM Studio：<code>http://localhost:1234/v1</code>'
             '<br>· OpenAI：<code>https://api.openai.com/v1</code>'
             '<br>· DeepSeek：<code>https://api.deepseek.com</code>'
-            '（推荐模型 <code>deepseek-v4-flash</code> / '
+            '（推荐 <code>deepseek-v4-flash</code> / '
             '<code>deepseek-v4-pro</code>，旧模型 '
             '<code>deepseek-chat</code> / <code>deepseek-reasoner</code> '
-            '将于 2026/07/24 弃用）</p>'
+            '将于 <span class="warn">2026/07/24</span> 弃用）</p>'
+
             '<p><b>API Key</b>：本地模型可留空或填占位符；商用 API 必填。</p>'
             '<p><b>模型</b>：模型名称需与服务端实际可用模型完全一致。</p>'
-            '<p><b>温度</b>：0.0~2.0，越高越发散；建议 0.2 ~ 0.7。</p>'
+            '<p><b>温度</b>：0.0~2.0，越高越发散；建议 <b>0.2 ~ 0.7</b>。</p>'
             '<p><b>请求超时</b>：单次请求等待秒数，长上下文/慢模型可调大。</p>'
             '<p><b>工具调用上限</b>：单轮对话内 LLM 可触发的工具调用次数上限，'
             '防止无限循环。</p>'
             '<p><b>历史 token 预算</b>：发送给 LLM 时携带的对话历史 token 上限，'
             '超出会自动裁剪最早消息。</p>'
+
+            # ---- 自定义 Header ----
+            '<h4>自定义 Header（高级）</h4>'
+            '<p>在 LLM HTTP 请求中附加自定义请求头，常用于：'
+            '<b>企业网关追踪</b> / <b>Beta 通道开关</b> / <b>第三方代理鉴权</b>。'
+            '<br><span class="tip">DeepSeek 直连官方 API 通常无需填写</span>。</p>'
+
+            '<p><b>格式</b>：每行一对 <code>KEY=VALUE</code>，'
+            '半角等号分隔；空行 / 不含 <code>=</code> 的行会被忽略，'
+            '不支持冒号 / YAML / JSON。</p>'
+
+            '<p><b>DeepSeek 场景示例</b>：</p>'
+            '<table>'
+            '<tr><th>场景</th><th>填写内容</th></tr>'
+            '<tr><td>直连官方 API</td>'
+            '<td><span class="tip">留空即可</span>'
+            '（已自动处理 Bearer 鉴权）</td></tr>'
+            '<tr><td>走企业网关</td>'
+            '<td><code>X-Org-Id=team-rendering</code><br>'
+            '<code>X-Project=maxagent</code></td></tr>'
+            '<tr><td>调试追踪</td>'
+            '<td><code>X-Trace-Id=maxagent-debug</code></td></tr>'
+            '<tr><td>第三方 OpenAI 兼容网关</td>'
+            '<td><code>X-API-Token=xxxxxxxxxx</code><br>'
+            '<code>X-Tenant-Id=cg-team</code></td></tr>'
+            '</table>'
+
+            '<p class="warn"><b>⚠ 注意</b>：自定义 Header 优先级高于默认值，'
+            '<b>请勿覆盖</b> <code>Authorization</code> / '
+            '<code>Content-Type</code>，否则会破坏鉴权或被服务端拒收。</p>'
+
             '<hr>'
-            '<p><b>日志 Tab</b>：DEBUG 级别下会全链路打印 LLM 请求 / 工具调用 /'
-            '线程切换 / UI 信号延迟，方便排查偶发问题。</p>'
+
+            # ---- 视觉 / 图片 ----
+            '<h4>图片与视觉</h4>'
+            '<p>支持 4 种插入方式：📎 工具栏选图 / ✂️ 截图 / Ctrl+V 粘贴 / '
+            '直接拖拽到输入框。</p>'
+            '<p>当前 profile 模型属于<b>视觉白名单</b>（如 GPT-4o / '
+            'Claude-3+ / Gemini / DeepSeek-VL 等）时图片会原图发送；'
+            '<span class="warn">不支持视觉时</span>会自动降级为'
+            '<code>[图片] N 张</code> 的文本提示，并在输入框上方显示'
+            '黄色提示条，可一键切换 Profile。</p>'
+            '<p><b>气泡里的图片</b>：右键可<b>复制图片 / 复制路径 / '
+            '另存为 / 查看大图</b>，方便粘贴到 Word / 微信 / PS。</p>'
+
+            '<hr>'
+
+            # ---- 日志 / 测试 ----
+            '<h4>日志与诊断</h4>'
+            '<p><b>日志 Tab</b>：三态切换 <b>关闭 / 开启 / DEBUG</b>。'
+            'DEBUG 级别下会全链路打印 LLM 请求 / 工具调用 / 截图 / '
+            '附件操作 / 线程切换 / UI 信号延迟，方便排查偶发问题。'
+            '日志只写文件不进控制台，路径见日志页底部。</p>'
             '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
             '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
-            '用于排查 “测试连接通过但实际对话失败” 类问题。</p>'
+            '用于排查"测试连接通过但实际对话失败"类问题。</p>'
         )
 
     # ================================================================== #

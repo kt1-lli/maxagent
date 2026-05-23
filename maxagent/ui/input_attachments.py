@@ -29,9 +29,13 @@ from typing import Optional
 
 from ..attachments import Attachment
 from ..attachments import save_image_bytes
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+
+
+logger = get_logger(__name__)
 
 
 def copy_attachment_to_clipboard(attachment):
@@ -48,9 +52,14 @@ def copy_attachment_to_clipboard(attachment):
     :returns: 是否成功写入剪贴板
     """
     if attachment is None or not getattr(attachment, 'path', ''):
+        logger.debug('clipboard_copy: 附件为空，跳过')
         return False
     pix = QtGui.QPixmap(attachment.path)
     if pix.isNull():
+        logger.warning(
+            'clipboard_copy: 加载附件 pixmap 失败 path=%s',
+            getattr(attachment, 'path', ''),
+        )
         return False
     mime = QtCore.QMimeData()
     # 1) 位图：QImage 比 QPixmap 跨平台粘贴更稳
@@ -66,6 +75,10 @@ def copy_attachment_to_clipboard(attachment):
     mime.setText(attachment.path)
     cb = QtWidgets.QApplication.clipboard()
     cb.setMimeData(mime)
+    logger.info(
+        'clipboard_copy: 已复制图片到剪贴板 path=%s size=%dx%d',
+        attachment.path, pix.width(), pix.height(),
+    )
     return True
 
 
@@ -211,6 +224,12 @@ class AttachmentStrip(QtWidgets.QScrollArea):
         self._row.insertWidget(self._row.count() - 1, thumb)
         self.show()
         self.changed.emit()
+        logger.debug(
+            'attach_add: name=%s mime=%s total=%d',
+            getattr(attachment, 'name', ''),
+            getattr(attachment, 'mime', ''),
+            len(self._items),
+        )
 
     def clear(self):
         for i in reversed(range(self._row.count() - 1)):
@@ -237,6 +256,11 @@ class AttachmentStrip(QtWidgets.QScrollArea):
         if not self._items:
             self.hide()
         self.changed.emit()
+        logger.debug(
+            'attach_remove: name=%s remaining=%d',
+            getattr(attachment, 'name', ''),
+            len(self._items),
+        )
 
     def _on_preview(self, attachment):
         ImageViewerDialog.show_for(attachment, parent=self)

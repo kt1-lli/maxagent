@@ -28,9 +28,13 @@ from __future__ import print_function
 
 from typing import Optional
 
+from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+
+
+logger = get_logger(__name__)
 
 
 class ScreenshotOverlay(QtWidgets.QWidget):
@@ -171,11 +175,17 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         """
         screen = QtGui.QGuiApplication.primaryScreen()
         if screen is None:
+            logger.warning('截图失败：找不到主屏幕（primaryScreen=None）')
             return None
         # grabWindow(0) = 抓整个屏幕（root window）
         snap = screen.grabWindow(0)
         if snap is None or snap.isNull():
+            logger.warning('截图失败：grabWindow 返回空 pixmap')
             return None
+        logger.debug(
+            '截图蒙层启动: snap=%dx%d',
+            snap.width(), snap.height(),
+        )
 
         overlay = cls(snap, parent=parent)
         # 不依赖 destroyed 信号——destroyed 触发时 C++ 对象已析构，
@@ -201,6 +211,13 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         else:
             loop.exec()
         result = overlay.get_result()
+        if result is None or result.isNull():
+            logger.debug('截图取消或选区为空')
+        else:
+            logger.info(
+                '截图完成: 选区 %dx%d',
+                result.width(), result.height(),
+            )
         # 显式销毁，释放主屏快照
         try:
             overlay.deleteLater()

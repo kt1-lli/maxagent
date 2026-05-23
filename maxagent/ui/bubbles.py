@@ -18,6 +18,7 @@ from __future__ import print_function
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
+from ..logger import get_logger
 from .emoji_compat import ee as _ee
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
@@ -26,6 +27,9 @@ from .markdown_render import split_into_segments
 
 
 QApplication = QtWidgets.QApplication
+
+
+logger = get_logger(__name__)
 
 
 def _mini_btn_style():
@@ -693,9 +697,13 @@ class UserBubble(QtWidgets.QWidget):
         """把图片以多 MIME 形式写入剪贴板。"""
         try:
             from .input_attachments import copy_attachment_to_clipboard
-            copy_attachment_to_clipboard(attachment)
+            ok = copy_attachment_to_clipboard(attachment)
+            logger.debug(
+                'bubble_copy_image: ok=%s name=%s',
+                ok, getattr(attachment, 'name', ''),
+            )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.exception('bubble_copy_image 失败')
 
     @staticmethod
     def _save_image_as(widget, attachment):
@@ -724,20 +732,31 @@ class UserBubble(QtWidgets.QWidget):
                 data = src.read()
             with open(path, 'wb') as dst:
                 dst.write(data)
+            logger.info(
+                'bubble_save_image_as: 已另存为 src=%s dst=%s bytes=%d',
+                attachment.path, path, len(data),
+            )
         except OSError as exc:
+            logger.warning(
+                'bubble_save_image_as 写入失败 path=%s: %s', path, exc,
+            )
             QtWidgets.QMessageBox.warning(
                 widget, '保存失败', '写入文件失败: {}'.format(exc),
             )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.exception('bubble_save_image_as 异常')
 
     @staticmethod
     def _open_viewer(attachment):
         try:
             from .input_attachments import ImageViewerDialog
             ImageViewerDialog.show_for(attachment)
+            logger.debug(
+                'bubble_open_viewer: name=%s',
+                getattr(attachment, 'name', ''),
+            )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.exception('bubble_open_viewer 失败')
 
     def apply_max_width(self, viewport_width):
         # type: (int) -> None
