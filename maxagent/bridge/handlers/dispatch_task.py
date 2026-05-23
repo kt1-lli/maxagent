@@ -112,6 +112,9 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
     for loop_idx in range(int(max_rounds or 1)):
         rounds = loop_idx + 1
         if cancel_event.is_set():
+            logger.info(
+                'dispatch_task cancelled at round=%d', rounds,
+            )
             return {
                 'final_message': final_text,
                 'tool_calls': tool_trace,
@@ -120,6 +123,10 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
                 'cancelled': True,
             }
         if timeout_sec and time.time() > deadline:
+            logger.warning(
+                'dispatch_task timeout at round=%d after %.1fs',
+                rounds, time.time() - started,
+            )
             return {
                 'final_message': final_text,
                 'tool_calls': tool_trace,
@@ -129,6 +136,10 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
             }
 
         messages = conv.to_openai_messages()
+        logger.debug(
+            'dispatch_task round=%d sending %d messages to LLM',
+            rounds, len(messages),
+        )
         try:
             resp = llm.chat(
                 messages=messages,
@@ -137,6 +148,9 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
                 cancel_check=cancel_event.is_set,
             )
         except LLMError as exc:
+            logger.warning(
+                'dispatch_task round=%d LLM error: %s', rounds, exc,
+            )
             return {
                 'final_message': final_text,
                 'tool_calls': tool_trace,
@@ -181,11 +195,16 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
 
         # 没有工具调用 → 本轮就是最终回复
         if not tool_calls:
+            elapsed = int((time.time() - started) * 1000)
+            logger.info(
+                'dispatch_task done: rounds=%d elapsed=%dms tools=%d',
+                rounds, elapsed, len(tool_trace),
+            )
             return {
                 'final_message': final_text,
                 'tool_calls': tool_trace,
                 'rounds': rounds,
-                'elapsed_ms': int((time.time() - started) * 1000),
+                'elapsed_ms': elapsed,
                 'finish_reason': finish_reason,
             }
 
@@ -209,6 +228,10 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
                 args_obj = {}
 
             t_tool = time.time()
+            logger.debug(
+                'dispatch_task round=%d invoking tool=%s args_keys=%s',
+                rounds, tool_name, list(args_obj.keys()) if args_obj else [],
+            )
             try:
                 result = dispatcher.dispatch(tool_name, args_obj)
             except Exception as exc:  # pylint: disable=broad-except
@@ -219,8 +242,11 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
                     'type': 'exec_error',
                 }
             elapsed_ms = (time.time() - t_tool) * 1000
-
             ok = bool(result.get('ok'))
+            logger.debug(
+                'dispatch_task round=%d tool=%s ok=%s elapsed=%dms',
+                rounds, tool_name, ok, int(elapsed_ms),
+            )
             content_payload = result.get('result') if ok else result
 
             try:
@@ -240,11 +266,17 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
             ))
 
     # 超过 max_rounds 仍没收尾
+    elapsed_total = int((time.time() - started) * 1000)
+    logger.warning(
+        'dispatch_task reached max_rounds=%d without final reply '
+        '(elapsed=%dms, tools=%d)',
+        max_rounds, elapsed_total, len(tool_trace),
+    )
     return {
         'final_message': final_text or '⚠️ 任务在达到最大轮数前未给出最终回复',
         'tool_calls': tool_trace,
         'rounds': rounds,
-        'elapsed_ms': int((time.time() - started) * 1000),
+        'elapsed_ms': elapsed_total,
         'reached_max_rounds': True,
     }
 

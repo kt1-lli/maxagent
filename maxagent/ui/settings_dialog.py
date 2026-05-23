@@ -1280,11 +1280,60 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<hr>'
 
+            # ---- IDE 接口 / Bridge ----
+            '<h4>IDE 接口（Bridge）🔌</h4>'
+            '<p>在 Max 内开启一个本地 TCP 端口，让外部 IDE'
+            '（Cursor / Claude Desktop / Cline 等）通过 '
+            '<a href="https://gitee.com/cmqll/dcc-mcp" '
+            'style="color:#4da6ff;">dcc-mcp</a> 连接到 maxagent，'
+            '形成 <b>IDE Agent ↔ maxagent Agent</b> 协作。</p>'
+
+            '<p><b>两种调用方式</b>：</p>'
+            '<table>'
+            '<tr><th>工具</th><th>谁出大脑</th><th>典型场景</th></tr>'
+            '<tr><td><code>execute_python</code></td>'
+            '<td>IDE LLM 写代码</td>'
+            '<td>"创建 5 个 Box 沿 X 排列"等明确代码动作</td></tr>'
+            '<tr><td><code>dispatch_task</code></td>'
+            '<td>maxagent 自跑</td>'
+            '<td>"测我刚写的工具"等需要规划+执行的任务</td></tr>'
+            '</table>'
+
+            '<p><b>快速接入</b>：</p>'
+            '<p>① 打开 <b>IDE 接口</b> Tab → 勾选「启用 IDE Bridge」'
+            '<br>② 点「<b>复制 dcc-mcp / Cursor 配置示例</b>」按钮'
+            '<br>③ 粘贴到 IDE 的 MCP 配置文件（如 '
+            '<code>~/.cursor/mcp.json</code>），重启 IDE 即可。</p>'
+
+            '<p><b>关键设置</b>：</p>'
+            '<table>'
+            '<tr><th>字段</th><th>默认</th><th>说明</th></tr>'
+            '<tr><td>监听端口</td><td>7003</td>'
+            '<td>与 dcc-mcp 3dsMax 预设一致；改端口需同步 mcp.json</td></tr>'
+            '<tr><td>访问令牌</td><td>空</td>'
+            '<td>多人共用机器担心误连时填；本机回环用通常无需</td></tr>'
+            '<tr><td>允许任务派发</td><td>开</td>'
+            '<td>关闭后只暴露 execute_python（IDE 自己写代码）</td></tr>'
+            '<tr><td>最大轮数</td><td>20</td>'
+            '<td>dispatch_task 内 LLM↔工具循环上限，防死循环</td></tr>'
+            '<tr><td>超时</td><td>300s</td>'
+            '<td>dispatch_task 单任务总超时</td></tr>'
+            '</table>'
+
+            '<p class="warn"><b>⚠ 安全</b>：仅监听 <code>127.0.0.1</code>，'
+            '外网不可达；<b>不要</b>手动改成 <code>0.0.0.0</code>。'
+            'execute_python 完全开放，仅限本机使用。</p>'
+            '<p class="tip">完整指南见 '
+            '<code>maxagent/docs/IDE_MCP_USAGE.md</code></p>'
+
+            '<hr>'
+
             # ---- 日志 / 测试 ----
             '<h4>日志与诊断</h4>'
             '<p><b>日志 Tab</b>：三态切换 <b>关闭 / 开启 / DEBUG</b>。'
             'DEBUG 级别下会全链路打印 LLM 请求 / 工具调用 / 截图 / '
-            '附件操作 / 线程切换 / UI 信号延迟，方便排查偶发问题。'
+            '附件操作 / 线程切换 / UI 信号延迟 / Bridge 连接与方法分发，'
+            '方便排查偶发问题。'
             '日志只写文件不进控制台，路径见日志页底部。</p>'
             '<p><b>测试连接</b>：仅 ping，验证 base_url + key 基本可达。'
             '<br><b>完整测试</b>：复刻真实对话请求（流式 + 全部工具 schema），'
@@ -1500,6 +1549,9 @@ class SettingsDialog(QtWidgets.QDialog):
         """主开关：立即生效（启停 bridge）。"""
         cfg = self._config.config
         cfg.bridge_enabled = bool(checked)
+        logger.info(
+            'bridge toggle changed: enabled=%s', cfg.bridge_enabled,
+        )
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except
@@ -1520,9 +1572,18 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.bridge_dispatch_timeout_sec = int(
             self.bridge_timeout_spin.value(),
         )
+        logger.info(
+            'bridge apply: port=%d token=%s dispatch=%s '
+            'max_rounds=%d timeout=%ds',
+            cfg.bridge_port, 'set' if cfg.bridge_token else 'empty',
+            'on' if cfg.bridge_dispatch_enabled else 'off',
+            cfg.bridge_dispatch_max_rounds,
+            cfg.bridge_dispatch_timeout_sec,
+        )
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except
+            logger.exception('save bridge config failed: %s', exc)
             QtWidgets.QMessageBox.warning(
                 self, '保存失败', '设置写盘失败: {}'.format(exc),
             )
@@ -1550,12 +1611,17 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         cfg = self._config.config
         if not start:
+            logger.info('bridge runtime stop requested by UI')
             try:
                 stop_global_server()
             except Exception as exc:  # pylint: disable=broad-except
                 logger.warning('stop bridge failed: %s', exc)
             self._refresh_bridge_status()
             return
+        logger.info(
+            'bridge runtime start requested by UI: %s:%d',
+            cfg.bridge_host, cfg.bridge_port,
+        )
         try:
             start_global_server(
                 host=cfg.bridge_host,
@@ -1567,6 +1633,10 @@ class SettingsDialog(QtWidgets.QDialog):
                 dispatch_timeout_sec=cfg.bridge_dispatch_timeout_sec,
             )
         except OSError as exc:
+            logger.warning(
+                'bridge start failed (port %d busy?): %s',
+                cfg.bridge_port, exc,
+            )
             QtWidgets.QMessageBox.warning(
                 self, '启动失败',
                 '端口 {} 可能被占用：{}\n请尝试更换端口。'.format(
@@ -1612,10 +1682,12 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             QtWidgets.QApplication.clipboard().setText(text)
         except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('copy bridge config to clipboard failed: %s', exc)
             QtWidgets.QMessageBox.warning(
                 self, '复制失败', '剪贴板不可用: {}'.format(exc),
             )
             return
+        logger.info('bridge mcp.json snippet copied (port=%d)', port)
         QtWidgets.QMessageBox.information(
             self, '已复制',
             '已复制 mcp.json 配置到剪贴板。\n\n'

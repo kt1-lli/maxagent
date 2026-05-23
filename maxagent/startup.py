@@ -376,11 +376,25 @@ def _maybe_start_bridge(config_manager):
     cfg = config_manager.config
     if not bool(getattr(cfg, 'bridge_enabled', False)):
         return
+    # 延迟拿 logger，避免循环 import
+    try:
+        from maxagent.logger import get_logger
+        logger = get_logger('maxagent.startup.bridge')
+    except Exception:  # pylint: disable=broad-except
+        logger = None
     try:
         from maxagent.bridge import start_global_server
-    except Exception:  # pylint: disable=broad-except
-        # 模块缺失（极端情况）静默跳过
+    except Exception as exc:  # pylint: disable=broad-except
+        if logger is not None:
+            logger.warning('import bridge module failed: %s', exc)
         return
+    if logger is not None:
+        logger.info(
+            'auto-starting bridge from startup: %s:%d (dispatch=%s)',
+            getattr(cfg, 'bridge_host', '127.0.0.1'),
+            int(getattr(cfg, 'bridge_port', 7003) or 7003),
+            'on' if getattr(cfg, 'bridge_dispatch_enabled', True) else 'off',
+        )
     try:
         start_global_server(
             host=getattr(cfg, 'bridge_host', '127.0.0.1'),
@@ -399,8 +413,14 @@ def _maybe_start_bridge(config_manager):
         )
     except OSError as exc:
         # 端口冲突等：仅打日志，不弹框打断启动
+        if logger is not None:
+            logger.warning(
+                'bridge auto-start failed (port busy?): %s', exc,
+            )
         print('[MaxAgent] bridge 启动失败（端口冲突？）: {}'.format(exc))
     except Exception as exc:  # pylint: disable=broad-except
+        if logger is not None:
+            logger.exception('bridge auto-start failed: %s', exc)
         print('[MaxAgent] bridge 启动失败: {}'.format(exc))
 
 

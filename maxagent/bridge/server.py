@@ -165,7 +165,9 @@ class BridgeServer(object):
     # ------------------------------------------------------------------ #
     def _accept_loop(self):
         # type: () -> None
+        logger.debug('bridge accept loop started')
         sock = self._sock
+        accepted = 0
         while self._running and sock is not None:
             try:
                 conn, addr = sock.accept()
@@ -174,6 +176,10 @@ class BridgeServer(object):
             except OSError:
                 # stop() 关掉了 socket
                 break
+            accepted += 1
+            logger.debug(
+                'bridge accepted conn #%d from %s', accepted, addr,
+            )
             t = threading.Thread(
                 target=self._handle_connection,
                 args=(conn, addr),
@@ -181,6 +187,9 @@ class BridgeServer(object):
             )
             t.daemon = True
             t.start()
+        logger.debug(
+            'bridge accept loop exited (total accepted=%d)', accepted,
+        )
 
     # ------------------------------------------------------------------ #
     # 单连接处理
