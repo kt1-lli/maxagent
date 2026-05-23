@@ -93,8 +93,8 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('🎨') + '  应用', 'app'),
         (_ee('👤') + '  助手形象', 'employee'),
         (_ee('📦') + '  我的资源', 'resources'),
-        (_ee('📜') + '  日志', 'log'),
         (_ee('🔌') + '  IDE 接口', 'bridge'),
+        (_ee('📜') + '  日志', 'log'),
         (_ee('❓') + '  帮助', 'help'),
     ]
 
@@ -143,8 +143,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_app())
         self.stack.addWidget(self._build_page_employee())
         self.stack.addWidget(self._build_page_resources())
-        self.stack.addWidget(self._build_page_log())
+        # 注意：以下两行顺序与 _NAV_ITEMS 严格对应。
+        # IDE 接口排在日志之前——属于"功能性"配置，使用频率高于
+        # "排错性"日志，先功能后辅助更符合用户心智模型。
         self.stack.addWidget(self._build_page_bridge())
+        self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_help())
         right_box.addWidget(self.stack, 1)
 
@@ -289,8 +292,50 @@ class SettingsDialog(QtWidgets.QDialog):
             '本地模型可留空，或填 ollama / lmstudio 等占位符',
         )
         key_row.addWidget(self.api_key_edit, 1)
+        # 显示/隐藏按钮：
+        # 1) 关闭 autoDefault/Default，防止表单中按 Enter 把 API Key
+        #    明文显示出来（这是历史 bug，用户回车后 toggled 信号被
+        #    意外触发 → setEchoMode(Normal) → 密码原文泄露）。
+        # 2) 关闭 NoFocus 之外的焦点策略：避免 Tab 串过来后空格也能
+        #    切换可见性。改为只能用鼠标点击切换，符合"敏感操作显式"
+        #    交互预期。
+        # 3) 视觉反馈：checked 时换图标 / 文案 / 背景色，
+        #    让用户一眼分辨当前是"明文显示"还是"已隐藏"。
         self.show_key_btn = QtWidgets.QPushButton(_btn_label('👁', '显示'))
         self.show_key_btn.setCheckable(True)
+        self.show_key_btn.setAutoDefault(False)
+        self.show_key_btn.setDefault(False)
+        self.show_key_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.show_key_btn.setToolTip(
+            '点击切换 API Key 可见性。\n'
+            '⚠ 显示状态下请避免分享屏幕或截图。',
+        )
+        # 视觉反馈：
+        # - 默认（隐藏）：灰底，提示"安全态"
+        # - 选中（显示）：橙红底 + 白字，提示"敏感态"
+        # 颜色与"危险按钮"语义一致，让明文显示具有显著视觉警示效果。
+        self.show_key_btn.setStyleSheet(
+            'QPushButton {'
+            ' padding: 4px 10px;'
+            ' border: 1px solid #555;'
+            ' border-radius: 3px;'
+            ' background: #2d2d2d;'
+            ' color: #ddd;'
+            '}'
+            'QPushButton:hover {'
+            ' border-color: #888;'
+            ' background: #3a3a3a;'
+            '}'
+            'QPushButton:checked {'
+            ' background: #c0392b;'
+            ' border-color: #e74c3c;'
+            ' color: #ffffff;'
+            ' font-weight: bold;'
+            '}'
+            'QPushButton:checked:hover {'
+            ' background: #d63a2c;'
+            '}',
+        )
         self.show_key_btn.toggled.connect(self._toggle_key_visible)
         key_row.addWidget(self.show_key_btn)
         key_widget = QtWidgets.QWidget()
@@ -2401,6 +2446,17 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         self.name_edit.setText(prof.name)
         self.base_url_edit.setText(prof.base_url)
+        # 切 profile 前先把"显示 API Key"按钮强制复位到隐藏态，
+        # 防止上一个 profile 留下的"明文显示"状态把新 profile 的
+        # key 也直接暴露在屏幕上。blockSignals 避免触发 _toggle 槽
+        # 写多余日志。
+        self.show_key_btn.blockSignals(True)
+        try:
+            self.show_key_btn.setChecked(False)
+            self.show_key_btn.setText(_btn_label('👁', '显示'))
+            self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        finally:
+            self.show_key_btn.blockSignals(False)
         self.api_key_edit.setText(prof.api_key or '')
         self.model_edit.setText(prof.model)
         self.temperature_spin.setValue(float(prof.temperature))
@@ -3029,10 +3085,22 @@ class SettingsDialog(QtWidgets.QDialog):
         self._del_profile_by_name(item.text())
 
     def _toggle_key_visible(self, checked):
+        # type: (bool) -> None
+        """切换 API Key 输入框的明/暗显示状态。
+
+        除了切 EchoMode，还会同步：
+        1. 按钮图标与文案（👁 显示 ↔ 🙈 隐藏），让"当前态"一目了然
+        2. 写入 INFO 级日志（**只记状态，不记 key 内容**）方便排查
+           "我刚刚是不是误点了显示？"这类问题
+        """
         if checked:
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Normal)
+            self.show_key_btn.setText(_btn_label('🙈', '隐藏'))
+            logger.info('API Key 切换为明文显示')
         else:
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+            self.show_key_btn.setText(_btn_label('👁', '显示'))
+            logger.info('API Key 切换为隐藏显示')
 
     def _apply(self):
         try:
