@@ -225,9 +225,15 @@ class LLMClient(object):
             "model": self._model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
             "stream": stream,
         }
+        # max_tokens <= 0 表示「由模型决定」（UI 设置中的特殊值），
+        # 此时不发该字段，让服务端使用其默认值。
+        # 部分严苛网关（如 tokenhub vita 视觉模型）会在 max_tokens 超出
+        # 模型上限时直接返回 400 invalid_params；保留 UI 的 0 语义可让
+        # 用户在不知道具体上限时也能成功调用。
+        if max_tokens and max_tokens > 0:
+            payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"

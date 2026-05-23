@@ -215,6 +215,8 @@ class AppConfig:
         "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen-vl-max", "qwen-vl-plus",
         "glm-4v", "yi-vl", "internvl",
         "deepseek-vl", "pixtral", "llama-3.2-vision",
+        # 腾讯 youtu 实验室的 vita 视觉理解系列（tokenhub 网关）
+        "youtu-vita", "vita",
     ])
 
     # ---------- IDE Bridge（给外部 IDE / dcc-mcp 用的本地 TCP 端口）---------- #

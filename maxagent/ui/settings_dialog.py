@@ -204,9 +204,15 @@ class SettingsDialog(QtWidgets.QDialog):
         # 全角 ＋ ／ ✕ 在 PySide2/6 都能直接渲染，无需走 emoji_compat
         self.add_btn = QtWidgets.QPushButton('＋ 新建')
         self.add_btn.clicked.connect(self._add_profile)
+        # 关键：关闭 autoDefault，否则在表单输入框按回车会被这个按钮
+        # 的 default 行为吃掉，触发"新建 Profile"对话框
+        self.add_btn.setAutoDefault(False)
+        self.add_btn.setDefault(False)
         btns.addWidget(self.add_btn)
         self.del_btn = QtWidgets.QPushButton('✕ 删除')
         self.del_btn.clicked.connect(self._del_profile)
+        self.del_btn.setAutoDefault(False)
+        self.del_btn.setDefault(False)
         btns.addWidget(self.del_btn)
         left.addLayout(btns)
 
@@ -420,6 +426,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试连接'))
         self.test_btn.setToolTip('发送一条最简单的非流式 ping，仅验证 base_url + key 基本可达。')
         self.test_btn.clicked.connect(self._test_connection)
+        self.test_btn.setAutoDefault(False)
+        self.test_btn.setDefault(False)
         _shape_btn(self.test_btn)
         op_row.addWidget(self.test_btn)
 
@@ -429,12 +437,18 @@ class SettingsDialog(QtWidgets.QDialog):
             '当"测试连接"通过但实际对话报错时，用此按钮定位差异。'
         )
         self.test_full_btn.clicked.connect(self._test_connection_full)
+        self.test_full_btn.setAutoDefault(False)
+        self.test_full_btn.setDefault(False)
         _shape_btn(self.test_full_btn)
         op_row.addWidget(self.test_full_btn)
 
         self.apply_btn = QtWidgets.QPushButton(_btn_label('💾', '应用'))
-        self.apply_btn.setToolTip('保存当前 Profile 修改')
+        self.apply_btn.setToolTip('保存当前 Profile 修改（在表单内按 Enter 也会触发）')
         self.apply_btn.clicked.connect(self._apply)
+        # 让"应用"成为表单的 default 按钮——在表单输入框按 Enter 就会
+        # 直接保存当前 Profile，符合用户直觉
+        self.apply_btn.setAutoDefault(True)
+        self.apply_btn.setDefault(True)
         _shape_btn(self.apply_btn)
         op_row.addWidget(self.apply_btn)
 
@@ -2260,6 +2274,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.headers_edit.setPlainText(text)
         self.test_label.setText('')
         self._dirty = False
+        # 记下当前 form 关联的 profile 名，供 _read_form 拷贝基底使用
+        # （避免 UI 不暴露的字段 kind / 计费 / tool_result_max_bytes / 等
+        # 在每次「应用」时被 dataclass 默认值悄悄擦掉）
+        self._current_profile = profile_name
 
     # ================================================================== #
     # 联网设置加载 / 写盘
@@ -2570,16 +2588,54 @@ class SettingsDialog(QtWidgets.QDialog):
             k, v = line.split('=', 1)
             headers[k.strip()] = v.strip()
 
+        # 修复：以"当前已存的同名 profile"为基底，再用 UI 字段覆盖。
+        # 这样 UI 上不暴露的字段（kind / 计费单价 / tool_result_max_bytes /
+        # auto_summarize_threshold 等）不会在每次「应用」时被 dataclass 默认值
+        # 静默擦掉。新建 profile 时基底为 None，使用 dataclass 默认值即可。
+        new_name = self.name_edit.text().strip()
+        # 优先用当前 form 关联的 profile 作为基底（_current_profile 由
+        # _on_profile_selected 维护），兜底再按新名字找一遍
+        base = None
+        cur_name = getattr(self, '_current_profile', '') or ''
+        if cur_name:
+            base = self._config.get_profile(cur_name)
+        if base is None and new_name:
+            base = self._config.get_profile(new_name)
+
+        # max_tokens=0 表示"由模型决定"——保持 0 写入，让 LLMClient 在
+        # 实际调用时按 0 跳过该字段；不要再强制改写成 4096
+        max_tokens_value = int(self.max_tokens_spin.value())
+
+        if base is not None:
+            # 拷贝基底，再用 UI 值覆盖 UI 暴露字段。asdict 会递归把
+            # dataclass 拆成 dict（含 extra_headers 这种嵌套容器），
+            # 不会触发 to_dict() 里给 api_key 加 b64: 前缀的混淆逻辑。
+            from dataclasses import asdict as _asdict
+            new_prof = LLMProfile(**_asdict(base))
+            new_prof.name = new_name
+            new_prof.base_url = self.base_url_edit.text().strip()
+            new_prof.api_key = self.api_key_edit.text()
+            new_prof.model = self.model_edit.text().strip()
+            new_prof.temperature = float(self.temperature_spin.value())
+            new_prof.max_tokens = max_tokens_value
+            new_prof.timeout = int(self.timeout_spin.value())
+            new_prof.max_tool_loops = int(self.max_loops_spin.value())
+            new_prof.max_history_tokens = int(
+                self.max_history_tokens_spin.value(),
+            )
+            new_prof.stream = bool(self.stream_chk.isChecked())
+            new_prof.supports_tools = bool(self.tools_chk.isChecked())
+            new_prof.extra_headers = headers
+            return new_prof
+
+        # 新建 profile：用 dataclass 默认值兜底
         return LLMProfile(
-            name=self.name_edit.text().strip(),
+            name=new_name,
             base_url=self.base_url_edit.text().strip(),
             api_key=self.api_key_edit.text(),
             model=self.model_edit.text().strip(),
             temperature=float(self.temperature_spin.value()),
-            max_tokens=(
-                int(self.max_tokens_spin.value())
-                if self.max_tokens_spin.value() > 0 else 4096
-            ),
+            max_tokens=max_tokens_value,
             timeout=int(self.timeout_spin.value()),
             max_tool_loops=int(self.max_loops_spin.value()),
             max_history_tokens=int(self.max_history_tokens_spin.value()),
