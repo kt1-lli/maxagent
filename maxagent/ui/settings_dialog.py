@@ -719,18 +719,12 @@ class SettingsDialog(QtWidgets.QDialog):
 
         layout.addLayout(body, 1)
 
-        # 操作按钮
+        # 操作按钮（每栏的全选已收敛到栏顶复选框，这里仅保留刷新与导入导出）
         op_row = QtWidgets.QHBoxLayout()
         op_row.setSpacing(8)
         refresh_btn = QtWidgets.QPushButton(_ee('🔄') + ' 刷新')
         refresh_btn.clicked.connect(self._reload_pack_lists)
         op_row.addWidget(refresh_btn)
-        select_all_btn = QtWidgets.QPushButton('全选')
-        select_all_btn.clicked.connect(self._pack_select_all)
-        op_row.addWidget(select_all_btn)
-        clear_btn = QtWidgets.QPushButton('清空选择')
-        clear_btn.clicked.connect(self._pack_clear)
-        op_row.addWidget(clear_btn)
         op_row.addStretch(1)
         export_btn = QtWidgets.QPushButton(_ee('📤') + ' 导出选中…')
         export_btn.setStyleSheet(
@@ -773,15 +767,36 @@ class SettingsDialog(QtWidgets.QDialog):
         # type: (QtWidgets.QHBoxLayout, str) -> QtWidgets.QListWidget
         wrap = QtWidgets.QVBoxLayout()
         wrap.setSpacing(4)
+        # 顶部行：标题 + 独立全选复选框
+        head_row = QtWidgets.QHBoxLayout()
+        head_row.setSpacing(6)
         title_lbl = QtWidgets.QLabel(title)
         title_lbl.setStyleSheet(
             'QLabel { color:#ffd166; font-weight:bold; }'
         )
-        wrap.addWidget(title_lbl)
+        head_row.addWidget(title_lbl)
+        head_row.addStretch(1)
+        all_chk = QtWidgets.QCheckBox('全选')
+        all_chk.setTristate(False)
+        all_chk.setStyleSheet('QCheckBox { color:#cccccc; }')
+        head_row.addWidget(all_chk)
+        wrap.addLayout(head_row)
+
         lst = QtWidgets.QListWidget()
         lst.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         wrap.addWidget(lst, 1)
         parent_layout.addLayout(wrap, 1)
+
+        # 全选 ↔ 列表 双向同步
+        all_chk.stateChanged.connect(
+            lambda state, _lst=lst: self._pack_toggle_section(_lst, state),
+        )
+        lst.itemChanged.connect(
+            lambda _it, _lst=lst, _chk=all_chk:
+                self._pack_sync_section_header(_lst, _chk),
+        )
+        # 暴露给后续刷新使用，方便重置 header
+        lst._pack_select_all_chk = all_chk  # type: ignore[attr-defined]
         return lst
 
     def _reload_pack_lists(self):
@@ -805,70 +820,145 @@ class SettingsDialog(QtWidgets.QDialog):
             rules = []
             logger.warning('扫描自定义规则失败: %s', exc)
 
-        self.pack_tool_list.clear()
-        for item in tools:
-            name = item['name']
-            meta = item.get('meta') or {}
-            desc = (meta.get('description') or '').strip()
-            label = name + ('  —  ' + desc if desc else '')
-            it = QtWidgets.QListWidgetItem(label)
-            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
-            it.setCheckState(QtCore.Qt.Unchecked)
-            it.setData(QtCore.Qt.UserRole, name)
-            self.pack_tool_list.addItem(it)
-        if not tools:
-            placeholder = QtWidgets.QListWidgetItem('（暂无自定义工具）')
-            placeholder.setFlags(QtCore.Qt.NoItemFlags)
-            self.pack_tool_list.addItem(placeholder)
+        self.pack_tool_list.blockSignals(True)
+        try:
+            self.pack_tool_list.clear()
+            for item in tools:
+                name = item['name']
+                meta = item.get('meta') or {}
+                desc = (meta.get('description') or '').strip()
+                label = name + ('  —  ' + desc if desc else '')
+                it = QtWidgets.QListWidgetItem(label)
+                it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+                it.setCheckState(QtCore.Qt.Unchecked)
+                it.setData(QtCore.Qt.UserRole, name)
+                self.pack_tool_list.addItem(it)
+            if not tools:
+                placeholder = QtWidgets.QListWidgetItem('（暂无自定义工具）')
+                placeholder.setFlags(QtCore.Qt.NoItemFlags)
+                self.pack_tool_list.addItem(placeholder)
+        finally:
+            self.pack_tool_list.blockSignals(False)
 
-        self.pack_skill_list.clear()
-        for sk in skill_objs:
-            desc = (sk.description or '').strip().replace('\n', ' ')
-            if len(desc) > 40:
-                desc = desc[:40] + '…'
-            label = sk.name + ('  —  ' + desc if desc else '')
-            it = QtWidgets.QListWidgetItem(label)
-            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
-            it.setCheckState(QtCore.Qt.Unchecked)
-            it.setData(QtCore.Qt.UserRole, sk.name)
-            self.pack_skill_list.addItem(it)
-        if not skill_objs:
-            placeholder = QtWidgets.QListWidgetItem('（暂无技能）')
-            placeholder.setFlags(QtCore.Qt.NoItemFlags)
-            self.pack_skill_list.addItem(placeholder)
+        self.pack_skill_list.blockSignals(True)
+        try:
+            self.pack_skill_list.clear()
+            for sk in skill_objs:
+                desc = (sk.description or '').strip().replace('\n', ' ')
+                if len(desc) > 40:
+                    desc = desc[:40] + '…'
+                label = sk.name + ('  —  ' + desc if desc else '')
+                it = QtWidgets.QListWidgetItem(label)
+                it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+                it.setCheckState(QtCore.Qt.Unchecked)
+                it.setData(QtCore.Qt.UserRole, sk.name)
+                self.pack_skill_list.addItem(it)
+            if not skill_objs:
+                placeholder = QtWidgets.QListWidgetItem('（暂无技能）')
+                placeholder.setFlags(QtCore.Qt.NoItemFlags)
+                self.pack_skill_list.addItem(placeholder)
+        finally:
+            self.pack_skill_list.blockSignals(False)
 
-        self.pack_rule_list.clear()
-        for r in rules:
-            rid = r.get('id') or ''
-            title_txt = (r.get('title') or '').strip()
-            label = rid + ('  —  ' + title_txt if title_txt else '')
-            it = QtWidgets.QListWidgetItem(label)
-            it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
-            it.setCheckState(QtCore.Qt.Unchecked)
-            it.setData(QtCore.Qt.UserRole, rid)
-            self.pack_rule_list.addItem(it)
-        if not rules:
-            placeholder = QtWidgets.QListWidgetItem('（暂无自定义规则）')
-            placeholder.setFlags(QtCore.Qt.NoItemFlags)
-            self.pack_rule_list.addItem(placeholder)
+        self.pack_rule_list.blockSignals(True)
+        try:
+            self.pack_rule_list.clear()
+            for r in rules:
+                rid = r.get('id') or ''
+                title_txt = (r.get('title') or '').strip()
+                label = rid + ('  —  ' + title_txt if title_txt else '')
+                it = QtWidgets.QListWidgetItem(label)
+                it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
+                it.setCheckState(QtCore.Qt.Unchecked)
+                it.setData(QtCore.Qt.UserRole, rid)
+                self.pack_rule_list.addItem(it)
+            if not rules:
+                placeholder = QtWidgets.QListWidgetItem('（暂无自定义规则）')
+                placeholder.setFlags(QtCore.Qt.NoItemFlags)
+                self.pack_rule_list.addItem(placeholder)
+        finally:
+            self.pack_rule_list.blockSignals(False)
+
+        # 刷新后所有项均为未勾选 → 栏顶全选复选框也复位
+        for lst in (self.pack_tool_list, self.pack_skill_list,
+                    self.pack_rule_list):
+            chk = getattr(lst, '_pack_select_all_chk', None)
+            if chk is not None:
+                self._pack_sync_section_header(lst, chk)
+
+    def _pack_toggle_section(self, lst, state):
+        # type: (QtWidgets.QListWidget, int) -> None
+        """栏顶'全选'复选框切换 → 同步该栏所有可勾选项。"""
+        # 兼容 PySide2(int) / PySide6(CheckState 或 int) 两种回调签名
+        try:
+            state_int = int(state)
+        except (TypeError, ValueError):
+            state_int = 2 if state == QtCore.Qt.Checked else 0
+        target = (QtCore.Qt.Checked if state_int == 2
+                  else QtCore.Qt.Unchecked)
+        lst.blockSignals(True)
+        try:
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
+                    continue
+                it.setCheckState(target)
+        finally:
+            lst.blockSignals(False)
+        logger.info(
+            'pack 栏全选切换: %s → %s',
+            getattr(lst, 'objectName', lambda: '')() or 'list',
+            'all' if target == QtCore.Qt.Checked else 'none',
+        )
+
+    def _pack_sync_section_header(self, lst, header_chk):
+        # type: (QtWidgets.QListWidget, QtWidgets.QCheckBox) -> None
+        """列表项勾选变化 → 反向同步栏顶'全选'复选框状态。"""
+        total = 0
+        checked = 0
+        for i in range(lst.count()):
+            it = lst.item(i)
+            if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
+                continue
+            total += 1
+            if it.checkState() == QtCore.Qt.Checked:
+                checked += 1
+        # 阻断回环：栏顶 checkbox 状态切换不应再触发 _pack_toggle_section
+        header_chk.blockSignals(True)
+        try:
+            if total == 0:
+                header_chk.setChecked(False)
+            elif checked == total:
+                header_chk.setChecked(True)
+            else:
+                header_chk.setChecked(False)
+        finally:
+            header_chk.blockSignals(False)
 
     def _pack_select_all(self):
+        """[兼容入口] 把三栏的'全选'复选框全部勾上。
+
+        新 UI 已把全选收敛到每栏顶部独立的复选框，但保留此方法供
+        老测试 / 外部脚本继续调用，避免破坏向后兼容。
+        """
         for lst in (self.pack_tool_list, self.pack_skill_list,
                     self.pack_rule_list):
-            for i in range(lst.count()):
-                it = lst.item(i)
-                if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
-                    continue
-                it.setCheckState(QtCore.Qt.Checked)
+            chk = getattr(lst, '_pack_select_all_chk', None)
+            if chk is not None:
+                chk.setChecked(True)
+            else:
+                # 极端兜底：栏顶 checkbox 不存在时直接遍历
+                self._pack_toggle_section(lst, QtCore.Qt.Checked)
 
     def _pack_clear(self):
+        """[兼容入口] 清空三栏的所有勾选。"""
         for lst in (self.pack_tool_list, self.pack_skill_list,
                     self.pack_rule_list):
-            for i in range(lst.count()):
-                it = lst.item(i)
-                if not (it.flags() & QtCore.Qt.ItemIsUserCheckable):
-                    continue
-                it.setCheckState(QtCore.Qt.Unchecked)
+            chk = getattr(lst, '_pack_select_all_chk', None)
+            if chk is not None:
+                chk.setChecked(False)
+            else:
+                self._pack_toggle_section(lst, QtCore.Qt.Unchecked)
 
     @staticmethod
     def _collect_checked_data(lst):
@@ -1286,19 +1376,8 @@ class SettingsDialog(QtWidgets.QDialog):
         del_btn.clicked.connect(self._on_rules_delete)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
-        # Phase 2: 导入 / 导出（轻共享）
-        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
-        export_btn.setToolTip('把当前选中的规则导出为 .maxagent-rule.json 文件')
-        export_btn.clicked.connect(self._on_rules_export_selected)
-        btn_row.addWidget(export_btn)
-        export_all_btn = QtWidgets.QPushButton(_btn_label('📦', '导出全部'))
-        export_all_btn.setToolTip('把所有已启用规则打包导出为 .maxagent-rules.json 文件')
-        export_all_btn.clicked.connect(self._on_rules_export_all)
-        btn_row.addWidget(export_all_btn)
-        import_btn = QtWidgets.QPushButton(_btn_label('📥', '导入文件'))
-        import_btn.setToolTip('从 .maxagent-rule(s).json 文件导入规则')
-        import_btn.clicked.connect(self._on_rules_import_file)
-        btn_row.addWidget(import_btn)
+        # 注：规则的导入/导出已统一收敛到「我的资源 → 导入/导出」子 Tab，
+        # 此处仅保留就地编辑能力。
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
         refresh_btn.clicked.connect(self._refresh_rules_list)
         btn_row.addWidget(refresh_btn)
@@ -1741,16 +1820,22 @@ class SettingsDialog(QtWidgets.QDialog):
             '<table>'
             '<tr><th>子 Tab</th><th>用途</th></tr>'
             '<tr><td><b>规则</b></td>'
-            '<td>从对话中沉淀的 LLM 行为规则；启停 / 删除 / 跨设备分享</td></tr>'
+            '<td>从对话中沉淀的 LLM 行为规则；查看 / 启停 / 删除</td></tr>'
             '<tr><td><b>技能</b></td>'
-            '<td>触发关键词命中时注入的流程模板；启停 / 查看 / 单项导出</td></tr>'
+            '<td>触发关键词命中时注入的流程模板；查看 / 启停 / 删除</td></tr>'
             '<tr><td><b>工具</b></td>'
-            '<td>对话中"学习"出来的可执行 Python 工具；启停 / 查看源码 / 单项导出</td></tr>'
+            '<td>对话中"学习"出来的可执行 Python 工具；'
+            '查看源码 / 启停 / 删除</td></tr>'
             '<tr><td><b>导入/导出</b></td>'
-            '<td>三类一并打包成 <code>.maxagent-pack</code> 跨设备同步 / 团队分享</td></tr>'
+            '<td>三类资源<b>统一打包</b>为 <code>.maxagent-pack</code>'
+            '，跨设备同步 / 团队分享</td></tr>'
             '</table>'
+            '<p>三个管理子页底部按钮已对齐，统一为'
+            '<b>查看 / 启用-禁用 / 删除 / 刷新</b>四颗按钮，'
+            '所有导入导出能力都收敛到「导入/导出」子 Tab，避免分散。</p>'
             '<p><b>启用 / 禁用语义（关键）</b>：勾选项即"启用"，'
-            '取消勾选即"禁用"——'
+            '取消勾选即"禁用"——也可选中后点底部'
+            '<b>启用/禁用</b>按钮翻转。'
             '<b>禁用后 LLM 完全感知不到该资源</b>：'
             '工具不会出现在 schema、技能不会出现在简介或被关键词触发、'
             '规则不会进入 system prompt。但磁盘文件保留，'
@@ -1760,14 +1845,11 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<p><b>跨设备同步 / 团队分享</b>：</p>'
             '<p>① 打开「我的资源 → 导入/导出」子 Tab'
-            '<br>② 三栏勾选要导出的项目（可只选某一类，也可三类一起）'
-            '<br>③ 填写包名 / 作者 / 描述（可选） → 点「<b>导出选中…</b>」'
+            '<br>② 每栏顶部独立的「<b>全选</b>」复选框可一键勾上该栏所有项；'
+            '也可手动勾选个别项目<br>'
+            '③ 填写包名 / 作者 / 描述（可选） → 点「<b>导出选中…</b>」'
             '<br>④ 对方点「<b>导入资源包…</b>」→ 在预览对话框勾选要采纳的项目'
             '<br>⑤ 同名冲突时勾选「覆盖」可强制更新，不勾默认跳过</p>'
-
-            '<p><b>单项导出</b>：在「技能」或「工具」子 Tab 选中某一项后点'
-            '「导出选中」，可只导出该项，无需切换到导入导出页。'
-            '便于同事间临时分享单个工具。</p>'
 
             '<p class="warn"><b>⚠ 安全提示</b>：</p>'
             '<p>· 自定义工具是<b>可执行 Python 代码</b>，会在 Max 内运行——'
@@ -3046,21 +3128,19 @@ class SettingsDialog(QtWidgets.QDialog):
         self._skills_list.itemChanged.connect(self._on_skill_check_changed)
         layout.addWidget(self._skills_list, 1)
 
-        # 操作按钮
+        # 操作按钮（与「我的规则」「工具」子页布局对齐）
         btn_row = QtWidgets.QHBoxLayout()
         view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看详情'))
         view_btn.clicked.connect(self._on_skill_view_detail)
         btn_row.addWidget(view_btn)
+        toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        toggle_btn.setToolTip('切换当前选中技能的启用状态（与左侧勾选框等价）')
+        toggle_btn.clicked.connect(self._on_skill_toggle_enabled)
+        btn_row.addWidget(toggle_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_skill_delete)
         btn_row.addWidget(del_btn)
-        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
-        export_btn.setToolTip(
-            '把选中的技能单独导出为 .maxagent-pack 文件，便于分享给同事',
-        )
-        export_btn.clicked.connect(self._on_skill_export_one)
-        btn_row.addWidget(export_btn)
         btn_row.addStretch(1)
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
         refresh_btn.clicked.connect(self._refresh_skills_list)
@@ -3139,6 +3219,20 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '操作失败', '切换启用状态时出错：{}'.format(exc),
             )
 
+    def _on_skill_toggle_enabled(self):
+        """底部「启用/禁用」按钮 → 翻转当前选中技能的启用态。"""
+        item = self._skills_list.currentItem()
+        if not item or not (item.flags() & QtCore.Qt.ItemIsUserCheckable):
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个技能。',
+            )
+            return
+        new_state = (QtCore.Qt.Unchecked
+                     if item.checkState() == QtCore.Qt.Checked
+                     else QtCore.Qt.Checked)
+        # 直接修改 checkState 会触发 itemChanged → _on_skill_check_changed
+        item.setCheckState(new_state)
+
     def _on_skill_view_detail(self):
         item = self._skills_list.currentItem()
         if not item:
@@ -3214,47 +3308,6 @@ class SettingsDialog(QtWidgets.QDialog):
             return
         self._refresh_skills_list()
 
-    def _on_skill_export_one(self):
-        item = self._skills_list.currentItem()
-        if not item:
-            QtWidgets.QMessageBox.information(
-                self, '请选择', '请先在列表中选择一个技能。',
-            )
-            return
-        name = item.data(QtCore.Qt.UserRole)
-        if not name:
-            return
-        from .. import pack as pack_mod
-        suggested = name + pack_mod.PACK_SUFFIX
-        path, _f = QtWidgets.QFileDialog.getSaveFileName(
-            self, '导出技能',
-            suggested,
-            'MaxAgent Pack (*{})'.format(pack_mod.PACK_SUFFIX),
-        )
-        if not path:
-            return
-        if not path.endswith(pack_mod.PACK_SUFFIX):
-            path += pack_mod.PACK_SUFFIX
-        try:
-            res = pack_mod.export_pack(
-                output_path=path,
-                tool_names=[],
-                skill_names=[name],
-                rule_ids=[],
-                pack_name=name,
-            )
-            logger.info(
-                '单项导出技能 %s → %s (size=%dB)',
-                name, res['path'], res['size'],
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.exception('单项导出技能失败')
-            QtWidgets.QMessageBox.critical(self, '导出失败', str(exc))
-            return
-        QtWidgets.QMessageBox.information(
-            self, '导出成功', '已写入: {}'.format(res['path']),
-        )
-
     # ------------------------------------------------------------------ #
     # 子 Tab：工具管理
     # ------------------------------------------------------------------ #
@@ -3295,16 +3348,14 @@ class SettingsDialog(QtWidgets.QDialog):
         view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看源码'))
         view_btn.clicked.connect(self._on_tool_view_source)
         btn_row.addWidget(view_btn)
+        toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        toggle_btn.setToolTip('切换当前选中工具的启用状态（与左侧勾选框等价）')
+        toggle_btn.clicked.connect(self._on_tool_toggle_enabled)
+        btn_row.addWidget(toggle_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_tool_delete)
         btn_row.addWidget(del_btn)
-        export_btn = QtWidgets.QPushButton(_btn_label('📤', '导出选中'))
-        export_btn.setToolTip(
-            '把选中的工具单独导出为 .maxagent-pack 文件，便于分享给同事',
-        )
-        export_btn.clicked.connect(self._on_tool_export_one)
-        btn_row.addWidget(export_btn)
         btn_row.addStretch(1)
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
         refresh_btn.clicked.connect(self._refresh_tools_list)
@@ -3379,6 +3430,19 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '操作失败', '切换启用状态时出错：{}'.format(exc),
             )
 
+    def _on_tool_toggle_enabled(self):
+        """底部「启用/禁用」按钮 → 翻转当前选中工具的启用态。"""
+        item = self._tools_list.currentItem()
+        if not item or not (item.flags() & QtCore.Qt.ItemIsUserCheckable):
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个工具。',
+            )
+            return
+        new_state = (QtCore.Qt.Unchecked
+                     if item.checkState() == QtCore.Qt.Checked
+                     else QtCore.Qt.Checked)
+        item.setCheckState(new_state)
+
     def _on_tool_view_source(self):
         item = self._tools_list.currentItem()
         if not item:
@@ -3441,43 +3505,3 @@ class SettingsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, '删除失败', str(exc))
             return
         self._refresh_tools_list()
-
-    def _on_tool_export_one(self):
-        item = self._tools_list.currentItem()
-        if not item:
-            QtWidgets.QMessageBox.information(
-                self, '请选择', '请先在列表中选择一个工具。',
-            )
-            return
-        name = item.data(QtCore.Qt.UserRole)
-        if not name:
-            return
-        from .. import pack as pack_mod
-        suggested = name + pack_mod.PACK_SUFFIX
-        path, _f = QtWidgets.QFileDialog.getSaveFileName(
-            self, '导出工具', suggested,
-            'MaxAgent Pack (*{})'.format(pack_mod.PACK_SUFFIX),
-        )
-        if not path:
-            return
-        if not path.endswith(pack_mod.PACK_SUFFIX):
-            path += pack_mod.PACK_SUFFIX
-        try:
-            res = pack_mod.export_pack(
-                output_path=path,
-                tool_names=[name],
-                skill_names=[],
-                rule_ids=[],
-                pack_name=name,
-            )
-            logger.info(
-                '单项导出工具 %s → %s (size=%dB)',
-                name, res['path'], res['size'],
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            logger.exception('单项导出工具失败')
-            QtWidgets.QMessageBox.critical(self, '导出失败', str(exc))
-            return
-        QtWidgets.QMessageBox.information(
-            self, '导出成功', '已写入: {}'.format(res['path']),
-        )
