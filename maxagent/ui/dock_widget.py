@@ -292,6 +292,14 @@ class _ChatRenderer(QtCore.QObject):
         """
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
 
+    def is_at_bottom(self):
+        """对外只读：当前滚动位置是否处于聊天区底部。
+
+        用于外部（如拖动 splitter 前）判断用户是否"贴在最新消息"，
+        从而决定要不要在 layout 变化后强制滚回底部。
+        """
+        return self._is_at_bottom()
+
     def _current_employee(self):
         """返回当前的员工档案视图。
 
@@ -722,6 +730,23 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.splitter.setStretchFactor(0, self._DEFAULT_SPLIT_RATIO[0])
         self.splitter.setStretchFactor(1, self._DEFAULT_SPLIT_RATIO[1])
         self.splitter.setSizes([400, 100])
+
+        # 拖动 splitter 锚点保持：
+        # 用户向上拖（输入区扩张 / 聊天区缩小）时，聊天区可视范围
+        # 减小，原本停在底部的最新消息会被遮挡 -> 体感"对话被吃掉"。
+        # 解决：拖动开始时记录"是否在底部"快照；拖动过程中若输入区
+        # 高度增加且拖动前在底部，则强制滚回底部，保持最新消息可见。
+        # 翻历史的用户（拖动前不在底部）则不打断，保留原视点。
+        self._splitter_drag_was_at_bottom = False
+        self._splitter_last_input_h = 0
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        # 第一次进入界面时主动初始化 last_input_h，避免误判方向
+        try:
+            sizes = self.splitter.sizes()
+            if len(sizes) >= 2:
+                self._splitter_last_input_h = int(sizes[1])
+        except Exception:  # pylint: disable=broad-except
+            pass
 
         outer.addWidget(self.splitter, 1)
 
@@ -1460,6 +1485,64 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 把示例文本填入输入框，让用户可以编辑后再发
         self.input_edit.setPlainText(text)
         self.input_edit.setFocus()
+
+    def _on_splitter_moved(self, pos, index):
+        # type: (int, int) -> None
+        """聊天区/输入区分隔条被拖动后维护滚动锚点。
+
+        :param pos: 分隔条新位置（像素，从 splitter 顶端起算）
+        :param index: 被移动的 handle 索引（恒为 1，因为只有一条）
+
+        策略（方案 A，参考主流 IM 体验）：
+        - 向上拖（输入区扩张）：聊天区可视高度变小，原本贴在底部的
+          最新消息会被推出可见区。如果用户拖动**之前**就处于底部
+          （或 30px 容差内），强制滚回底部，让最新消息保持可见，
+          消除"输入区吃掉对话"的体感。
+        - 向下拖（输入区收缩）：聊天区变大，原可见消息仍在视野内，
+          不需要主动干预，并清零拖动状态快照。
+        - 用户在翻历史（拖动前不在底部）：保持原视点，不打扰阅读。
+
+        实现细节：通过比较 splitter sizes()[1] 与上次记录值判断方向；
+        在"刚开始向上拖"的那一帧拍下"是否在底部"快照，避免拖动过程中
+        多次回调时聊天区已被压缩导致 is_at_bottom 误判。
+        """
+        try:
+            sizes = self.splitter.sizes()
+        except Exception:  # pylint: disable=broad-except
+            return
+        if len(sizes) < 2:
+            return
+        new_input_h = int(sizes[1])
+        old_input_h = int(self._splitter_last_input_h or 0)
+
+        # 方向：输入区变高 = 用户向上拖
+        going_up = new_input_h > old_input_h
+        # 更新记录值以便下次回调判方向
+        self._splitter_last_input_h = new_input_h
+
+        if not going_up:
+            # 向下拖或没动：清零快照，下一次拖动重新采样
+            self._splitter_drag_was_at_bottom = False
+            return
+
+        # 向上拖：仅在"刚开始向上"的第一帧采样，后续帧沿用
+        if not self._splitter_drag_was_at_bottom:
+            try:
+                self._splitter_drag_was_at_bottom = bool(
+                    self._renderer.is_at_bottom(),
+                )
+            except Exception:  # pylint: disable=broad-except
+                self._splitter_drag_was_at_bottom = False
+
+        if self._splitter_drag_was_at_bottom:
+            # 延迟一帧滚到底，等 splitter layout 落定后 maximum 才正确
+            try:
+                self._renderer.scroll_to_bottom_force()
+                logger.debug(
+                    'splitter drag-up detected, anchor=bottom -> force scroll',
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     def refresh_web_button_state(self):
         """根据全局 ``web_search_mode`` 同步 🌐 按钮显示与可点击性。

@@ -389,6 +389,10 @@ class AgentWorker(QObject):
                 tools_schema = build_openai_tools_schema()
         # 标记是否已注入软提示，避免重复
         soft_warned = False
+        # 字面理解 / 完成即停 软提示是否已注入。仅在本轮第一次出现
+        # 工具调用且全部成功后注入一次，引导 LLM"做完就停"，避免
+        # 用户说"创建一个球"被 LLM 顺手补成"球+灯+相机"的过度联想。
+        restraint_hinted = False
 
         for loop_idx in range(self._max_loops):
             if self._cancel_event.is_set():
@@ -580,6 +584,27 @@ class AgentWorker(QObject):
                     self.failed.emit('用户取消')
                     return
                 self._exec_one_tool_call(tc)
+
+            # 第一批工具执行完成后注入"完成即停"软提示（每轮对话仅一次）：
+            # 防止 LLM 看到工具成功结果后产生"既然能创建球，那再顺便
+            # 加个灯光让画面好看一点"的扩展冲动，强制它优先完成确认
+            # 回复，不做未被显式要求的额外操作。
+            if not restraint_hinted:
+                restraint_hinted = True
+                self._conv.add_system_note(
+                    '✅ 上一批工具已执行完毕。请严格按字面理解用户的'
+                    '原始请求：如果用户当前请求已被满足，**立即**给出'
+                    '简短的中文确认回复（如"已为你创建一个球"）并结束本轮，'
+                    '**不要**追加创建灯光、相机、材质、地面、修改器等'
+                    '未被显式要求的操作；如果你确实认为还需要其它工具'
+                    '才能完成用户的原始请求，请在回复里先用一句话'
+                    '说明意图再调用，而不是直接动手。',
+                )
+                logger.info(
+                    'restraint hint injected after tool batch '
+                    '(loop=%d, tools=%d)',
+                    loop_idx + 1, len(tool_calls),
+                )
 
             # 结束本轮，进入下一轮 LLM 调用让它读到工具结果
             if finish_reason and finish_reason != 'tool_calls':
