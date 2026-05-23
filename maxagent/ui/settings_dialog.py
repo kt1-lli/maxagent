@@ -217,6 +217,16 @@ class SettingsDialog(QtWidgets.QDialog):
         right = QtWidgets.QFormLayout()
         right.setSpacing(8)
         right.setLabelAlignment(QtCore.Qt.AlignRight)
+        # 修复：默认 FormAlignment 是水平居中 + 字段 AtSizeHint，
+        # 当父容器宽度大于字段需求时，整列 label 会被推到中央
+        # （视觉上像被"右移"），与底部"自定义 Header"行不在同一列。
+        # 显式左上对齐 + 字段随容器拉伸，让所有行 label 列严格对齐。
+        right.setFormAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop,
+        )
+        right.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
 
         self.name_edit = QtWidgets.QLineEdit()
         self.name_edit.setPlaceholderText('如: my-deepseek')
@@ -395,6 +405,12 @@ class SettingsDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setFormAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop,
+        )
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
 
         # 联网模式
         self.web_mode_combo = QtWidgets.QComboBox()
@@ -536,6 +552,12 @@ class SettingsDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout(page)
         form.setSpacing(8)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setFormAlignment(
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop,
+        )
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
 
         title = QtWidgets.QLabel(_ee('🎨') + '  应用全局设置')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
