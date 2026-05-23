@@ -113,7 +113,7 @@ def _sanitize_base_url(url: str) -> str:
     """规范化 base_url：去掉末尾斜杠 + 自动剥除常见的误填尾部。
 
     用户经常把 base_url 填成完整的 endpoint
-    （如 ``https://api.deepseek.com/v1/chat/completions``），
+    （如 ``https://api.deepseek.com/chat/completions``），
     导致拼接后变成 ``.../chat/completions/chat/completions`` 走不通。
     这里做一次防呆处理。
     """
@@ -144,6 +144,13 @@ def diagnose_base_url(url: str) -> Optional[str]:
     for tail in _KNOWN_PATH_TAILS:
         if lowered.endswith(tail):
             return "⚠ Base URL 末尾不应包含 {}，会被自动忽略".format(tail)
+    # 已知不需要 /v1 也能正常工作的根域名白名单（按官方文档）
+    _ROOT_OK_HOSTS = (
+        "api.deepseek.com",  # DeepSeek：根域名即 OpenAI 兼容入口
+    )
+    for host in _ROOT_OK_HOSTS:
+        if host in lowered:
+            return None
     if "/v1" not in lowered and "/v2" not in lowered and "/api" not in lowered:
         return (
             "💡 多数 OpenAI 兼容服务需要带版本路径（如 /v1）。"

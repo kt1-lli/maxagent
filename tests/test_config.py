@@ -144,3 +144,20 @@ class TestNewFields:
         })
         assert p.name == 'X'
         assert p.model == 'm'
+
+
+class TestDeepSeekPreset2026:
+    """DeepSeek 预设按 2026/05 官方文档刷新：根域名 + v4-flash。"""
+
+    def test_deepseek_uses_root_domain(self):
+        ds = next(p for p in BUILTIN_PROFILES if p['name'] == 'DeepSeek')
+        # 官方文档首推根域名（OpenAI 兼容入口）
+        assert ds['base_url'] == 'https://api.deepseek.com'
+        # 不应再硬编码 /v1
+        assert not ds['base_url'].endswith('/v1')
+
+    def test_deepseek_default_model_is_v4_flash(self):
+        ds = next(p for p in BUILTIN_PROFILES if p['name'] == 'DeepSeek')
+        # deepseek-chat / deepseek-reasoner 将于 2026/07/24 弃用
+        assert ds['model'] == 'deepseek-v4-flash'
+        assert ds['model'] not in ('deepseek-chat', 'deepseek-reasoner')

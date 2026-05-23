@@ -224,7 +224,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.base_url_edit = QtWidgets.QLineEdit()
         self.base_url_edit.setPlaceholderText(
-            '如: https://api.deepseek.com/v1',
+            '如: https://api.deepseek.com',
         )
         right.addRow('Base URL:', self.base_url_edit)
 
@@ -255,7 +255,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.model_edit = QtWidgets.QLineEdit()
         self.model_edit.setPlaceholderText(
-            '如: deepseek-chat / qwen2.5:7b / gpt-4o-mini',
+            '如: deepseek-v4-flash / qwen2.5:7b / gpt-4o-mini',
         )
         right.addRow('模型:', self.model_edit)
 
@@ -1002,11 +1002,15 @@ class SettingsDialog(QtWidgets.QDialog):
             '<p><b>模型 Tab</b>：管理多套大模型连接（Ollama / LM Studio /'
             ' OpenAI / DeepSeek 等），右键 Profile 可重命名 / 复制 / 设为默认。</p>'
             '<p><b>Base URL</b>：OpenAI 兼容 API 的根地址，多数服务'
-            '需要带 <code>/v1</code> 后缀。'
+            '需要带 <code>/v1</code> 后缀（DeepSeek 官方推荐使用根域名）。'
             '<br>· Ollama：<code>http://localhost:11434/v1</code>'
             '<br>· LM Studio：<code>http://localhost:1234/v1</code>'
             '<br>· OpenAI：<code>https://api.openai.com/v1</code>'
-            '<br>· DeepSeek：<code>https://api.deepseek.com/v1</code></p>'
+            '<br>· DeepSeek：<code>https://api.deepseek.com</code>'
+            '（推荐模型 <code>deepseek-v4-flash</code> / '
+            '<code>deepseek-v4-pro</code>，旧模型 '
+            '<code>deepseek-chat</code> / <code>deepseek-reasoner</code> '
+            '将于 2026/07/24 弃用）</p>'
             '<p><b>API Key</b>：本地模型可留空或填占位符；商用 API 必填。</p>'
             '<p><b>模型</b>：模型名称需与服务端实际可用模型完全一致。</p>'
             '<p><b>温度</b>：0.0~2.0，越高越发散；建议 0.2 ~ 0.7。</p>'

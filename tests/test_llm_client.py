@@ -67,6 +67,20 @@ class TestDiagnoseBaseUrl:
         msg = diagnose_base_url('https://api.openai.com/v1')
         assert msg is None
 
+    def test_deepseek_root_domain_no_warning(self):
+        # DeepSeek 官方文档（2026/05）首推根域名形式，不应触发 /v1 提示
+        msg = diagnose_base_url('https://api.deepseek.com')
+        assert msg is None
+
+    def test_deepseek_root_domain_with_trailing_slash_no_warning(self):
+        msg = diagnose_base_url('https://api.deepseek.com/')
+        assert msg is None
+
+    def test_deepseek_with_v1_still_no_warning(self):
+        # 兼容老用户：带 /v1 也合法
+        msg = diagnose_base_url('https://api.deepseek.com/v1')
+        assert msg is None
+
 
 class _FakeHttpError(Exception):
     """模拟 urllib HTTPError 子集。"""

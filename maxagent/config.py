@@ -62,9 +62,9 @@ BUILTIN_PROFILES = [
     },
     {
         "name": "DeepSeek",
-        "base_url": "https://api.deepseek.com/v1",
+        "base_url": "https://api.deepseek.com",
         "api_key": "",
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "kind": "remote",
         "supports_tools": True,
         "stream": True,
