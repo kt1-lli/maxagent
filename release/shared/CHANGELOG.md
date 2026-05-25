@@ -15,7 +15,7 @@
 - macroScript 自动注册：MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
 
 ### Changed
-- 安装目录从仓库源码切换到 `%LOCALAPPDATA%\Autodesk\3dsMax\<版本>\ENU\scripts\maxagent\`
+- 安装目录从仓库源码切换到 `%LOCALAPPDATA%\Autodesk\3dsMax\<版本>\<语言>\scripts\maxagent\`（`<语言>` 为 `zh-CN` 或 `ENU`，由 Max 当前语言决定）
 - 用户数据 `_userdata/` 保持原位置，安装/升级/卸载不会触碰
 
 ### Notes

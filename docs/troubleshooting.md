@@ -14,7 +14,7 @@
 
 **应急处理**：
 1. **强制关闭 Max**（任务管理器）
-2. 进入 `%LOCALAPPDATA%\Autodesk\3dsMax\<ver> - 64bit\ENU\scripts\startup\`
+2. 进入 `%LOCALAPPDATA%\Autodesk\3dsMax\<ver> - 64bit\<lang>\scripts\startup\`（中文版 `<lang>` 为 `zh-CN`，英文版为 `ENU`）
 3. 把 `maxagent_startup.py` 重命名为 `maxagent_startup.py.bak`
 4. 重新启动 Max（这次不会加载 MaxAgent）
 5. 把 `maxagent_startup.py.bak` 内容复制出来贴到这里反馈

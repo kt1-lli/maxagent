@@ -377,20 +377,10 @@ class TestBuildPipeline:
         assert 'maxagent' in text.lower()
 
     def test_install_script_registers_menu_and_macros(self, built_mzp):
-        """mzp_install.ms 应注册主菜单 + 五个 macroScript + 安装方式询问。"""
+        """mzp_install.ms 应注册主菜单 + 拷贝 .mcr + 安装方式询问。"""
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:
             text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
-
-        # 五个 macroScript 必须都存在
-        for macro in (
-            'MaxAgent_Show',
-            'MaxAgent_Toggle',
-            'MaxAgent_OpenInstallDir',
-            'MaxAgent_About',
-            'MaxAgent_Uninstall',
-        ):
-            assert 'macroScript ' + macro in text, '缺少 macroScript: ' + macro
 
         # 必须有菜单注册逻辑（menuMan 主菜单栏挂载）
         assert 'menuMan.getMainMenuBar' in text, 'mzp_install.ms 未通过 menuMan 挂主菜单'
@@ -401,7 +391,70 @@ class TestBuildPipeline:
         assert 'yesNoCancelBox' in text, '缺少安装方式选择对话框'
 
         # 卸载宏要同步移除菜单（避免重启后残留菜单项）
-        assert 'removeItemByPosition' in text, '卸载宏未清理菜单项'
+        # 注：这条检查现在转移到 .mcr 文件中（卸载宏已搬出 mzp_install.ms）
+        # 此处仅检查 mzp_install.ms 调用了 fileIn 注册 .mcr 文件
+        assert 'fileIn' in text, 'mzp_install.ms 未通过 fileIn 触发 .mcr 注册'
+        assert 'MaxAgent-Macros.mcr' in text, (
+            'mzp_install.ms 未引用 macros\\MaxAgent-Macros.mcr'
+        )
+        # getDir #userMacros 是语言无关的，避免硬编码 ENU/zh-CN
+        assert '#userMacros' in text, (
+            'mzp_install.ms 未使用 getDir #userMacros，可能硬编码语言子目录'
+        )
+
+    def test_macros_mcr_present_with_utf8_bom(self, built_mzp):
+        """.mcr 文件必须存在于 mzp 内，且使用 UTF-8 BOM 编码。
+
+        UTF-8 BOM 是让中文/英文版 Max 都能正确解码中文字面量的关键——
+        没有 BOM 时英文版 Max 会按系统 ANSI（1252）解析中文字符串，乱码报错。
+        """
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            assert 'macros/MaxAgent-Macros.mcr' in zf.namelist(), (
+                'mzp 缺少 macros/MaxAgent-Macros.mcr'
+            )
+            raw = zf.read('macros/MaxAgent-Macros.mcr')
+
+        assert raw.startswith(b'\xef\xbb\xbf'), (
+            'MaxAgent-Macros.mcr 缺少 UTF-8 BOM（EF BB BF），中英文版 Max 无法跨语言通用'
+        )
+
+        # 解码并校验 5 个 macroScript 全在
+        text = raw[3:].decode('utf-8')
+        for macro in (
+            'MaxAgent_Show',
+            'MaxAgent_Toggle',
+            'MaxAgent_OpenInstallDir',
+            'MaxAgent_About',
+            'MaxAgent_Uninstall',
+        ):
+            assert 'macroScript ' + macro in text, (
+                '.mcr 缺少 macroScript: ' + macro
+            )
+
+        # 卸载宏的菜单清理逻辑也搬到了 .mcr，确保没遗失
+        assert 'removeItemByPosition' in text, '.mcr 卸载宏未清理主菜单'
+        # .mcr 自删除逻辑（避免 ActionTable 残留）
+        assert 'deleteFile' in text, '.mcr 卸载宏未删除自身文件'
+
+    def test_install_script_no_hardcoded_enu(self, built_mzp):
+        """mzp_install.ms 不应在路径里硬编码 ENU——应靠 getDir 自动适配语言。
+
+        如果硬编码 ENU，中文版 Max（usermacros 在 \\zh-CN\\ 下）会装错位置。
+        """
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
+
+        # 允许在注释里出现 ENU（举例说明），但不应有 + "\\ENU\\" 这种硬拼路径
+        # 拼接判定：找 "\ENU\" 字面量出现在非注释行
+        for ln in text.splitlines():
+            stripped = ln.lstrip()
+            if stripped.startswith('--'):
+                continue
+            assert '\\ENU\\' not in ln and '"ENU"' not in ln, (
+                '检测到硬编码 ENU 路径片段（中文版 Max 会装错位置）：\n  ' + ln
+            )
 
     def test_mzp_run_manifest_present(self, built_mzp):
         """mzp 必须包含 mzp.run 清单（Autodesk mzp 协议标准入口）。

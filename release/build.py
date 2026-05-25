@@ -566,6 +566,20 @@ def _make_mzp(
                 # 行为不可控；mzp_install.ms 缺失 -> mzp 完全无法自动安装。
                 LOG.warning('mzp 钩子文件 %s 缺失，安装行为可能异常', hook_name)
 
+        # 预打包的 macroScript 文件（UTF-8 BOM .mcr）
+        # 不让 Max 自动从内联 macroScript 块生成 .mcr——那种方式编码与
+        # 当前 Max 语言绑定（中文版 GBK / 英文版 1252），跨语言版本不兼容。
+        # 我们在 release/macros/ 目录维护一份 UTF-8 BOM .mcr，安装时
+        # 整个目录原样打进 mzp，由 mzp_install.ms 拷贝到 getDir #userMacros。
+        macros_src = RELEASE_DIR / 'macros'
+        if macros_src.is_dir():
+            for f in macros_src.rglob('*'):
+                if f.is_file():
+                    arc = Path('macros') / f.relative_to(macros_src)
+                    zf.write(f, arcname=str(arc).replace('\\', '/'))
+        else:
+            LOG.warning('release/macros/ 目录缺失，mzp 内将无 .mcr 文件，宏注册会失败')
+
         # 各 ABI 产物
         # 排除中间构建目录（仅匹配目录段以 _ 开头，不匹配最终文件名如 __init__.py）
         intermediate_prefixes = ('_cython_build', '_pyarmor_out')

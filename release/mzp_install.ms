@@ -5,7 +5,8 @@
 -- 调度执行：
 --   [install] 阶段 -> 本脚本（mzp_install.ms）
 --     1. 探测当前 Python 版本，从 runtime/cpXX/ 选择对应产物
---     2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\ENU\scripts\maxagent\
+--     2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\<lang>\scripts\maxagent\
+--        （<lang> 由 getDir #userScripts 自动解析：中文版 zh-CN / 英文版 ENU）
 --     3. 注入 sys.path 并立即可用
 --     4. 注册菜单/工具栏宏 MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
 --     5. 询问用户是否要把"MaxAgent"菜单注册到主菜单栏末尾
@@ -51,7 +52,8 @@ fn _maxagent_detect_python_abi = (
     pyTag
 )
 
--- 计算用户级安装目录: %LOCALAPPDATA%\Autodesk\3dsMax\<MaxVer ENU>\scripts\maxagent
+-- 计算用户级安装目录: %LOCALAPPDATA%\Autodesk\3dsMax\<MaxVer>\<lang>\scripts\maxagent
+-- 注意：<lang> 由 getDir #userScripts 解析，中文版为 zh-CN，英文版为 ENU，无需我们硬编码
 fn _maxagent_user_install_dir = (
     local userScriptsDir = getDir #userScripts
     userScriptsDir = trimRight userScriptsDir "\\"
@@ -94,89 +96,49 @@ fn _maxagent_inject_sys_path parentDir = (
     )
 )
 
--- 注册三个 macroScript（不论用户选择哪种安装方式都会注册）
-fn _maxagent_register_macros = (
-    macroScript MaxAgent_Show category:"MaxAgent" tooltip:"显示 MaxAgent 面板" buttontext:"MaxAgent" (
-        try (python.execute "import maxagent.startup as _s; _s.show_panel(force=True)")
-        catch (messagebox ("启动失败: " + getCurrentException()) title:"MaxAgent")
+-- 注册五个 macroScript（不论用户选择哪种安装方式都会注册）
+--
+-- 实现方式：拷贝预先打包的 UTF-8 BOM 编码 .mcr 到 getDir #userMacros
+-- 然后 fileIn 立即生效。这样做的关键收益：
+--   1. .mcr 编码完全可控（UTF-8 BOM），中英文版 Max 都能正确解析中文字面量。
+--      Max 自动从内联 macroScript 块生成的 .mcr 编码与当前语言绑定
+--      （中文版 GBK / 英文版 1252），无法跨语言通用。
+--   2. .mcr 内容与本脚本解耦，便于维护和审查。
+--   3. getDir #userMacros 自带语言识别（中文版 \CHS\，英文版 \ENU\）。
+fn _maxagent_register_macros mzpRoot = (
+    local _src = mzpRoot + "\\macros\\MaxAgent-Macros.mcr"
+    if not (doesFileExist _src) do (
+        messagebox ("❌ mzp 内缺少 macros\\MaxAgent-Macros.mcr，无法注册命令\n请重新下载完整包") title:"MaxAgent 安装失败"
+        return false
     )
-    macroScript MaxAgent_Toggle category:"MaxAgent" tooltip:"切换 MaxAgent 面板" buttontext:"切换面板" (
-        try (python.execute "import maxagent; maxagent.toggle()")
-        catch (messagebox ("切换失败: " + getCurrentException()) title:"MaxAgent")
-    )
-    macroScript MaxAgent_OpenInstallDir category:"MaxAgent" tooltip:"打开 MaxAgent 安装目录" buttontext:"打开安装目录" (
-        local _userScripts = getDir #userScripts
-        _userScripts = trimRight _userScripts "\\"
-        local _dir = _userScripts + "\\maxagent"
-        if doesDirectoryExist _dir then (
-            shellLaunch "explorer.exe" _dir
-        ) else (
-            messagebox ("未找到安装目录: " + _dir) title:"MaxAgent"
-        )
-    )
-    macroScript MaxAgent_About category:"MaxAgent" tooltip:"关于 MaxAgent" buttontext:"关于" (
-        local _ver = "?"
-        try (
-            _ver = python.execute "import maxagent; maxagent.__version__"
-        ) catch ()
-        messagebox ("MaxAgent " + (_ver as string) + "\n\n3ds Max AI 助手插件\nFunction Calling 驱动 · 零外部依赖\n\nhttps://gitee.com/cmqll/max_agent") title:"关于 MaxAgent"
-    )
-    macroScript MaxAgent_Uninstall category:"MaxAgent" tooltip:"卸载 MaxAgent" buttontext:"卸载" (
-        -- 注意：不能依赖 g_maxagent_install_dir 全局变量，
-        -- MaxScript global 不跨 Max 会话持久化，重启后即为 undefined。
-        -- 这里实时重算路径：%LOCALAPPDATA%\Autodesk\3dsMax\<ver>\<lang>\scripts\maxagent
-        local _userScripts = getDir #userScripts
-        _userScripts = trimRight _userScripts "\\"
-        local _dir = _userScripts + "\\maxagent"
 
-        if not (doesDirectoryExist _dir) then (
-            messagebox ("未找到 MaxAgent 安装目录:\n" + _dir + "\n\n可能已卸载或安装在其它位置。") title:"MaxAgent 卸载"
-        ) else (
-            if (queryBox ("确认卸载 MaxAgent？\n\n安装目录:\n" + _dir + "\n\n（仅删除程序文件，保留用户数据 _userdata/）") title:"MaxAgent 卸载") then (
-                -- 1) 优先保留 _userdata 子目录（用户对话历史/学到的工具/配置）
-                local _py = ""
-                _py += "import os, shutil\n"
-                _py += "_dir = r'" + _dir + "'\n"
-                _py += "if os.path.isdir(_dir):\n"
-                _py += "    for _name in os.listdir(_dir):\n"
-                _py += "        if _name == '_userdata':\n"
-                _py += "            continue\n"
-                _py += "        _p = os.path.join(_dir, _name)\n"
-                _py += "        if os.path.isdir(_p):\n"
-                _py += "            shutil.rmtree(_p, ignore_errors=True)\n"
-                _py += "        else:\n"
-                _py += "            try:\n"
-                _py += "                os.remove(_p)\n"
-                _py += "            except Exception:\n"
-                _py += "                pass\n"
-                _py += "    if not os.path.isdir(os.path.join(_dir, '_userdata')):\n"
-                _py += "        try: os.rmdir(_dir)\n"
-                _py += "        except Exception: pass\n"
+    local _userMacros = getDir #userMacros
+    _userMacros = trimRight _userMacros "\\"
+    local _dst = _userMacros + "\\MaxAgent-Macros.mcr"
 
-                -- 2) 同步移除 MaxAgent 主菜单（如果存在）
-                try (
-                    local _mainMenu = menuMan.getMainMenuBar()
-                    if _mainMenu != undefined do (
-                        local _idx = -1
-                        for i = 1 to _mainMenu.numItems() while _idx == -1 do (
-                            local _item = _mainMenu.getItem i
-                            if _item != undefined and _item.getTitle() == "MaxAgent" do _idx = i
-                        )
-                        if _idx > 0 do (
-                            _mainMenu.removeItemByPosition _idx
-                            menuMan.updateMenuBar()
-                        )
-                    )
-                ) catch ()
+    -- 用 Python copy 而不是 copyFile：copyFile 在某些 Max 版本对 BOM 文件
+    -- 会做编码转换，破坏 UTF-8 BOM；shutil.copy 是字节级拷贝，绝对安全。
+    local _py = ""
+    _py += "import shutil, os\n"
+    _py += "_src = r'" + _src + "'\n"
+    _py += "_dst = r'" + _dst + "'\n"
+    _py += "os.makedirs(os.path.dirname(_dst), exist_ok=True)\n"
+    _py += "shutil.copyfile(_src, _dst)\n"
+    try (
+        python.execute _py
+    ) catch (
+        local err = getCurrentException()
+        messagebox ("❌ 拷贝 .mcr 文件失败:\n" + err + "\n\n源: " + _src + "\n目标: " + _dst) title:"MaxAgent 安装失败"
+        return false
+    )
 
-                try (
-                    python.execute _py
-                    messagebox ("✅ MaxAgent 已卸载\n\n保留位置: " + _dir + "\\_userdata\n（如不需要可手动删除）\n\n请重启 3ds Max") title:"MaxAgent"
-                ) catch (
-                    messagebox ("卸载失败: " + getCurrentException()) title:"MaxAgent"
-                )
-            )
-        )
+    -- fileIn 触发 Max 注册其中的 macroScript 块（让本会话立即可用，
+    -- 不必等下次 Max 重启）。Max 会自己读取 BOM 并按 UTF-8 解码。
+    try (
+        fileIn _dst
+    ) catch (
+        local err = getCurrentException()
+        messagebox ("⚠️ macroScript 注册失败（已拷贝 .mcr，下次启动 Max 会自动加载）:\n" + err) title:"MaxAgent"
     )
     true
 )
@@ -308,8 +270,9 @@ fn maxagent_mzp_install = (
     -- 2) 注入 sys.path
     if not (_maxagent_inject_sys_path parentDir) do return false
 
-    -- 3) 注册 macroScript（恒定执行，不论用户选择何种入口）
-    _maxagent_register_macros()
+    -- 3) 注册 macroScript（拷贝预先打包的 UTF-8 BOM .mcr 到 usermacros 目录）
+    --    传入 mzp 解压根目录以便定位 macros\MaxAgent-Macros.mcr
+    if not (_maxagent_register_macros g_maxagent_mzp_root) do return false
 
     -- 4) 询问用户安装方式并按选择执行
     local _mode = _maxagent_ask_install_mode()

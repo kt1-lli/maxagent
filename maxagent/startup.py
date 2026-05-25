@@ -3,7 +3,8 @@
 """3ds Max 启动入口。
 
 放在 Max 的 startup script 目录下：
-- Windows: %LOCALAPPDATA%\\Autodesk\\3dsMax\\<ver>\\ENU\\scripts\\startup\\
+- Windows: %LOCALAPPDATA%\\Autodesk\\3dsMax\\<ver>\\<lang>\\scripts\\startup\\
+  （<lang> 为 zh-CN 或 ENU，由 Max 当前语言决定）
 - 或者用户菜单/快捷键调用 ``maxagent.startup.show_panel()``
 
 启动流程:

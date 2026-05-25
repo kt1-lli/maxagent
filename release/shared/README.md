@@ -32,7 +32,7 @@ mzp 安装时会自动选择匹配版本，**用户无需关心 Python 版本**�
 如需彻底清理，手动删除：
 
 ```
-%LOCALAPPDATA%\Autodesk\3dsMax\<版本>\ENU\scripts\_userdata\
+%LOCALAPPDATA%\Autodesk\3dsMax\<版本>\<语言>\scripts\_userdata\
 ```
 
 ## 隐私与安全

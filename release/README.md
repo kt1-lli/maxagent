@@ -78,7 +78,7 @@ mzp_install.ms 自动执行
         ↓
 探测 sys.version_info → 选择 runtime/cpXX/maxagent/
         ↓
-拷贝到 %LOCALAPPDATA%\Autodesk\3dsMax\<版本>\ENU\scripts\maxagent\
+拷贝到 %LOCALAPPDATA%\Autodesk\3dsMax\<版本>\<语言>\scripts\maxagent\
         ↓
 注册菜单/工具栏 → 用户点击启动
 ```
