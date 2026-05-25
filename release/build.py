@@ -611,6 +611,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='仅打包：跳过 Cython/PyArmor 步骤，'
                              '直接用 build_cache/ 现有产物聚合 mzp。'
                              'CI 矩阵作业完成后，pack 作业用此参数。')
+    parser.add_argument('--allow-cross-abi', action='store_true',
+                        help='[高级] 允许目标 ABI 与当前解释器 ABI 不一致。'
+                             '默认禁止，避免 .pyc 字节码版本不匹配引发 '
+                             'SystemError: unknown opcode。仅在 PyArmor '
+                             '跨 ABI 模式或你确认自己清楚后果时启用。')
     parser.add_argument('--dry-run', action='store_true', help='仅打印计划不执行')
     parser.add_argument('--verbose', '-v', action='store_true')
     args = parser.parse_args(argv)
@@ -628,6 +633,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # 2) 决定要构建的 ABI
     abis = _resolve_abis(args.abis, args.quick, supported_abis, _current_abi())
     LOG.info('目标 ABIs: %s', abis)
+
+    # 2.1) ABI 一致性自检
+    # ----------------------------------------------------------------
+    # 核心约束：当前 Python 解释器只能产出与之 minor 版本完全一致的字节码 / Cython
+    # 扩展。如果用户在 cp310 解释器下尝试构建 cp311 产物，结果会是
+    # "目录命名 cp311 但内容是 cp310 字节码"，运行时报 SystemError: unknown opcode。
+    # 历史教训：曾因此造成用户 .venv=3.10 但 quick_abi=cp311 的产物被加载到 Max
+    # 3.11.12 时炸 unknown opcode，定位耗时不少。这里强校验避免再踩。
+    #
+    # 例外：--pack-only / --dry-run 不实际编译，无需校验解释器；
+    #       --allow-cross-abi 是给未来跨 ABI 加密管线（如 PyArmor super mode）
+    #       预留的逃生口，目前不应使用。
+    current_abi = _current_abi()
+    needs_compile = not args.pack_only and not args.dry_run
+    cross_abi = [a for a in abis if a != current_abi]
+    if needs_compile and cross_abi and not args.allow_cross_abi:
+        LOG.error(
+            'ABI 不匹配：当前解释器是 %s（%s），但目标 ABIs 包含 %s。\n'
+            '    单个 Python 解释器无法编译其它 minor 版本的 .pyc / .pyd。\n'
+            '    解决办法二选一：\n'
+            '      A) 用对应版本的 Python 重新跑：例如目标 cp311 时\n'
+            '         "C:\\Path\\To\\Python311\\python.exe" build.py --quick\n'
+            '      B) 在 CI 矩阵中为每个 ABI 各起一台对应版本的 runner。\n'
+            '    若你确认知道自己在做什么（如 PyArmor 跨 ABI 模式），\n'
+            '    可加 --allow-cross-abi 旁路本检查。',
+            current_abi, sys.version.split()[0], cross_abi,
+        )
+        return 6
+
+    # 2.2) quick 模式信息提示
+    # quick 模式总是按当前解释器 ABI 构建，给用户一个醒目提示，避免他们
+    # 误以为产物 ABI 来自 pyproject.toml 的 quick_abi 配置项。
+    if args.quick and needs_compile:
+        LOG.warning(
+            '【quick 模式】将按当前解释器 ABI=%s（Python %s）构建。\n'
+            '    若你的 3ds Max 使用的不是 Python %s.x，此产物在 Max 中加载会报\n'
+            '    SystemError: unknown opcode。请用 Max 对应版本的 Python 重跑。',
+            current_abi, sys.version.split()[0],
+            '{}.{}'.format(sys.version_info.major, sys.version_info.minor),
+        )
 
     # 3) 检查源包目录
     if not SOURCE_PKG_DIR.exists():
