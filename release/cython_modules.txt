@@ -1,0 +1,26 @@
+# Cython 编译白名单（Tier-1 + Tier-2，共 8 个文件）
+#
+# 格式：每行一个相对于 maxagent/ 包根的源文件路径
+# 注释以 # 开头，空行忽略
+#
+# 修改本清单只影响 build.py 选择哪些文件走 Cython 路径，
+# 不需要修改 build.py 主体。需要扩缩范围只改这一份清单。
+#
+# Tier-1（最高保护价值，~1700 行）：含系统 prompt / LLM key 处理 / 对话编排
+agent/conversation.py
+agent/coding_rules.py
+agent/worker.py
+llm_client.py
+sessions.py
+
+# Tier-2（中等保护价值，~1300 行）：调度安全 / 配置加密 / 工具注册
+tools/dispatcher.py
+tools/registry.py
+config.py
+
+# 注意事项：
+# - tools/registry.py 含 inspect.signature 反射调用，build.py 会自动添加
+#   `# cython: binding=True, embedsignature=True` 编译指令。
+# - agent/worker.py 含 14 处 PySide Signal/Slot，build.py 会自动启用
+#   `binding=True` 以保证 Qt MetaObject 反射正常。
+# - 列表中的文件不能是 __init__.py（包入口必须保留 .py 明文）。

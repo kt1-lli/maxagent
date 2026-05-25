@@ -20,3 +20,12 @@ _ref/
 dcc-mcp/
 dcc-mcp-work/
 dcc-mcp-ref/
+
+# 发布流水线中间产物 / 最终产物
+release/build_cache/
+release/dist/
+
+# Cython 编译副产物（仅限 release 工作区，避免误伤未来包内 C 资源）
+release/**/*.c
+release/**/*.so
+release/**/*.pyd
