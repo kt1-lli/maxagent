@@ -607,6 +607,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument('--abis', nargs='+', help='指定 ABI 列表（如 cp311 cp313）')
     parser.add_argument('--skip-pyarmor', action='store_true',
                         help='跳过 PyArmor 加密（调试用，发布禁止）')
+    parser.add_argument('--pack-only', action='store_true',
+                        help='仅打包：跳过 Cython/PyArmor 步骤，'
+                             '直接用 build_cache/ 现有产物聚合 mzp。'
+                             'CI 矩阵作业完成后，pack 作业用此参数。')
     parser.add_argument('--dry-run', action='store_true', help='仅打印计划不执行')
     parser.add_argument('--verbose', '-v', action='store_true')
     args = parser.parse_args(argv)
@@ -636,6 +640,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # 5) 准备 build_cache / dist
     _ensure_dir(BUILD_CACHE_DIR)
     _ensure_dir(DIST_DIR)
+
+    # --pack-only 短路：跳过编译，直接走第 7 步
+    # CI 场景下，矩阵作业已把各 ABI 产物下载回 build_cache/，pack 作业只需聚合
+    if args.pack_only:
+        LOG.info('--pack-only 模式：跳过 Cython/PyArmor，直接打包')
+        existing_abis: List[str] = []
+        for abi in abis:
+            abi_dir = BUILD_CACHE_DIR / abi
+            pkg_dir = abi_dir / 'maxagent'
+            if pkg_dir.is_dir():
+                existing_abis.append(abi)
+                LOG.info('[%s] 检测到已有产物: %s', abi, pkg_dir)
+            else:
+                LOG.warning('[%s] build_cache 中未找到 maxagent 包，跳过', abi)
+        if not existing_abis and not args.dry_run:
+            LOG.error('--pack-only 模式下 build_cache/ 内没有任何 ABI 产物')
+            return 5
+        _make_mzp(version, existing_abis, args.dry_run)
+        LOG.info('打包完成 ✅')
+        return 0
 
     # 6) 逐 ABI 构建
     built_abis: List[str] = []

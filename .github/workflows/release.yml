@@ -1,0 +1,320 @@
+# MaxAgent CI/CD — Windows 多 ABI 矩阵构建与发布
+#
+# 触发:
+#   - push tag v*.*.*  -> 自动构建 + 发布到 Release
+#   - workflow_dispatch -> 手动触发，可调试
+#   - pull_request to master -> 仅跑预检 + 1 个 ABI 冒烟
+#
+# 矩阵: 5 个 Windows runner 并行（cp37/cp39/cp310/cp311/cp313）
+#   每个 runner 装对应 Python，本机编译 .pyd
+#   结束后所有产物在 pack 作业聚合成单个 mzp
+#
+# 注意:
+#   - Cython 产出的 .pyd 必须在对应 Python 版本节点上编译，无法跨版本
+#   - PyArmor license 通过 GitHub Secrets 注入（变量名 PYARMOR_LICENSE）
+#     未提供时自动走 trial 兜底（保护强度 L1+L3，仍可发布）
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: '可选版本号覆盖（留空则用 release/version.py）'
+        required: false
+        default: ''
+
+# 防止同一 ref 多次推送时浪费资源
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: 'utf-8'
+  PYTHONUTF8: '1'
+
+jobs:
+
+  # ============================================================
+  # 阶段 1: 兼容性预检 + 全量回归测试
+  # ============================================================
+  precheck:
+    name: 预检与回归测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: 装依赖
+        run: |
+          python -m pip install -U pip uv
+          uv pip install --system 'cython>=3.0.11' 'pyarmor>=8.5.11' pytest flake8 wheel setuptools
+
+      - name: PEP8 检查（lint）
+        run: |
+          flake8 maxagent/ --max-line-length=120 --extend-ignore=W503,E203 --statistics --count
+
+      - name: Python 3.13 兼容性 grep
+        run: |
+          set -e
+          # asyncio.get_event_loop 已在 3.13 报警
+          if grep -RnE 'asyncio\.get_event_loop\b' maxagent/; then
+            echo '::warning::检测到 asyncio.get_event_loop，3.13 需迁移到 asyncio.new_event_loop'
+          fi
+          # distutils 已在 3.12+ 移除
+          if grep -RnE '\bimport\s+distutils\b|\bfrom\s+distutils\b' maxagent/; then
+            echo '::error::检测到 distutils 导入，3.12+ 已移除'
+            exit 1
+          fi
+
+      - name: 全量回归测试（含 release pipeline 慢测）
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest tests/ -v --tb=short
+
+      - name: build.py dry-run
+        run: |
+          python release/build.py --dry-run --abis cp311
+
+  # ============================================================
+  # 阶段 2: ABI 矩阵构建 — 5 个 Windows runner 并行
+  # ============================================================
+  build:
+    name: build-${{ matrix.abi }}
+    needs: precheck
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # PR 触发时只跑当前 Python 版本的冒烟 ABI（cp311），节省 runner
+    if: github.event_name != 'pull_request' || matrix.abi == 'cp311'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: cp37
+            python: '3.7.9'
+          - abi: cp39
+            python: '3.9.7'
+          - abi: cp310
+            python: '3.10.8'
+          - abi: cp311
+            python: '3.11.9'
+          - abi: cp313
+            python: '3.13.9'
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 装 MSVC 构建工具（Cython 需要）
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 装构建依赖
+        shell: pwsh
+        run: |
+          python -m pip install -U pip uv
+          uv pip install --system 'cython>=3.0.11' 'pyarmor>=8.5.11' wheel setuptools
+
+      # 仅当 secret 存在时尝试注册 PyArmor license；失败则软退化
+      - name: 注册 PyArmor license（可选）
+        shell: pwsh
+        env:
+          PYARMOR_LICENSE: ${{ secrets.PYARMOR_LICENSE }}
+        if: env.PYARMOR_LICENSE != ''
+        run: |
+          $env:PYARMOR_LICENSE | Out-File -Encoding ASCII pyarmor.lic
+          pyarmor reg pyarmor.lic
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'PyArmor 注册失败，将走 trial 兜底'
+          }
+
+      - name: 构建本 ABI（Cython + PyArmor）
+        shell: pwsh
+        run: |
+          python release/build.py --abis ${{ matrix.abi }} --verbose
+
+      - name: 自检产物
+        shell: pwsh
+        run: |
+          $abiDir = "release/build_cache/${{ matrix.abi }}/maxagent"
+          if (-not (Test-Path $abiDir)) {
+            Write-Error "$abiDir 不存在！"
+            exit 1
+          }
+          # 必须保留明文白名单
+          foreach ($keep in @('__init__.py', 'reload.py', 'qt_compat.py')) {
+            if (-not (Test-Path "$abiDir/$keep")) {
+              Write-Error "明文白名单 $keep 缺失！"
+              exit 1
+            }
+          }
+          # 至少应有 .pyd 文件
+          $pydCount = (Get-ChildItem -Recurse $abiDir -Filter '*.pyd').Count
+          if ($pydCount -lt 1) {
+            Write-Error "未找到 .pyd 产物！Cython 编译失败"
+            exit 1
+          }
+          Write-Host "✅ ABI ${{ matrix.abi }} 自检通过 (.pyd 数量: $pydCount)"
+
+      - name: 上传 ABI 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.abi }}
+          path: release/build_cache/${{ matrix.abi }}/
+          retention-days: 7
+
+  # ============================================================
+  # 阶段 3: mzp 聚合打包
+  # ============================================================
+  pack:
+    name: pack-mzp
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    # PR 不发布
+    if: github.event_name != 'pull_request'
+    outputs:
+      version: ${{ steps.read-version.outputs.version }}
+      mzp_path: ${{ steps.pack-step.outputs.mzp_path }}
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 装 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+
+      - name: 下载所有 ABI 产物到 build_cache/
+        uses: actions/download-artifact@v4
+        with:
+          path: release/build_cache/
+          pattern: build-*
+          merge-multiple: false
+
+      # 下载后产物结构: release/build_cache/build-cp37/maxagent/...
+      # 需要重命名为: release/build_cache/cp37/maxagent/...
+      - name: 重组 build_cache 目录
+        shell: pwsh
+        run: |
+          Get-ChildItem release/build_cache -Directory -Filter 'build-*' | ForEach-Object {
+            $newName = $_.Name -replace '^build-', ''
+            Rename-Item $_.FullName -NewName $newName
+            Write-Host "重命名 $($_.Name) -> $newName"
+          }
+          Get-ChildItem release/build_cache -Directory | ForEach-Object {
+            Write-Host "  $($_.Name): $((Get-ChildItem -Recurse $_.FullName).Count) 个文件"
+          }
+
+      - name: 读版本号
+        id: read-version
+        shell: pwsh
+        run: |
+          $ver = python -c "import sys; sys.path.insert(0,'release'); from version import __version__; print(__version__)"
+          Write-Host "版本号: $ver"
+          "version=$ver" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: 打包 mzp（聚合所有 ABI）
+        id: pack-step
+        shell: pwsh
+        run: |
+          python release/build.py --pack-only --abis cp37 cp39 cp310 cp311 cp313 --verbose
+          $mzp = Get-ChildItem release/dist -Filter '*.mzp' | Select-Object -First 1
+          if (-not $mzp) {
+            Write-Error 'mzp 未产出'
+            exit 1
+          }
+          Write-Host "mzp 产物: $($mzp.FullName) ($([math]::Round($mzp.Length/1MB, 2)) MB)"
+          "mzp_path=$($mzp.FullName)" | Out-File -Append -FilePath $env:GITHUB_OUTPUT
+
+      - name: 上传 mzp 制品
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxagent-mzp-${{ steps.read-version.outputs.version }}
+          path: release/dist/*.mzp
+          retention-days: 90
+
+  # ============================================================
+  # 阶段 4: 发布到 GitHub Release（仅 tag 推送触发）
+  # ============================================================
+  publish:
+    name: 发布 Release
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 下载 mzp 制品
+        uses: actions/download-artifact@v4
+        with:
+          name: maxagent-mzp-${{ needs.pack.outputs.version }}
+          path: dist/
+
+      - name: 生成 Release Notes
+        id: notes
+        run: |
+          ver='${{ needs.pack.outputs.version }}'
+          mzp=$(ls dist/*.mzp | head -1)
+          size_mb=$(du -m "$mzp" | cut -f1)
+          {
+            echo "# MaxAgent v$ver"
+            echo ''
+            echo '## 兼容性'
+            echo '- 3ds Max 2022 ~ 2027'
+            echo '- Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13（5 套 ABI 内置于单包）'
+            echo ''
+            echo '## 安装'
+            echo '将 .mzp 文件直接拖入 3ds Max 视口即可自动安装。'
+            echo ''
+            echo "## 产物"
+            echo "- 文件: \`$(basename "$mzp")\`"
+            echo "- 大小: ${size_mb} MB"
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.mzp
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+
+      # 同步推送到 Gitee Release（可选，需提供 GITEE_TOKEN）
+      - name: 同步发布到 Gitee Release（可选）
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_OWNER: 'cmqll'
+          GITEE_REPO: 'max_agent'
+        if: env.GITEE_TOKEN != ''
+        run: |
+          python release/ci/publish_gitee.py \
+            --version '${{ needs.pack.outputs.version }}' \
+            --mzp-glob 'dist/*.mzp' \
+            --notes-file RELEASE_NOTES.md

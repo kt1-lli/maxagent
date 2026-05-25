@@ -1,19 +1,23 @@
-# 工蜂蓝盾流水线 — MaxAgent 多 ABI 矩阵构建
+# 工蜂蓝盾流水线 — MaxAgent 多 ABI 矩阵构建（内部备份方案）
 #
-# 触发: master 分支推送 / git tag v*.*.* 推送
+# 主流水线: .github/workflows/release.yml (GitHub Actions)
+# 本文件:   工蜂蓝盾镜像配置（内网备份，不强制启用）
+#
+# 触发: master 分支推送 / git tag v*.*.* 推送 / 手动
 # 节点: 5 个 Windows runner 并行（每个跑一个 Python ABI）
 #
-# 启用方式: 在工蜂项目设置 -> 蓝盾 启用本流水线即可
+# 启用方式: 工蜂项目 → 设置 → 蓝盾 → 选用本配置文件
 #
 # 注意:
 # - Cython 产出的 .pyd 必须在对应 Python 版本节点上编译，无法跨版本
 # - PyArmor license 通过工蜂凭据管理注入（变量名 PYARMOR_LICENSE）
+#   未提供时自动走 trial 兜底（保护强度 L1+L3，仍可发布）
 
 stages:
   - name: 兼容性预检
     jobs:
-      - name: lint-and-static
-        os: windows
+      - name: lint-and-tests
+        os: linux
         steps:
           - name: 拉取代码
             uses: checkout@v1
@@ -24,18 +28,25 @@ stages:
           - name: 装依赖
             run: |
               python -m pip install -U uv
-              uv pip install --system flake8 mypy
+              uv pip install --system 'cython>=3.0.11' 'pyarmor>=8.5.11' pytest flake8
           - name: PEP8 检查
             run: |
               flake8 maxagent/ --max-line-length=120 --extend-ignore=W503,E203
-          - name: Python 3.13 兼容性 grep
+          - name: 全量回归测试
+            env:
+              QT_QPA_PLATFORM: offscreen
             run: |
-              python release/build.py --dry-run
+              python -m pytest tests/ --tb=short
+          - name: build.py dry-run
+            run: |
+              python release/build.py --dry-run --abis cp311
 
   - name: ABI 矩阵构建
     jobs:
       - name: build-${{ matrix.abi }}
         os: windows
+        depends:
+          - lint-and-tests
         strategy:
           matrix:
             include:
@@ -56,22 +67,29 @@ stages:
             run: |
               python -m pip install -U uv
               uv pip install --system "cython>=3.0.11" "pyarmor>=8.5.11" wheel setuptools
-          - name: 注入 PyArmor license
+          - name: 注册 PyArmor license（可选）
             env:
               PYARMOR_LICENSE: ${{ secrets.PYARMOR_LICENSE }}
             run: |
-              echo %PYARMOR_LICENSE% > pyarmor.lic
-              pyarmor reg pyarmor.lic
+              if defined PYARMOR_LICENSE (
+                echo %PYARMOR_LICENSE% > pyarmor.lic
+                pyarmor reg pyarmor.lic
+              ) else (
+                echo "PYARMOR_LICENSE 未设置，将走 trial 兜底"
+              )
           - name: 构建本 ABI
             run: |
-              python release/build.py --abis ${{ matrix.abi }}
+              python release/build.py --abis ${{ matrix.abi }} --verbose
+          - name: 自检明文白名单与 .pyd 产物
+            run: |
+              python -c "import os, sys; abi_dir = 'release/build_cache/${{ matrix.abi }}/maxagent'; assert os.path.isdir(abi_dir); [sys.exit('明文 ' + k + ' 缺失') for k in ('__init__.py','reload.py','qt_compat.py') if not os.path.isfile(abi_dir + '/' + k)]; pyds = [f for r,_,fs in os.walk(abi_dir) for f in fs if f.endswith('.pyd')]; assert pyds, '未找到 .pyd 产物'; print('OK,', len(pyds), '个 .pyd')"
           - name: 上传 ABI 产物
             uses: upload-artifact@v1
             with:
               name: build-${{ matrix.abi }}
               path: release/build_cache/${{ matrix.abi }}/
 
-  - name: mzp 打包与发布
+  - name: mzp 聚合打包
     jobs:
       - name: pack-mzp
         os: windows
@@ -83,22 +101,52 @@ stages:
           - build-cp313
         steps:
           - uses: checkout@v1
+          - name: 装 Python 3.11
+            uses: setup-python@v1
+            with:
+              version: 3.11.9
           - name: 下载所有 ABI 产物
             uses: download-artifact@v1
             with:
               path: release/build_cache/
-          - name: 打包 mzp
+          - name: 重组目录结构（去 build- 前缀）
             run: |
-              python release/build.py --abis cp37 cp39 cp310 cp311 cp313 --skip-cython --skip-pyarmor
-              # 上一步使用已下载的 build_cache 直接打包，无需重新编译
+              for /d %%d in (release\build_cache\build-*) do (
+                set "src=%%d"
+                set "dst=!src:build-=!"
+                ren "%%d" "!dst:release\build_cache\=!"
+              )
+          - name: 聚合打包 mzp（不重新编译）
+            run: |
+              python release/build.py --pack-only --abis cp37 cp39 cp310 cp311 cp313 --verbose
           - name: 上传 mzp 制品
             uses: upload-artifact@v1
             with:
               name: maxagent-mzp
               path: release/dist/*.mzp
-          - name: 推送 Gitee Release（仅 tag）
-            if: startsWith(github.ref, 'refs/tags/v')
+
+  - name: 发布到 Gitee Release
+    jobs:
+      - name: publish-gitee
+        os: linux
+        depends:
+          - pack-mzp
+        if: startsWith(github.ref, 'refs/tags/v')
+        steps:
+          - uses: checkout@v1
+          - name: 装 Python 3.11
+            uses: setup-python@v1
+            with:
+              version: 3.11.9
+          - name: 下载 mzp 产物
+            uses: download-artifact@v1
+            with:
+              name: maxagent-mzp
+              path: dist/
+          - name: 推送 Gitee Release
             env:
               GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+              GITEE_OWNER: cmqll
+              GITEE_REPO: max_agent
             run: |
-              python release/ci/publish_gitee.py
+              python release/ci/publish_gitee.py --mzp-glob 'dist/*.mzp'

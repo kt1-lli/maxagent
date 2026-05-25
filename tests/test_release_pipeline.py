@@ -425,3 +425,64 @@ class TestPyarmorFallback:
         assert (tmp_path / 'good.pyc').is_file()
         # bad 因失败保留原 .py（兜底逻辑：失败不删源）
         assert bad.exists()
+
+
+@pytest.mark.slow
+class TestPackOnlyMode:
+    """验证 --pack-only 模式（CI pack 阶段使用）。"""
+
+    def test_pack_only_skips_compile_and_uses_existing_cache(
+        self, built_mzp, tmp_path,
+    ):
+        """build_cache 已有产物时，--pack-only 应秒级直出 mzp 而不重新编译。"""
+        if not _has_cython():
+            pytest.skip('Cython 未安装')
+
+        import time
+        # 已经在 built_mzp fixture 内跑过完整 build，此时 build_cache 内有产物
+        cmd = [
+            sys.executable, str(_BUILD_SCRIPT),
+            '--pack-only', '--abis', _CURRENT_ABI,
+        ]
+        start = time.time()
+        proc = subprocess.run(
+            cmd,
+            cwd=str(_PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=60,
+        )
+        elapsed = time.time() - start
+
+        assert proc.returncode == 0, proc.stderr
+        # --pack-only 应该秒级完成（不再走 Cython/PyArmor）
+        assert elapsed < 15, '--pack-only 耗时 {}s 异常（应 <15s）'.format(elapsed)
+        # 产物存在
+        dist_dir = _RELEASE_DIR / 'dist'
+        mzps = sorted(dist_dir.glob('maxagent-*.mzp'))
+        assert mzps
+        # 日志应明确显示走了 pack-only 路径
+        combined = proc.stdout + proc.stderr
+        assert 'pack-only' in combined.lower() or '跳过' in combined
+
+    def test_pack_only_with_empty_cache_returns_error(
+        self, tmp_path, monkeypatch,
+    ):
+        """--pack-only 但 build_cache 中无对应 ABI 产物时应早退非 0。"""
+        # 在临时目录跑 build.py，避免污染真实 build_cache
+        # 简化做法：直接调 main()，把 BUILD_CACHE_DIR 指到空的 tmp 目录
+        import build  # type: ignore
+
+        empty_cache = tmp_path / 'empty_cache'
+        empty_cache.mkdir()
+        empty_dist = tmp_path / 'empty_dist'
+        empty_dist.mkdir()
+
+        monkeypatch.setattr(build, 'BUILD_CACHE_DIR', empty_cache)
+        monkeypatch.setattr(build, 'DIST_DIR', empty_dist)
+
+        ret = build.main(['--pack-only', '--abis', 'cp311'])
+        # _make_mzp 在没有 ABI 时返回 5
+        assert ret == 5
