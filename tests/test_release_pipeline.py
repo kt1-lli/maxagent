@@ -603,3 +603,69 @@ class TestAllAbisOrchestration:
         pkg2.mkdir(parents=True)
         (pkg2 / 'tool.cpython-310-x86_64-linux-gnu.so').write_bytes(b'\x00')
         assert build._abi_already_built('cp310') is True
+
+
+class TestUvPythonMinorMatching:
+    """验证 uv Python 解析采用 minor 系列匹配，不再要求 patch 精确相等。"""
+
+    def test_minor_key_extracts_minor_part(self):
+        import build  # type: ignore
+        assert build._minor_key('3.11.13') == '3.11'
+        assert build._minor_key('3.9.7') == '3.9'
+        assert build._minor_key('3.13') == '3.13'
+
+    def test_resolve_uv_python_prefers_exact_match(self):
+        """目标 patch 已装时优先返回 patch 完全一致的版本。"""
+        import build  # type: ignore
+        installed = ['3.11.9', '3.11.13']
+        assert build._resolve_uv_python('3.11.9', installed) == '3.11.9'
+
+    def test_resolve_uv_python_falls_back_to_same_minor_max_patch(self):
+        """目标 patch 没装时回退到同 minor 中 patch 最高的版本。"""
+        import build  # type: ignore
+        installed = ['3.9.18', '3.10.18', '3.11.13', '3.13.5']
+        # 期望 3.11.9 但只装了 3.11.13 → 命中 3.11.13
+        assert build._resolve_uv_python('3.11.9', installed) == '3.11.13'
+        # 期望 3.10.8 但只装了 3.10.18 → 命中 3.10.18
+        assert build._resolve_uv_python('3.10.8', installed) == '3.10.18'
+
+    def test_resolve_uv_python_returns_none_for_missing_minor(self):
+        """同 minor 系列完全没装时返回 None。"""
+        import build  # type: ignore
+        installed = ['3.10.18', '3.11.13']
+        assert build._resolve_uv_python('3.9.7', installed) is None
+
+    def test_ensure_uv_pythons_returns_dict_with_actual_versions(self, monkeypatch):
+        """_ensure_uv_pythons 返回 {期望: 实际} 映射，且 minor 命中即可。"""
+        import build  # type: ignore
+        # uv 装的全是新 patch（与 ABI_TO_PYTHON 中的精确版不同）
+        monkeypatch.setattr(
+            build,
+            '_list_uv_pythons',
+            lambda: ['3.9.18', '3.10.18', '3.11.13', '3.13.5'],
+        )
+        resolved = build._ensure_uv_pythons(
+            ['3.9.7', '3.10.8', '3.11.9', '3.13.9'],
+            dry_run=False,
+            auto_install=False,
+        )
+        assert resolved == {
+            '3.9.7': '3.9.18',
+            '3.10.8': '3.10.18',
+            '3.11.9': '3.11.13',
+            '3.13.9': '3.13.5',
+        }
+
+    def test_all_abis_dry_run_with_minor_only_install(self, monkeypatch):
+        """模拟用户用 'uv python install 3.11' 装的 3.11.13 等新 patch，
+        --all-abis --dry-run 应能完整通过而不再因 patch 不同被判失败。
+        """
+        import build  # type: ignore
+        monkeypatch.setattr(build, '_has_uv', lambda: True)
+        monkeypatch.setattr(
+            build,
+            '_list_uv_pythons',
+            lambda: ['3.9.18', '3.10.18', '3.11.13', '3.13.5'],
+        )
+        ret = build.main(['--all-abis', '--dry-run'])
+        assert ret == 0

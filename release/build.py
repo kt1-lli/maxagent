@@ -52,7 +52,7 @@ import sysconfig
 import time
 import zipfile
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 # 本脚本所在目录 = release/
@@ -629,45 +629,105 @@ def _list_uv_pythons() -> List[str]:
     return versions
 
 
-def _ensure_uv_pythons(targets: Sequence[str], dry_run: bool, auto_install: bool) -> List[str]:
-    """确保 uv 已安装目标 Python 版本列表。
+def _minor_key(version: str) -> str:
+    """从形如 '3.11.13' 的版本号取出 minor 部分 '3.11'。
 
-    :param targets: 期望的 Python 完整版本号（如 ['3.9.7', '3.10.8', ...]）
-    :param dry_run: 仅打印不执行
-    :param auto_install: True 时自动调 ``uv python install`` 补齐缺失版本
-    :return: 当前已可用的 Python 版本列表（可能少于 targets）
+    用于 ABI 与已安装 Python 的同系列匹配。CPython 字节码 / 扩展 ABI
+    在同一 minor 系列内稳定，因此只需 minor 一致即可。
     """
-    installed = set(_list_uv_pythons())
-    missing = [v for v in targets if v not in installed]
-    if not missing:
-        LOG.info('uv 已安装全部目标 Python: %s', list(targets))
-        return list(targets)
+    parts = version.split('.')
+    if len(parts) >= 2:
+        return '{}.{}'.format(parts[0], parts[1])
+    return version
 
-    LOG.warning('uv 缺少以下 Python 版本: %s', missing)
+
+def _resolve_uv_python(target: str, installed: Sequence[str]) -> Optional[str]:
+    """在 uv 已安装的 Python 列表里挑一个与 target 同 minor 的实际版本号。
+
+    匹配优先级：
+      1. 完全相等（patch 也一致）
+      2. 同 minor 系列下 patch 号最大（即最新可用）
+
+    :return: 命中的实际版本号（如 '3.11.13'）；未命中返回 None
+    """
+    if target in installed:
+        return target
+    target_minor = _minor_key(target)
+    same_minor = [v for v in installed if _minor_key(v) == target_minor]
+    if not same_minor:
+        return None
+
+    def _patch_tuple(v: str) -> Tuple[int, ...]:
+        try:
+            return tuple(int(x) for x in v.split('.'))
+        except ValueError:
+            return (0,)
+
+    return max(same_minor, key=_patch_tuple)
+
+
+def _ensure_uv_pythons(targets: Sequence[str], dry_run: bool, auto_install: bool) -> Dict[str, str]:
+    """确保 uv 已安装与目标 Python "同 minor 系列"的版本。
+
+    :param targets: 期望的 Python 完整版本号（如 ['3.9.7', '3.10.8', ...]），
+        实际用于 ABI 匹配的只是 minor 部分（'3.9' / '3.10' ...）。
+    :param dry_run: 仅打印不执行。
+    :param auto_install: True 时自动调 ``uv python install <minor>`` 补齐缺失系列。
+    :return: ``{原始目标版本: 实际可用版本}``。未匹配上的目标不会出现在返回 dict 中。
+    """
+    installed = _list_uv_pythons()
+    resolved: Dict[str, str] = {}
+    missing_minors: List[str] = []
+    for tgt in targets:
+        actual = _resolve_uv_python(tgt, installed)
+        if actual is not None:
+            resolved[tgt] = actual
+        else:
+            missing_minors.append(_minor_key(tgt))
+
+    if not missing_minors:
+        LOG.info('uv 已安装全部目标 Python（按 minor 系列匹配）:')
+        for tgt, actual in resolved.items():
+            note = '精确' if tgt == actual else '同 minor 实际为 {}'.format(actual)
+            LOG.info('  目标 %-9s -> %s （%s）', tgt, actual, note)
+        return resolved
+
+    # 缺失项以 minor 形式展示，提示用户用 minor 安装更稳妥
+    missing_minors = sorted(set(missing_minors))
+    LOG.warning('uv 缺少以下 Python minor 系列: %s', missing_minors)
     if dry_run:
         LOG.info('[dry-run] 将通过 uv 安装上述版本')
-        return list(targets)
+        return resolved
 
     if not auto_install:
         LOG.error(
-            '请先安装缺失的 Python（任选其一）:\n'
+            '请先安装缺失的 Python minor 系列（任选其一）:\n'
             '  uv python install %s\n'
             '或在本命令上加 --auto-install-pythons 自动安装。',
-            ' '.join(missing),
+            ' '.join(missing_minors),
         )
-        return [v for v in targets if v in installed]
+        return resolved
 
-    LOG.info('自动安装缺失的 Python: %s', missing)
+    LOG.info('自动安装缺失的 Python minor 系列: %s', missing_minors)
     proc = subprocess.run(
-        ['uv', 'python', 'install'] + list(missing),
+        ['uv', 'python', 'install'] + list(missing_minors),
         text=True,
         encoding='utf-8',
         errors='replace',
     )
     if proc.returncode != 0:
         LOG.error('uv python install 失败，退出码 %s', proc.returncode)
-        return [v for v in targets if v in installed]
-    return list(targets)
+        return resolved
+
+    # 安装完毕重新枚举一遍
+    installed = _list_uv_pythons()
+    for tgt in targets:
+        if tgt in resolved:
+            continue
+        actual = _resolve_uv_python(tgt, installed)
+        if actual is not None:
+            resolved[tgt] = actual
+    return resolved
 
 
 def _abi_already_built(abi: str) -> bool:
@@ -708,7 +768,8 @@ def _orchestrate_all_abis(
         )
 
     py_targets = [abi_to_python[abi] for abi in abis if abi in abi_to_python]
-    available_pys = set(_ensure_uv_pythons(py_targets, dry_run, auto_install_pythons))
+    # resolved: {期望版本(如 '3.11.9'): 实际可用版本(如 '3.11.13')}
+    resolved_pys = _ensure_uv_pythons(py_targets, dry_run, auto_install_pythons)
 
     succeeded: List[str] = []
     failed: List[str] = []
@@ -720,8 +781,10 @@ def _orchestrate_all_abis(
             failed.append(abi)
             continue
 
-        if py_ver not in available_pys and not dry_run:
-            LOG.error('[%s] 缺少 Python %s（uv 未安装），跳过', abi, py_ver)
+        actual_py = resolved_pys.get(py_ver)
+        if actual_py is None and not dry_run:
+            LOG.error('[%s] 缺少 Python %s 系列（uv 未安装匹配 minor），跳过',
+                      abi, _minor_key(py_ver))
             failed.append(abi)
             continue
 
@@ -730,9 +793,12 @@ def _orchestrate_all_abis(
             succeeded.append(abi)
             continue
 
-        # 拼装子命令：uv run --python <ver> python release/build.py --abis cpXX
+        # 传 minor 形式（如 '3.11'）给 uv，让 uv 自己挑同 minor 已装的实际 patch；
+        # 这样无论用户装的是 3.11.9 / 3.11.13 都能被 uv 解析到。
+        uv_python_arg = _minor_key(py_ver) if actual_py else py_ver
+        # 拼装子命令：uv run --python <minor> python release/build.py --abis cpXX
         sub_cmd: List[str] = [
-            'uv', 'run', '--python', py_ver,
+            'uv', 'run', '--python', uv_python_arg,
             '--no-project',  # 避免 uv 把 release/ 当成 editable 项目反复装
             'python', str(Path(__file__).resolve()),
             '--abis', abi,
@@ -745,7 +811,7 @@ def _orchestrate_all_abis(
             sub_cmd.append('--verbose')
 
         LOG.info('=' * 60)
-        LOG.info('[%s] 调度子进程: Python %s', abi, py_ver)
+        LOG.info('[%s] 调度子进程: Python %s（实际 %s）', abi, uv_python_arg, actual_py or '?')
         LOG.info('=' * 60)
         LOG.debug('cmd: %s', ' '.join(sub_cmd))
 
