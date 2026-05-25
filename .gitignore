@@ -29,3 +29,6 @@ release/dist/
 release/**/*.c
 release/**/*.so
 release/**/*.pyd
+
+# PyArmor 临时日志
+pyarmor.bug.log
