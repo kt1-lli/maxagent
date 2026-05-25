@@ -15,12 +15,23 @@ sessions.py
 
 # Tier-2（中等保护价值，~1300 行）：调度安全 / 配置加密 / 工具注册
 tools/dispatcher.py
-tools/registry.py
 config.py
+# tools/registry.py  # 已从白名单移除，详见下方"已知问题"
 
 # 注意事项：
-# - tools/registry.py 含 inspect.signature 反射调用，build.py 会自动添加
-#   `# cython: binding=True, embedsignature=True` 编译指令。
 # - agent/worker.py 含 14 处 PySide Signal/Slot，build.py 会自动启用
 #   `binding=True` 以保证 Qt MetaObject 反射正常。
 # - 列表中的文件不能是 __init__.py（包入口必须保留 .py 明文）。
+#
+# 已知问题（2026-05-25）：
+# - tools/registry.py **不能** 走 Cython。原因：该文件提供 @tool 装饰器，
+#   会在每个工具模块（scene_query / geometry / ...）import 阶段被多次
+#   调用，内部再用 inspect.signature(func) 反射用户函数。
+#   即便启用了 binding=True + embedsignature=True，Cython 编译后的
+#   <cyfunction tool> 在 3ds Max 嵌入 Python (3.11.x) 环境里反射纯
+#   .pyc 函数时仍会触发 C 层崩溃（Max 桥接报 "Unknown exception"，
+#   Python try/except 无法拦截）。
+#   该问题在 Linux 沙箱 + 系统 CPython 上不复现，仅在 Max 嵌入解释器
+#   触发，疑似 cyfunction frame 与 CPython frame 跨边界访问的环境
+#   敏感问题。registry.py 是纯框架代码（装饰器 + JSON Schema 推导），
+#   不含敏感逻辑或密钥，明文 .pyc 兜底无安全损失。
