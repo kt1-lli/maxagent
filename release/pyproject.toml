@@ -23,7 +23,7 @@ name = "maxagent-release"
 version = "0.0.0"
 description = "MaxAgent release pipeline (Cython + PyArmor + mzp)"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 license = "MIT"
 
 [tool.setuptools]
@@ -63,7 +63,7 @@ linetrace = false
 
 # 哪些 ABI 必须构建
 [tool.maxagent-release.abi_matrix]
-required = ["cp37", "cp39", "cp310", "cp311", "cp313"]
+required = ["cp39", "cp310", "cp311", "cp313"]
 # 当本地无对应 Python 时是否跳过（CI 必须 false，本地开发可 true）
 allow_skip_missing = true
 

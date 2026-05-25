@@ -21,8 +21,12 @@ __release_channel__ = 'stable'
 
 # 支持的 3ds Max 版本对应的 Python ABI 标签
 # (参考 Autodesk 官方文档: 2027 已是 Python 3.13.9)
+#
+# 注：3ds Max 2022 (Python 3.7) 不再支持。
+# 原因：Python 3.7 已 EOL（2023-06），uv 默认不下载，PyArmor 8.5+ 已停止
+# 3.7 支持，且 Max 2022 用户基数已显著减少。如确需 cp37，可通过
+# `--abis cp37 --allow-cross-abi` + 手动安装 Python 3.7.9 单独构建。
 SUPPORTED_ABIS = (
-    'cp37',   # 3ds Max 2022 / 2022.x          (Python 3.7.9)
     'cp39',   # 3ds Max 2023                    (Python 3.9.7)
     'cp310',  # 3ds Max 2024                    (Python 3.10.8)
     'cp311',  # 3ds Max 2025 / 2025.1 / 2026    (Python 3.11.x)
@@ -30,7 +34,6 @@ SUPPORTED_ABIS = (
 )
 
 ABI_TO_PYTHON = {
-    'cp37': '3.7.9',
     'cp39': '3.9.7',
     'cp310': '3.10.8',
     'cp311': '3.11.9',
@@ -38,7 +41,6 @@ ABI_TO_PYTHON = {
 }
 
 ABI_TO_MAX_VERSIONS = {
-    'cp37': ('2022', '2022.1', '2022.2', '2022.3'),
     'cp39': ('2023',),
     'cp310': ('2024',),
     'cp311': ('2025', '2025.1', '2026'),

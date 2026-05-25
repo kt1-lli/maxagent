@@ -2,12 +2,22 @@
 
 本项目遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/) 规范。
 
+## [0.4.1] - 2026-05-25
+
+### Removed
+- 不再支持 3ds Max 2022 / Python 3.7（cp37）。原因：Python 3.7 已 EOL（2023-06），
+  uv 默认不再下载，PyArmor 8.5+ 已停止 3.7 支持。如确需 cp37，
+  可手动安装 Python 3.7.9 后用 `--abis cp37 --allow-cross-abi` 单独构建。
+
+### Changed
+- mzp 内含的 ABI 矩阵：`cp39 / cp310 / cp311 / cp313`（4 套，覆盖 Max 2023~2027）。
+
 ## [0.4.0] - 2026-05-25
 
 首版正式发布版（mzp 形式）。
 
 ### Added
-- 多 ABI 单包发布：mzp 内含 5 套 Python 字节码（cp37 / cp39 / cp310 / cp311 / cp313），
+- 多 ABI 单包发布：mzp 内含多套 Python 字节码（cp37 / cp39 / cp310 / cp311 / cp313），
   覆盖 3ds Max 2022~2027 全部版本
 - Cython + PyArmor 混合保护：核心 8 个文件（系统 prompt / LLM 调用 / 对话编排
   / 工具调度 / 配置管理）以 Cython .pyd 形式分发，其余文件 PyArmor 加密

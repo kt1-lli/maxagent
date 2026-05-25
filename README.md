@@ -3,7 +3,7 @@
 > 用自然语言操作 3ds Max——创建几何体、加修改器、设置材质灯光、批量重命名、写脚本……
 > 支持 **本地模型**（Ollama / LM Studio）和 **云端 API**（OpenAI / DeepSeek / 任意 OpenAI 兼容协议）。
 
-![banner](https://img.shields.io/badge/3ds_Max-2022~2027-orange) ![python](https://img.shields.io/badge/Python-3.7+-blue) ![qt](https://img.shields.io/badge/Qt-PySide2_|_PySide6-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![banner](https://img.shields.io/badge/3ds_Max-2023~2027-orange) ![python](https://img.shields.io/badge/Python-3.9+-blue) ![qt](https://img.shields.io/badge/Qt-PySide2_|_PySide6-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
 
@@ -15,7 +15,7 @@
 - **多 Profile 配置**：一键切换 Ollama / DeepSeek / GPT-4o / 自建 LLM 网关
 - **撤销支持**：每个工具调用包一层 `pymxs.undo`，可 Ctrl+Z 回滚
 - **逃生舱**：`run_maxscript` / `run_python` 工具让 AI 写自定义脚本（默认需弹窗确认）
-- **跨版本兼容**：Max 2022 ~ 2027 / PySide2 / PySide6 全覆盖
+- **跨版本兼容**：Max 2023 ~ 2027 / PySide2 / PySide6 全覆盖
 - **零外部依赖**：LLM 客户端纯 stdlib（urllib + json）实现
 
 ---

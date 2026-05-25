@@ -6,7 +6,7 @@
 ========
 
 1. 解析参数 / 读取 ``release/version.py`` / 读取 ``cython_modules.txt``
-2. 对每个目标 ABI（cp37/cp39/cp310/cp311/cp313）：
+2. 对每个目标 ABI（cp39/cp310/cp311/cp313）：
    a. 创建 ``build_cache/cpXX/`` 干净工作区
    b. 把 ``maxagent/`` 整个包复制到 ``build_cache/cpXX/maxagent/`` 作临时副本
       （**绝不修改源码目录**）
@@ -30,7 +30,7 @@
 
     python release/build.py                # 完整 5 ABI 构建（要求当前解释器能编全部）
     python release/build.py --quick        # 仅当前 ABI（开发期）
-    python release/build.py --all-abis     # ⭐ 一键全 ABI：通过 uv 调度 5 个 Python 子进程并聚合
+    python release/build.py --all-abis     # ⭐ 一键全 ABI：通过 uv 调度 4 个 Python 子进程并聚合
     python release/build.py --version X.Y  # 同时更新 version.py
     python release/build.py --abis cp311   # 指定单 ABI
     python release/build.py --skip-pyarmor # 调试期跳过 PyArmor
@@ -603,7 +603,7 @@ def _has_uv() -> bool:
 
 
 def _list_uv_pythons() -> List[str]:
-    """枚举本机 uv 已安装的 Python 版本号字符串列表（如 ['3.7.9', '3.11.13']）。"""
+    """枚举本机 uv 已安装的 Python 版本号字符串列表（如 ['3.9.7', '3.11.13']）。"""
     try:
         proc = subprocess.run(
             ['uv', 'python', 'list', '--only-installed'],
@@ -632,7 +632,7 @@ def _list_uv_pythons() -> List[str]:
 def _ensure_uv_pythons(targets: Sequence[str], dry_run: bool, auto_install: bool) -> List[str]:
     """确保 uv 已安装目标 Python 版本列表。
 
-    :param targets: 期望的 Python 完整版本号（如 ['3.7.9', '3.9.7', ...]）
+    :param targets: 期望的 Python 完整版本号（如 ['3.9.7', '3.10.8', ...]）
     :param dry_run: 仅打印不执行
     :param auto_install: True 时自动调 ``uv python install`` 补齐缺失版本
     :return: 当前已可用的 Python 版本列表（可能少于 targets）

@@ -4,7 +4,7 @@
 # 本文件:   工蜂蓝盾镜像配置（内网备份，不强制启用）
 #
 # 触发: master 分支推送 / git tag v*.*.* 推送 / 手动
-# 节点: 5 个 Windows runner 并行（每个跑一个 Python ABI）
+# 节点: 4 个 Windows runner 并行（每个跑一个 Python ABI）
 #
 # 启用方式: 工蜂项目 → 设置 → 蓝盾 → 选用本配置文件
 #
@@ -50,7 +50,6 @@ stages:
         strategy:
           matrix:
             include:
-              - { abi: cp37,  python: 3.7.9  }
               - { abi: cp39,  python: 3.9.7  }
               - { abi: cp310, python: 3.10.8 }
               - { abi: cp311, python: 3.11.9 }
@@ -94,7 +93,6 @@ stages:
       - name: pack-mzp
         os: windows
         depends:
-          - build-cp37
           - build-cp39
           - build-cp310
           - build-cp311
@@ -118,7 +116,7 @@ stages:
               )
           - name: 聚合打包 mzp（不重新编译）
             run: |
-              python release/build.py --pack-only --abis cp37 cp39 cp310 cp311 cp313 --verbose
+              python release/build.py --pack-only --abis cp39 cp310 cp311 cp313 --verbose
           - name: 上传 mzp 制品
             uses: upload-artifact@v1
             with:
