@@ -124,16 +124,43 @@ def _connect_qdock_save_hooks(qdock, dock_widget):
     - ``main_win.saveState()`` —— Max 主窗口的 dock 布局（嵌入哪一列、
       多宽、与其他 dockWidget 的顺序）。少了这一份，重启后 Qt 不知道
       把 QDockWidget 放回哪里，会回退到默认右侧。
+
+    本函数对保存做了三层防御，避免把"用户拖动中间过渡态"误存为最终态：
+
+    1. **启动稳定期**：``_save_armed`` 在 1.2 秒后才置 True。期间 Qt
+       仍在做初始 layout 适应（show/raise 都会发 visibilityChanged 等
+       信号），这些都不是用户意图，必须屏蔽。
+    2. **隐藏过滤**：``visibilityChanged(False)`` 时 ``saveGeometry``
+       拿到的几何在多平台上不稳定（屏外坐标 / 0 大小），整个 hide
+       事件直接跳过保存。
+    3. **300ms 防抖**：拖动过程中 ``dockLocationChanged`` /
+       ``topLevelChanged`` 会高频触发。统一用 ``QTimer.singleShot(300)``
+       合并到一次最终保存，避免落盘的是 mouse-drag 中间帧。
+
+    另外暴露 ``_flush_qdock_state``（同步立即保存，绕过防抖与稳定期）
+    给关闭 / 用户主动 "记忆当前布局" 等强意图路径使用。
     """
     from .qt_compat import QtCore
 
-    def _save():
+    # 闭包状态：用 list 包一层是为了 Python2 风格（无 nonlocal）兼容
+    # 同时让所有内部函数共享同一个标志位
+    _state = {
+        'armed': False,           # 启动稳定期过后才允许 debounced 保存
+        'pending': False,         # 已有一次 singleShot 在排队
+    }
+
+    def _do_save_sync():
+        """真正执行落盘的同步实现。失败时只打日志不抛。"""
         try:
             ba = qdock.saveGeometry()
             try:
                 geo_bytes = bytes(ba)
             except TypeError:
                 geo_bytes = ba.data() if hasattr(ba, 'data') else b''
+            # 几何二进制 < 50 字节几乎必然是无效快照（隐藏 / 未 layout
+            # 完成 / 屏外）。Qt 正常 saveGeometry 的最小尺寸约 60+ 字节。
+            if len(geo_bytes) < 50:
+                return
             geo_b64 = base64.b64encode(geo_bytes).decode('ascii')
 
             area = None
@@ -152,7 +179,11 @@ def _connect_qdock_save_hooks(qdock, dock_widget):
                             state_ba.data()
                             if hasattr(state_ba, 'data') else b''
                         )
-                    main_state_b64 = base64.b64encode(st_bytes).decode('ascii')
+                    # saveState 二进制太短同样视为不可用，不覆盖旧值
+                    if len(st_bytes) >= 20:
+                        main_state_b64 = base64.b64encode(
+                            st_bytes,
+                        ).decode('ascii')
             except Exception:  # pylint: disable=broad-except
                 area = None
 
@@ -161,28 +192,89 @@ def _connect_qdock_save_hooks(qdock, dock_widget):
                 floating=qdock.isFloating(),
                 dock_area=area,
                 embedded_ok=True,
-                main_state_b64=main_state_b64,
+                # 仅在拿到合法二进制时才传 main_state_b64，否则保持
+                # ``save_ui_state`` 的"None 表示沿用旧值"语义，避免把
+                # 不稳定瞬态覆盖掉用户上次确认的好布局
+                main_state_b64=main_state_b64 or None,
             )
         except Exception:  # pylint: disable=broad-except
             traceback.print_exc()
 
-    # Qt5/6 都支持以下信号
+    def _schedule_save():
+        """防抖入口：armed 后才合并到 300ms 末尾的一次落盘。"""
+        if not _state['armed']:
+            return
+        if _state['pending']:
+            return
+        _state['pending'] = True
+
+        def _fire():
+            _state['pending'] = False
+            _do_save_sync()
+
+        # 仅在有 QApplication 时才走 QTimer 防抖；否则同步执行
+        # （测试场景 / 极端环境的兜底，避免悬空 timer 在 GC 时崩溃）
+        try:
+            from .qt_compat import QtWidgets as _QtWidgets
+            _has_app = _QtWidgets.QApplication.instance() is not None
+        except Exception:  # pylint: disable=broad-except
+            _has_app = False
+        if _has_app:
+            try:
+                QtCore.QTimer.singleShot(300, _fire)
+                return
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # 退化到同步保存
+        _state['pending'] = False
+        _do_save_sync()
+
+    # ----- 启动稳定期：1.2 秒后再开启自动保存 ----- #
+    def _arm():
+        _state['armed'] = True
+
+    # 仅在已有 QApplication 实例时才用 QTimer.singleShot 排稳定期任务；
+    # 否则（测试 / 早期初始化 / 极端环境）直接立刻 arm，避免悬空
+    # timer 在 GC 时引发崩溃
     try:
-        qdock.topLevelChanged.connect(lambda _f: _save())
+        from .qt_compat import QtWidgets as _QtWidgets
+        _has_app = _QtWidgets.QApplication.instance() is not None
+    except Exception:  # pylint: disable=broad-except
+        _has_app = False
+    if _has_app:
+        try:
+            QtCore.QTimer.singleShot(1200, _arm)
+        except Exception:  # pylint: disable=broad-except
+            _state['armed'] = True
+    else:
+        # 没有事件循环就同步 arm，反正没有 GUI 信号会触发保存
+        _state['armed'] = True
+
+    # ----- 信号挂载（带过滤） ----- #
+    # topLevelChanged：浮动 / 嵌入切换。用户行为，应保存
+    try:
+        qdock.topLevelChanged.connect(lambda _f: _schedule_save())
     except Exception:  # pylint: disable=broad-except
         pass
+    # dockLocationChanged：用户拖到不同 dock area。应保存
     try:
-        qdock.dockLocationChanged.connect(lambda _a: _save())
+        qdock.dockLocationChanged.connect(lambda _a: _schedule_save())
     except Exception:  # pylint: disable=broad-except
         pass
+    # visibilityChanged：仅在显示态保存；隐藏时几何不可靠
     try:
-        qdock.visibilityChanged.connect(lambda _v: _save())
+        qdock.visibilityChanged.connect(
+            lambda visible: _schedule_save() if visible else None,
+        )
     except Exception:  # pylint: disable=broad-except
         pass
 
-    # 把 hook 挂到 dock_widget 上，调用 ``show_panel`` 的代码
-    # 也能主动调用 ``flush_state``
-    dock_widget._flush_qdock_state = _save  # pylint: disable=protected-access
+    # 把 hook 挂到 dock_widget 上：
+    # - _flush_qdock_state: 同步强保存，绕过防抖与稳定期（关闭 / 显式
+    #   "记忆当前布局" 用）
+    # - _arm_qdock_save: 立即开启 armed（测试 / 强制场景用）
+    dock_widget._flush_qdock_state = _do_save_sync  # noqa: SLF001
+    dock_widget._arm_qdock_save = _arm  # noqa: SLF001
 
 
 def _restore_standalone_geometry(widget, ui_state):
@@ -345,13 +437,11 @@ def show_panel(force=False):
         _DOCK_WIDGET = dock_widget
         _QDOCK_HOLDER = qdock
 
-        # 立刻把当前 floating 状态落盘一次，让下次启动恢复到一致的位置
-        try:
-            flusher = getattr(dock_widget, '_flush_qdock_state', None)
-            if callable(flusher):
-                flusher()
-        except Exception:  # pylint: disable=broad-except
-            pass
+        # ⚠ 不要在这里立刻 flush —— 启动期 Qt 还在做 layout 适应，
+        # ``saveState() / saveGeometry()`` 拿到的是 dirty 中间帧。
+        # 之前在此处 flush 是导致用户上次保存的好布局被启动瞬态覆盖的
+        # 元凶之一（图1 → 图2 现象）。保存钩子内部会在 1.2 秒稳定期
+        # 之后再响应信号，自然完成首次落盘，无需在此手动触发。
     else:
         # 独立窗口：当作普通顶层 widget
         dock_widget = MaxAgentDockWidget(config_manager=config)
@@ -462,6 +552,40 @@ def flush_state():
         traceback.print_exc()
 
 
+def pin_current_layout():
+    """显式记忆当前 dock 布局，绕过启动稳定期与防抖。
+
+    适用于用户主动确认"我现在调好了，就以这个为准"的场景。
+    内部行为：
+
+    1. 立即 arm 保存（解除 1.2 秒稳定期屏蔽）
+    2. 同步调用一次 ``_flush_qdock_state``，把当前 ``saveGeometry`` /
+       ``saveState`` 立刻落盘
+    3. 失败时只打日志不抛，不阻塞调用方
+
+    :returns: ``True`` 表示完成保存调用；``False`` 表示当前没有可用的
+              dock 实例
+    """
+    global _DOCK_WIDGET  # pylint: disable=global-statement
+    if _DOCK_WIDGET is None:
+        return False
+    try:
+        arm = getattr(_DOCK_WIDGET, '_arm_qdock_save', None)
+        if callable(arm):
+            arm()
+        flusher = getattr(_DOCK_WIDGET, '_flush_qdock_state', None)
+        if callable(flusher):
+            flusher()
+            return True
+        # 退化到只保存 dock_widget 自身（splitter / 会话），没有外层
+        # qdock 时即此分支
+        _DOCK_WIDGET.save_ui_state()
+        return True
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
+        return False
+
+
 # ---------------------------------------------------------------------- #
 # 自启动钩子（放在 Max startup 目录时会被自动执行）
 # ---------------------------------------------------------------------- #
@@ -523,7 +647,10 @@ if __name__ == '__main__':
         sys.exit(app.exec_())
 else:
     # 被 Max 自动加载时执行
-    try:
-        _auto_register()
-    except Exception:  # pylint: disable=broad-except
-        traceback.print_exc()
+    # 测试 / CI 环境可设置 ``MAXAGENT_NO_AUTOSTART=1`` 跳过自动注册，
+    # 避免 import startup 时直接创建 QWidget 导致测试进程崩溃
+    if not os.environ.get('MAXAGENT_NO_AUTOSTART'):
+        try:
+            _auto_register()
+        except Exception:  # pylint: disable=broad-except
+            traceback.print_exc()
