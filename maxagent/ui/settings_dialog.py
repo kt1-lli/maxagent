@@ -1901,6 +1901,14 @@ class SettingsDialog(QtWidgets.QDialog):
             '<br>· 助手气泡：图片可点击放大查看'
             '<br>· 方便粘贴到 Word / 微信 / PS 工作流</p>'
 
+            '<p><b>⑤ 测试连接对视觉模型的特殊行为</b>：'
+            '<br>· 检测到当前 Profile 模型命中视觉白名单时，'
+            '「🔌 测试连接」会<b>自动附带一张 8×8 灰色占位 PNG</b>，'
+            '让 vita / claude vision 等"必须含 image_url"的网关也能握手成功'
+            '<br>· 「✅ 完整测试」对视觉模型会<b>跳过 tools 字段</b>，'
+            '避开 tokenhub 系网关对 tools 敏感导致 400 invalid_params 的坑'
+            '<br>· 状态文案带<b>"（视觉）"</b>标识，方便区分进入了哪条路径</p>'
+
             '<hr>'
 
             # ---- 对话面板使用技巧 ----
@@ -3264,6 +3272,66 @@ class SettingsDialog(QtWidgets.QDialog):
         self.test_label.setStyleSheet('color:#8fce8f;')
         self._reload_profiles()
 
+    # ------------------------------------------------------------------ #
+    # 测试连接：视觉模型识别 + 占位图自动喂入
+    # ------------------------------------------------------------------ #
+
+    # 1×1 灰色 PNG 占位图（约 100 字节）。
+    # 设计目的：tokenhub 系视觉模型（如 youtu-vita）会在收到纯文本
+    # messages 时返回 400 invalid_params，导致用户哪怕配置完全正确，
+    # 点"测试连接"也永远是红叉。给视觉模型自动塞一张极小占位图，
+    # 让握手能成功，按钮的判据才有意义。
+    # 用 8×8 而非 1×1 是为了避免某些后端把 1×1 视为"无效图像"。
+    _VISION_PLACEHOLDER_PNG_B64 = (
+        'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAA'
+        'GUlEQVR4nGNgYGD4z0AEYBpVSF+FRDsTAGBdAQHO7+hpAAAAAElFTkSuQmCC'
+    )
+    _VISION_PLACEHOLDER_DATA_URL = (
+        'data:image/png;base64,' + _VISION_PLACEHOLDER_PNG_B64
+    )
+
+    def _profile_is_vision_model(self, prof):
+        """判定当前 profile 的 model 是否在视觉白名单内。
+
+        :param prof: 当前编辑中的 profile（_read_form 的结果）
+        :returns: True 表示需要按多模态协议构造测试请求体
+        """
+        try:
+            from ..attachments import model_supports_vision
+            cfg = self._config.config
+            wl = list(getattr(cfg, 'vision_model_whitelist', []) or [])
+            return model_supports_vision(prof.model or '', wl)
+        except Exception:  # pylint: disable=broad-except
+            # 视觉判定失败时按"非视觉"处理，避免阻塞普通模型测试
+            return False
+
+    def _build_test_user_message(self, prof, ask_text):
+        """根据 profile 的视觉能力构造 messages[].content。
+
+        - 视觉模型：返回多模态数组 [{type:text}, {type:image_url}]
+          配上"看到这张占位图请回复 ok"的提示，让模型既触发视觉
+          推理路径又能给出最短回复，便于按钮快速判定连通性。
+        - 普通模型：返回纯文本字符串（保持向后兼容）。
+
+        :returns: tuple(content, is_vision_path) — is_vision_path 仅用于
+                  状态文案区分，不影响功能。
+        """
+        if self._profile_is_vision_model(prof):
+            content = [
+                {
+                    'type': 'image_url',
+                    'image_url': {
+                        'url': self._VISION_PLACEHOLDER_DATA_URL,
+                    },
+                },
+                {
+                    'type': 'text',
+                    'text': '看到这张图就回复"ok"两个字，不要解释。',
+                },
+            ]
+            return content, True
+        return ask_text, False
+
     def _test_connection(self):
         try:
             prof = self._read_form()
@@ -3271,28 +3339,47 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
-        self.test_label.setText('⏳ 测试中...')
+        content, is_vision = self._build_test_user_message(
+            prof, '回复一个字: ok',
+        )
+        if is_vision:
+            self.test_label.setText(
+                '⏳ 测试中（视觉模型，已自动附占位图）...',
+            )
+            logger.info(
+                '测试连接（视觉路径）: model=%s base_url=%s',
+                prof.model, prof.base_url,
+            )
+        else:
+            self.test_label.setText('⏳ 测试中...')
+            logger.info(
+                '测试连接（文本路径）: model=%s base_url=%s',
+                prof.model, prof.base_url,
+            )
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
         try:
             client = build_client_from_profile(prof)
             resp = client.chat(
                 messages=[
-                    {'role': 'user', 'content': '回复一个字: ok'},
+                    {'role': 'user', 'content': content},
                 ],
                 stream=False,
                 tools=None,
             )
-            content = (resp.get('content') or '').strip()
-            if content:
+            reply = (resp.get('content') or '').strip()
+            tag = '（视觉）' if is_vision else ''
+            if reply:
                 self.test_label.setText(
-                    '{} 连接成功，模型回复: "{}"'.format(
-                        _ee('✅'), content[:40],
+                    '{} 连接成功{}，模型回复: "{}"'.format(
+                        _ee('✅'), tag, reply[:40],
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
-                self.test_label.setText('{} 连接成功（响应为空）'.format(_ee('✅')))
+                self.test_label.setText(
+                    '{} 连接成功{}（响应为空）'.format(_ee('✅'), tag),
+                )
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
             err_text = str(exc)
@@ -3313,17 +3400,33 @@ class SettingsDialog(QtWidgets.QDialog):
             self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
-        self.test_label.setText('⏳ 完整测试中（流式+tools+真实 prompt）...')
+
+        is_vision = self._profile_is_vision_model(prof)
+        if is_vision:
+            # 视觉模型：tokenhub 系网关对 tools 字段非常敏感，
+            # 完整测试也不带 tools——只验"system + 多模态 user + stream"
+            # 这条最贴近真实视觉对话的链路。
+            self.test_label.setText(
+                '⏳ 完整测试中（视觉模式：流式 + 占位图，跳过 tools）...',
+            )
+        else:
+            self.test_label.setText(
+                '⏳ 完整测试中（流式+tools+真实 prompt）...',
+            )
         self.test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
 
-        try:
-            from ..tools import build_openai_tools_schema
-            tools_schema = build_openai_tools_schema()
-        except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('{} 加载工具 schema 失败: {}'.format(_ee('❌'), exc))
-            self.test_label.setStyleSheet('color:#e57373;')
-            return
+        # 视觉模型不加 tools；普通模型才需要校验 tools schema 是否能通过
+        if is_vision:
+            tools_schema = None
+        else:
+            try:
+                from ..tools import build_openai_tools_schema
+                tools_schema = build_openai_tools_schema()
+            except Exception as exc:  # pylint: disable=broad-except
+                self.test_label.setText('{} 加载工具 schema 失败: {}'.format(_ee('❌'), exc))
+                self.test_label.setStyleSheet('color:#e57373;')
+                return
 
         # 用真实对话的 system prompt 复刻请求体——只有这样
         # "完整测试通过 == 真实对话不会因 prompt/schema 体积而被拒"。
@@ -3335,6 +3438,10 @@ class SettingsDialog(QtWidgets.QDialog):
             logger.warning('加载默认 system prompt 失败，降级到短文本: %s', exc)
             system_prompt = 'You are a helpful assistant.'
 
+        user_content, _ = self._build_test_user_message(
+            prof, '回复一个字: ok',
+        )
+
         chunks = []
 
         def _on_delta(text):
@@ -3343,31 +3450,32 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             client = build_client_from_profile(prof)
             logger.info(
-                '完整测试: model=%s base_url=%s sys_prompt=%dB tools=%d',
+                '完整测试: model=%s base_url=%s sys_prompt=%dB tools=%d vision=%s',
                 prof.model, prof.base_url,
-                len(system_prompt), len(tools_schema or []),
+                len(system_prompt), len(tools_schema or []), is_vision,
             )
             resp = client.chat(
                 messages=[
                     {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': '回复一个字: ok'},
+                    {'role': 'user', 'content': user_content},
                 ],
                 tools=tools_schema,
                 stream=True,
                 on_delta=_on_delta,
             )
             content = (resp.get('content') or ''.join(chunks)).strip()
+            tag = '（视觉）' if is_vision else ''
             if content:
                 self.test_label.setText(
-                    '{} 完整测试通过，模型回复: "{}"'.format(
-                        _ee('✅'), content[:40],
+                    '{} 完整测试通过{}，模型回复: "{}"'.format(
+                        _ee('✅'), tag, content[:40],
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
                 self.test_label.setText(
-                    '{} 完整测试通过（响应为空，但握手成功）'.format(
-                        _ee('✅'),
+                    '{} 完整测试通过{}（响应为空，但握手成功）'.format(
+                        _ee('✅'), tag,
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')

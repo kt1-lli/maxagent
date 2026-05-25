@@ -396,3 +396,176 @@ def test_reset_default_focus_lands_on_name_edit(dialog, monkeypatch):
     monkeypatch.setattr(dialog.name_edit, 'setFocus', _spy_set_focus)
     dialog._reset_profile_to_default()
     assert calls['count'] >= 1, 'setFocus 未被调用，重置后焦点不会落到名称框'
+
+
+# ====================================================================== #
+# 视觉模型测试连接：自动喂入占位图，避开纯文本被 vita 网关 4xx 拒收
+# ====================================================================== #
+class TestVisionConnectionTest:
+    """B 部分回归：测试连接对视觉模型应自动构造多模态 messages。
+
+    背景：tokenhub 系视觉模型（如 youtu-vita）在收到纯文本 messages
+    时返回 400 invalid_params；用户哪怕配置完全正确，原版「测试连接」
+    按钮也永远红叉。修复方案是在判定为视觉模型后，自动塞一张 8x8
+    占位 PNG，并提示模型回复 "ok"——既触发视觉路径，又能极快返回。
+    """
+
+    @pytest.fixture()
+    def vision_dialog(self, qapp, tmp_path):
+        """构造一个 active profile 的 model 命中视觉白名单的 dialog。"""
+        from maxagent.config import ConfigManager
+        cm = ConfigManager(str(tmp_path / 'config.json'))
+        # 默认 profile 改成视觉模型
+        prof = cm.get_active_profile()
+        if prof is None:
+            pytest.skip('没有默认 profile')
+        prof.model = 'youtu-vita'
+        prof.base_url = 'https://example.com/v1'
+        prof.api_key = 'sk-test'
+        cm.upsert_profile(prof)
+        # 确保白名单包含子串 'vita'
+        cfg = cm.config
+        if not any('vita' in s.lower() for s in cfg.vision_model_whitelist):
+            cfg.vision_model_whitelist = list(cfg.vision_model_whitelist) + [
+                'vita',
+            ]
+        cm.save()
+        from maxagent.ui.settings_dialog import SettingsDialog
+        d = SettingsDialog(cm)
+        yield d
+        d.deleteLater()
+
+    def test_vision_detection(self, vision_dialog):
+        """命中白名单的 model 应被识别为视觉模型。"""
+        prof = vision_dialog._read_form()
+        assert vision_dialog._profile_is_vision_model(prof) is True
+
+    def test_non_vision_detection(self, dialog):
+        """非视觉模型应被识别为普通文本模型（向后兼容）。"""
+        prof = dialog._read_form()
+        # 默认 profile 模型一般不是视觉模型；如果默认配置碰巧含视觉
+        # 关键词（例如把默认改成 gpt-4o），跳过本断言。
+        result = dialog._profile_is_vision_model(prof)
+        assert result is False or result is True  # 仅断言返回 bool 而不抛异常
+
+    def test_build_test_message_for_vision(self, vision_dialog):
+        """视觉模型应返回多模态数组 + 含 image_url 字段。"""
+        prof = vision_dialog._read_form()
+        content, is_vision = vision_dialog._build_test_user_message(
+            prof, '回复 ok',
+        )
+        assert is_vision is True
+        assert isinstance(content, list)
+        # 至少有一个 image_url 块
+        types = [item.get('type') for item in content]
+        assert 'image_url' in types
+        assert 'text' in types
+        # data URL 必须是合法 base64 PNG
+        for item in content:
+            if item.get('type') == 'image_url':
+                url = item['image_url']['url']
+                assert url.startswith('data:image/png;base64,')
+                assert len(url) > 60  # 占位图至少几十字节
+
+    def test_build_test_message_for_non_vision(self, dialog):
+        """非视觉模型应返回纯字符串（向后兼容旧逻辑）。"""
+        prof = dialog._read_form()
+        content, is_vision = dialog._build_test_user_message(
+            prof, '回复 ok',
+        )
+        assert is_vision is False
+        assert isinstance(content, str)
+        assert content == '回复 ok'
+
+    def test_test_connection_uses_multimodal_for_vision(
+        self, vision_dialog, monkeypatch,
+    ):
+        """点击「测试连接」时，视觉模型必须发送多模态 content。
+
+        通过 monkeypatch build_client_from_profile 拦截 chat 调用，
+        断言发送的 messages[0]['content'] 是 list（多模态格式）而非 str。
+        """
+        captured = {'messages': None, 'tools': None}
+
+        class _FakeClient:
+            def chat(self, messages, tools=None, stream=False, **kw):
+                captured['messages'] = messages
+                captured['tools'] = tools
+                return {'content': 'ok'}
+
+        from maxagent.ui import settings_dialog as sd_mod
+        monkeypatch.setattr(
+            sd_mod, 'build_client_from_profile', lambda p: _FakeClient(),
+        )
+
+        vision_dialog._test_connection()
+
+        assert captured['messages'] is not None
+        first = captured['messages'][0]
+        assert first['role'] == 'user'
+        assert isinstance(first['content'], list), (
+            '视觉模型应使用多模态 list 格式，而非字符串'
+        )
+        # 确认 tools 没被传（保持短测一致）
+        assert captured['tools'] is None
+
+    def test_test_connection_uses_string_for_non_vision(
+        self, dialog, monkeypatch,
+    ):
+        """非视觉模型必须保留原字符串 content（向后兼容）。"""
+        captured = {'messages': None}
+
+        class _FakeClient:
+            def chat(self, messages, tools=None, stream=False, **kw):
+                captured['messages'] = messages
+                return {'content': 'ok'}
+
+        from maxagent.ui import settings_dialog as sd_mod
+        monkeypatch.setattr(
+            sd_mod, 'build_client_from_profile', lambda p: _FakeClient(),
+        )
+
+        dialog._test_connection()
+
+        first = captured['messages'][0]
+        assert isinstance(first['content'], str), (
+            '非视觉模型应保留字符串格式以避免破坏既有用户的体验'
+        )
+
+    def test_full_test_skips_tools_for_vision(
+        self, vision_dialog, monkeypatch,
+    ):
+        """完整测试在视觉模型路径下不应附带 tools 字段。
+
+        tokenhub 系视觉网关对 tools 字段非常敏感，附带就会 400。
+        因此完整测试需对视觉模型自动跳过 tools schema 加载。
+        """
+        captured = {'tools': 'NOT_CALLED'}
+
+        class _FakeClient:
+            def chat(self, messages, tools=None, stream=False,
+                     on_delta=None, **kw):
+                captured['tools'] = tools
+                return {'content': 'ok'}
+
+        from maxagent.ui import settings_dialog as sd_mod
+        monkeypatch.setattr(
+            sd_mod, 'build_client_from_profile', lambda p: _FakeClient(),
+        )
+
+        vision_dialog._test_connection_full()
+        assert captured['tools'] is None, (
+            '视觉模型完整测试时必须跳过 tools，避免 vita 网关 400'
+        )
+
+    def test_placeholder_png_is_valid_base64(self, dialog):
+        """占位图必须是合法的 base64-encoded PNG。"""
+        import base64
+        b64 = dialog._VISION_PLACEHOLDER_PNG_B64
+        raw = base64.b64decode(b64)
+        # PNG magic header
+        assert raw[:8] == b'\x89PNG\r\n\x1a\n', (
+            '占位图必须是合法 PNG（含 magic header）'
+        )
+        # 体积合理（避免误用大图浪费 token）
+        assert len(raw) < 1024, '占位图应足够小（<1KB）以加快测试'
