@@ -796,10 +796,21 @@ def _orchestrate_all_abis(
         # 传 minor 形式（如 '3.11'）给 uv，让 uv 自己挑同 minor 已装的实际 patch；
         # 这样无论用户装的是 3.11.9 / 3.11.13 都能被 uv 解析到。
         uv_python_arg = _minor_key(py_ver) if actual_py else py_ver
-        # 拼装子命令：uv run --python <minor> python release/build.py --abis cpXX
+        # 子进程依赖：因为用了 --no-project（避开 release/pyproject.toml 的
+        # setuptools flat-layout 坑），uv 不会自动装 pyproject 声明的 build deps，
+        # 必须用 --with 把构建期依赖临时注入到子进程的隔离 venv 中。
+        with_pkgs: List[str] = ['cython>=3.0.11', 'wheel', 'setuptools']
+        if not skip_pyarmor:
+            with_pkgs.append('pyarmor>=8.5')
+        with_args: List[str] = []
+        for pkg in with_pkgs:
+            with_args.extend(['--with', pkg])
+
+        # 拼装子命令：uv run --python <minor> --with <build deps> python build.py --abis cpXX
         sub_cmd: List[str] = [
             'uv', 'run', '--python', uv_python_arg,
             '--no-project',  # 避免 uv 把 release/ 当成 editable 项目反复装
+        ] + with_args + [
             'python', str(Path(__file__).resolve()),
             '--abis', abi,
         ]
