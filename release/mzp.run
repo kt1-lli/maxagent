@@ -1,45 +1,6 @@
-; MaxAgent mzp control file (drag-and-drop manifest)
-;
-; Reference (Autodesk official, MAXDEV 2027 ENU):
-;   "Drag-and-drop MAXScript Zip files" + "Zip-file Script Packages"
-;   https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A-CC75-4C8D-9A2A-8DFA73F2501E
-;
-; Protocol summary:
-;   * mzp.run is NOT an INI file. It is a SEQUENCE OF COMMANDS.
-;   * On drag-and-drop into 3ds Max:
-;       - 'copy' / 'move' commands run.
-;       - The first 'drop' command names the dropScript that will execute.
-;       - 'run' / 'open' / 'import' / 'merge' / 'xref' commands are IGNORED
-;         in drop context. Therefore we MUST use 'drop', not 'run'.
-;   * dropScripts in 3ds Max are .ms files (the Autodesk doc says ".ds" but
-;     this is a documentation error — Max actually accepts .ms with a
-;     standard top-level fileIn execution model).
-;   * '$max' is a special prefix for the 3ds Max install root. Relative
-;     paths (no drive letter) are resolved against the system temp dir.
-;
-; What this manifest does:
-;   1. name / version / description — package metadata.
-;   2. extract to "maxagent_install" — extract every file in this mzp into
-;      %TEMP%\maxagent_install\ (relative path → resolved against $temp).
-;      This gives mzp_install.ms a STABLE, KNOWN root to find sibling files
-;      (runtime\cpXX\, macros\, shared\), removing the dependency on
-;      installerSource / getSourceFileName() which proved unreliable on
-;      3ds Max 2022 CHS in field testing.
-;   3. drop "mzp_install.ms" — when the user drops the mzp into a Max
-;      viewport, this is the ONE script Max will execute. Inside that
-;      script we do everything in a single linear flow:
-;        copy runtime → install dir, register macros, register menu,
-;        finally show the AI panel.
-;   4. clear temp on MAX exit — auto-clean %TEMP%\maxagent_install\ when
-;      Max exits, so we don't leave junk behind. (We CANNOT use plain
-;      'clear temp' because that would delete the staging dir as soon as
-;      drop finishes, and our install logic relies on it being present
-;      during execution.)
-
 name "MaxAgent"
 version 1
-description "MaxAgent — embedded AI assistant for 3ds Max"
-
+description "MaxAgent embedded AI assistant for 3ds Max"
 extract to "maxagent_install"
 drop "mzp_install.ms"
 clear temp on MAX exit
