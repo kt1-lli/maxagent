@@ -437,6 +437,28 @@ class TestBuildPipeline:
         # .mcr 自删除逻辑（避免 ActionTable 残留）
         assert 'deleteFile' in text, '.mcr 卸载宏未删除自身文件'
 
+    def test_install_script_uses_installer_source_first(self, built_mzp):
+        """mzp_install.ms 必须优先使用 installerSource 解析解压目录。
+
+        实测 3ds Max 2022 CHS 在 mzp dispatch 上下文里 getSourceFileName()
+        会返回空字符串，导致老代码无法定位 mzp 根，安装直接失败。
+        修复方案是优先读 mzp 协议自动注入的全局变量 installerSource。
+        本测试防止该多重 fallback 被回退或简化。
+        """
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
+
+        assert 'installerSource' in text, (
+            'mzp_install.ms 未使用 installerSource 全局变量，'
+            'mzp 解压上下文下 getSourceFileName() 返回空，安装会失败'
+        )
+        # 必须仍保留 getSourceFileName 作为开发态 fileIn 测试的 fallback
+        assert 'getSourceFileName' in text, (
+            'mzp_install.ms 移除了 getSourceFileName fallback，'
+            '开发态 fileIn 调试会无法工作'
+        )
+
     def test_install_script_no_hardcoded_enu(self, built_mzp):
         """mzp_install.ms 不应在路径里硬编码 ENU——应靠 getDir 自动适配语言。
 

@@ -37,11 +37,48 @@ fn _maxagent_escape_path p = (
     substituteString p "\\" "\\\\"
 )
 
--- 解析 mzp 解压目录（mzp 内部脚本通过 getSourceFileName() 拿到自身位置）
+-- 解析 mzp 解压目录
+--
+-- mzp.run [install] 阶段执行 .ms 时，Max 拿不到自身路径的标准方式有：
+--   1. installerSource —— Max 在 mzp 解压后自动注入的全局变量，指向解压
+--      临时目录。这是 mzp 协议下**首选**的方式（Autodesk 官方文档惯例）。
+--   2. getSourceFileName() —— 仅在脚本通过显式 fileIn / Run Script 执行
+--      时返回路径；mzp dispatch 通过内部机制运行时**返回空字符串**。
+--      实测 3ds Max 2022 CHS：mzp 内 getSourceFileName() 返回 ""。
+--
+-- 因此实现策略：先 installerSource，失败再退到 getSourceFileName，
+-- 最后兜底用一个搜索：所有进程 cwd / temp 下找最近的 mzp_install.ms 同
+-- 父目录。这个兜底是最后保险，正常情况下走不到。
 fn _maxagent_resolve_mzp_root = (
-    local scriptPath = getSourceFileName()
-    if scriptPath == undefined or scriptPath == "" do return undefined
-    local rootDir = getFilenamePath scriptPath
+    -- 1) 优先使用 mzp 协议注入的 installerSource 全局变量
+    --    用 try 包住，因为 installerSource 在非 mzp 上下文（比如开发态
+    --    fileIn 测试）会是 undefined，访问未定义全局会抛异常
+    local rootDir = undefined
+    try (
+        if (isProperty ::globalVars #installerSource) do (
+            local _src = ::installerSource
+            if _src != undefined and _src != "" do (
+                -- installerSource 可能是文件路径（指向 mzp_install.ms 自身）
+                -- 也可能直接是目录路径，二者都处理
+                if doesFileExist _src then
+                    rootDir = getFilenamePath _src
+                else if doesDirectoryExist _src then
+                    rootDir = _src
+            )
+        )
+    ) catch ()
+
+    -- 2) 退而求其次：getSourceFileName()（开发态 fileIn 调试时有效）
+    if rootDir == undefined or rootDir == "" do (
+        try (
+            local scriptPath = getSourceFileName()
+            if scriptPath != undefined and scriptPath != "" do (
+                rootDir = getFilenamePath scriptPath
+            )
+        ) catch ()
+    )
+
+    if rootDir == undefined or rootDir == "" do return undefined
     rootDir = trimRight rootDir "\\"
     rootDir
 )
@@ -239,7 +276,19 @@ fn _maxagent_ask_install_mode = (
 fn maxagent_mzp_install = (
     g_maxagent_mzp_root = _maxagent_resolve_mzp_root()
     if g_maxagent_mzp_root == undefined or g_maxagent_mzp_root == "" do (
-        messagebox "无法定位 mzp 解压目录\n（请用 Run Script 运行而不是粘贴到 Listener）" title:"MaxAgent 安装"
+        local _msg = "❌ MaxAgent 无法定位 mzp 解压目录\n\n"
+        _msg += "诊断信息:\n"
+        _msg += "  installerSource = "
+        try (_msg += (::installerSource as string)) catch (_msg += "(undefined)")
+        _msg += "\n  getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
+        _msg += "可能原因:\n"
+        _msg += "  1. 拖入 mzp 时 Max 没有以标准 mzp 协议执行（极少见）\n"
+        _msg += "  2. mzp 文件损坏 / 不完整\n\n"
+        _msg += "解决方法:\n"
+        _msg += "  • 重新下载 mzp\n"
+        _msg += "  • 或者：把 mzp 当 zip 解压，进入解压目录后\n"
+        _msg += "    在 MAXScript 菜单选 Run Script，选 mzp_install.ms"
+        messagebox _msg title:"MaxAgent 安装失败"
         return false
     )
 
