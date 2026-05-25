@@ -376,6 +376,33 @@ class TestBuildPipeline:
         text = data.decode('utf-8', errors='replace')
         assert 'maxagent' in text.lower()
 
+    def test_install_script_registers_menu_and_macros(self, built_mzp):
+        """mzp_install.ms 应注册主菜单 + 五个 macroScript + 安装方式询问。"""
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
+
+        # 五个 macroScript 必须都存在
+        for macro in (
+            'MaxAgent_Show',
+            'MaxAgent_Toggle',
+            'MaxAgent_OpenInstallDir',
+            'MaxAgent_About',
+            'MaxAgent_Uninstall',
+        ):
+            assert 'macroScript ' + macro in text, '缺少 macroScript: ' + macro
+
+        # 必须有菜单注册逻辑（menuMan 主菜单栏挂载）
+        assert 'menuMan.getMainMenuBar' in text, 'mzp_install.ms 未通过 menuMan 挂主菜单'
+        assert 'menuMan.createMenu' in text, '未创建 MaxAgent 子菜单'
+        assert 'menuMan.updateMenuBar' in text, '菜单更新调用缺失'
+
+        # 必须有安装方式三选一对话框（菜单 / 仅宏 / 取消）
+        assert 'yesNoCancelBox' in text, '缺少安装方式选择对话框'
+
+        # 卸载宏要同步移除菜单（避免重启后残留菜单项）
+        assert 'removeItemByPosition' in text, '卸载宏未清理菜单项'
+
 
 # ============================================================
 # 软退化路径单元测试（不需要真实 build 产物）
