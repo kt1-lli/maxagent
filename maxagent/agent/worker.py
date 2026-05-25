@@ -205,16 +205,23 @@ class AgentWorker(QObject):
         - 命中白名单：把 content 重写为 list 形态，含 image_url 段
         - to_openai_messages() 与 conv.messages 顺序一一对应，按索引回填
 
+        视觉模型多轮稳定性（针对 tokenhub vita 等敏感网关）：
+        - **图片瘦身**：仅最后一条带附件的 user 消息保留完整 image_url，
+          更早的图片附件降级为占位文本"[此前已展示过的图片 N 张]"。
+          理由：模型在第一轮已经把图描述出来进了 assistant 历史，多轮重发
+          只会撑爆请求体并触发 4xx。
+        - **格式统一**：视觉路径下，所有 user 消息（含纯文本）都包成
+          ``[{"type":"text","text":...}]`` 数组形态，避免"历史含图、当前
+          纯文本"的混合 content 让 vita 网关返回 invalid_params。
+
         本方法不会改动原 ``conv.messages``，只重写传入的 ``messages``
         副本，供本轮 HTTP 请求使用。
         """
-        # 只有当 conversation 里至少一条 user 消息带附件时才走重型路径
         msgs = self._conv.messages
-        if not any(
-                getattr(m, 'attachments', None)
-                and m.role == 'user'
-                for m in msgs):
-            return messages
+        has_any_attachment = any(
+            getattr(m, 'attachments', None) and m.role == 'user'
+            for m in msgs
+        )
 
         # 延迟 import：避免 worker 在不需要附件时也加载 attachments 模块
         from ..attachments import build_user_content
@@ -225,46 +232,79 @@ class AgentWorker(QObject):
             self._vision_enabled
             and model_supports_vision(model_name, self._vision_whitelist)
         )
-        # to_openai_messages() 跳过空消息时和 conv.messages 不严格 1:1，
-        # 这里做"role + ts"匹配重建索引，简单起见直接顺序扫描带 attachments
-        # 的 user 消息，然后在 messages 里找到对应位置重写。
-        # 因为 to_openai_messages 当前实现不会丢弃 user 消息，按 user
-        # 顺序匹配是稳定的。
-        att_iter = iter(
-            m for m in msgs
-            if m.role == 'user' and getattr(m, 'attachments', None)
-        )
+
+        # 完全无附件 + 非视觉模型：直接透传，零开销路径
+        if not has_any_attachment and not can_vision:
+            return messages
+
+        # 找到"最后一条带附件的 user 消息"和"最后一条 user 消息"在 user
+        # 序列中的索引（0-based），用于决定是否保留图片：
+        # - 仅当当前轮 user（即最后一条 user）就是带附件那条时，才保留图片
+        # - 否则把所有历史图片全部降级为占位文本（多轮稳定性核心策略）
+        last_att_user_pos = -1
+        last_user_pos = -1
+        user_counter = -1
+        for m in msgs:
+            if m.role != 'user':
+                continue
+            user_counter += 1
+            last_user_pos = user_counter
+            if getattr(m, 'attachments', None):
+                last_att_user_pos = user_counter
+        # 当且仅当"最新一条 user 自己带附件"时才保留图片
+        keep_pos = last_att_user_pos if (
+            last_att_user_pos >= 0 and last_att_user_pos == last_user_pos
+        ) else -1
+
         out = list(messages)
+        att_user_pos = -1  # 当前遍历到第几条 user
+        # 按 user 顺序匹配 conv.messages 里的源消息
+        src_user_iter = iter(m for m in msgs if m.role == 'user')
+
         for i, om in enumerate(out):
             if om.get('role') != 'user':
                 continue
-            # 找下一条带附件的源消息——它必然出现在 om 当前或之后的
-            # 用户消息序列里；用 try/StopIteration 控制
             try:
-                src_msg = next(att_iter)
+                src_msg = next(src_user_iter)
             except StopIteration:
                 break
-            # 如果 src_msg 的文本不等于 om['content']，说明这条 user
-            # 消息没有附件，跳过它继续找；为简化实现，要求文本严格匹配。
-            if (om.get('content') or '') != (src_msg.content or ''):
-                # 这条 user 消息没有附件，把刚 next 出来的 src 留到下条匹配
-                # 用 itertools.chain 的方式回退一格——简单实现：包一层。
-                # 实际场景里 user 多附件 / 多发不会这么频繁，这里直接跳过
-                # 这条不重写，下一条 user 再尝试匹配（容忍误匹配）。
-                continue
-            new_content = build_user_content(
-                text=src_msg.content or '',
-                attachments=src_msg.attachments,
-                can_vision=can_vision,
-            )
-            # 复制 om，避免修改原 dict
-            new_om = dict(om)
-            new_om['content'] = new_content
-            out[i] = new_om
+            att_user_pos += 1
+
+            atts = getattr(src_msg, 'attachments', None)
+            if atts:
+                keep = (att_user_pos == keep_pos)
+                new_content = build_user_content(
+                    text=src_msg.content or '',
+                    attachments=atts,
+                    can_vision=can_vision,
+                    keep_images=keep,
+                    force_multimodal=can_vision,
+                )
+                new_om = dict(om)
+                new_om['content'] = new_content
+                out[i] = new_om
+            elif can_vision:
+                # 视觉路径下，纯文本 user 也包成 list 形态以保证格式统一
+                text = om.get('content')
+                # 跳过非 str（保险起见——理论上 user content 总是 str）
+                if isinstance(text, list):
+                    continue
+                new_content = build_user_content(
+                    text=text or '',
+                    attachments=None,
+                    can_vision=True,
+                    keep_images=True,
+                    force_multimodal=True,
+                )
+                new_om = dict(om)
+                new_om['content'] = new_content
+                out[i] = new_om
+
         if can_vision:
             logger.debug(
-                'vision_enabled model=%s rewrote user msgs with image_url',
-                model_name,
+                'vision_enabled model=%s rewrote user msgs '
+                '(keep_pos=%d, total_user=%d)',
+                model_name, keep_pos, att_user_pos + 1,
             )
         else:
             logger.debug(

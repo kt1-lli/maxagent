@@ -233,25 +233,51 @@ def model_supports_vision(model_name, whitelist):
     return False
 
 
-def build_user_content(text, attachments, can_vision):
-    # type: (str, List[Attachment], bool) -> Any
+def build_user_content(text, attachments, can_vision,
+                       keep_images=True, force_multimodal=False):
+    # type: (str, List[Attachment], bool, bool, bool) -> Any
     """根据是否支持视觉把 text + attachments 打包成 OpenAI content。
 
-    - ``can_vision=True``：返回 list 形态的多模态 content
+    - ``can_vision=True`` 且 ``keep_images=True``：返回 list 形态的多模态 content
       ``[{type: text, text: ...}, {type: image_url, image_url: {url: ...}}, ...]``
+    - ``can_vision=True`` 且 ``keep_images=False``：返回 list（仅 text 段），
+      正文带"[已展示过的图片 N 张]"占位提示——用于多轮对话历史瘦身：
+      只让最后一条 user 真正塞图，更早的图片 base64 不再重复发送给视觉网关。
     - ``can_vision=False`` 或 attachments 为空：返回纯字符串
       （不支持视觉时附加"[图片] N 张"占位提示，让 LLM 知道有图但看不到）
+    - ``force_multimodal=True`` 且 ``can_vision=True``：即使没有图片，也把纯文本
+      包成 ``[{"type":"text","text":...}]``。用途：vita 这类视觉网关对
+      "历史含图、当前纯文本"的混合 content 形态支持不稳，统一成 list 最稳。
+
+    :param keep_images: False 表示丢弃 image_url 段，仅保留占位文本（仍是 list
+        形态以便统一格式）。仅在 can_vision=True 路径下有差异。
+    :param force_multimodal: True 表示无图片时也强制 list 形态。
     """
     text = text or ''
     images = [a for a in (attachments or []) if a.kind == Attachment.KIND_IMAGE]
+
+    # 无图：按 force_multimodal 决定纯文本 or list[text]
     if not images:
+        if can_vision and force_multimodal:
+            # 空文本时仍要给一个 text 段，避免下游 vita 网关拒绝空 content
+            return [{'type': 'text', 'text': text if text else ' '}]
         return text
+
+    # 不支持视觉：纯文本 + 附件计数提示（行为与原版一致）
     if not can_vision:
-        # 降级：纯文本 + 附件计数提示
         notice = '\n\n[用户附带 {} 张图片，但当前模型不支持视觉，无法查看]'.format(
             len(images),
         )
         return (text + notice).strip()
+
+    # 支持视觉但 keep_images=False：仅 text 段 + 占位提示
+    if not keep_images:
+        notice = '\n\n[此前已展示过 {} 张图片，本轮上下文不再重发]'.format(
+            len(images),
+        )
+        merged = (text + notice).strip()
+        return [{'type': 'text', 'text': merged if merged else ' '}]
+
     parts = []  # type: List[Dict[str, Any]]
     if text.strip():
         parts.append({'type': 'text', 'text': text})

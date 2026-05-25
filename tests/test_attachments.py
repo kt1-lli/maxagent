@@ -247,11 +247,23 @@ class TestWorkerApplyAttachments(object):
         return w, conv
 
     def test_no_attachments_passthrough(self, tmp_config_dir):
-        w, conv = self._make_worker()
+        # 非视觉模型 + 无附件 + 无历史附件 → 直接透传
+        w, conv = self._make_worker(model='deepseek-chat',
+                                    whitelist=('claude-3',))
         conv.add_user('hi')
         msgs = conv.to_openai_messages()
         out = w._apply_attachments(msgs)  # noqa: SLF001
         assert out == msgs
+
+    def test_vision_no_attachments_force_multimodal(self, tmp_config_dir):
+        # 视觉模型 + 无附件 → user 仍被包成 list[text]（格式统一）
+        w, conv = self._make_worker(model='gpt-4o-mini')
+        conv.add_user('hi')
+        msgs = conv.to_openai_messages()
+        out = w._apply_attachments(msgs)  # noqa: SLF001
+        user_msg = next(m for m in out if m.get('role') == 'user')
+        assert isinstance(user_msg['content'], list)
+        assert user_msg['content'][0]['type'] == 'text'
 
     def test_vision_model_rewrites_to_list(self, tmp_config_dir):
         from maxagent import attachments as att_mod
@@ -321,3 +333,168 @@ class TestConfigVisionFields(object):
         })
         assert cfg.vision_enabled is True
         assert len(cfg.vision_model_whitelist) > 0
+
+
+# ---------------------------------------------------------------------- #
+# build_user_content：多轮历史瘦身 + 强制 multimodal
+# ---------------------------------------------------------------------- #
+class TestBuildUserContentMultiTurn(object):
+
+    def test_keep_images_false_drops_image_url(self, tmp_config_dir):
+        # 视觉模型 + keep_images=False：返回 list 形态但仅保留 text 段
+        from maxagent import attachments as att_mod
+        att = att_mod.save_image_bytes(_png_bytes())
+        out = att_mod.build_user_content(
+            '识别图中人物', [att],
+            can_vision=True, keep_images=False,
+        )
+        assert isinstance(out, list)
+        kinds = [p.get('type') for p in out]
+        assert 'image_url' not in kinds
+        assert 'text' in kinds
+        # 文本里要有占位提示，让模型知道历史曾有图
+        text_seg = next(p for p in out if p.get('type') == 'text')
+        assert '识别图中人物' in text_seg['text']
+        assert '图片' in text_seg['text']
+
+    def test_force_multimodal_wraps_plain_text(self, tmp_config_dir):
+        # 视觉路径下，纯文本也包成 list[text]——格式严格统一
+        from maxagent.attachments import build_user_content
+        out = build_user_content(
+            '你可以干什么', None,
+            can_vision=True, force_multimodal=True,
+        )
+        assert isinstance(out, list)
+        assert len(out) == 1
+        assert out[0]['type'] == 'text'
+        assert out[0]['text'] == '你可以干什么'
+
+    def test_force_multimodal_empty_text_uses_placeholder(self, tmp_config_dir):
+        # vita 等网关会拒绝空 content，空文本兜底为单空格
+        from maxagent.attachments import build_user_content
+        out = build_user_content(
+            '', None,
+            can_vision=True, force_multimodal=True,
+        )
+        assert isinstance(out, list)
+        assert out[0]['type'] == 'text'
+        assert out[0]['text']  # 非空字符串
+
+    def test_force_multimodal_off_keeps_string(self, tmp_config_dir):
+        # 默认 force_multimodal=False：纯文本仍是字符串（向后兼容）
+        from maxagent.attachments import build_user_content
+        out = build_user_content('hello', None, can_vision=True)
+        assert out == 'hello'
+
+    def test_keep_images_default_true_back_compat(self, tmp_config_dir):
+        # 不传 keep_images 时默认保留图片，行为与原版一致
+        from maxagent import attachments as att_mod
+        att = att_mod.save_image_bytes(_png_bytes())
+        out = att_mod.build_user_content('看图', [att], can_vision=True)
+        assert isinstance(out, list)
+        kinds = [p.get('type') for p in out]
+        assert 'image_url' in kinds
+
+
+# ---------------------------------------------------------------------- #
+# AgentWorker._apply_attachments 多轮稳定性
+# ---------------------------------------------------------------------- #
+class TestWorkerMultiTurnStability(object):
+
+    def _make_worker(self, vision=True, model='youtu-vita',
+                     whitelist=('vita', 'gpt-4o')):
+        from maxagent.agent.conversation import Conversation
+        from maxagent.agent.worker import AgentWorker
+
+        class FakeLLM(object):
+            def __init__(self, m):
+                self._model = m
+
+        class FakeDispatcher(object):
+            pass
+
+        conv = Conversation()
+        w = AgentWorker(
+            llm_client=FakeLLM(model),
+            conversation=conv,
+            dispatcher=FakeDispatcher(),
+            vision_enabled=vision,
+            vision_whitelist=list(whitelist),
+        )
+        return w, conv
+
+    def test_only_last_user_keeps_image_url(self, tmp_config_dir):
+        # 模拟现实场景：第一轮发图 → assistant 回 → 第二轮纯文本
+        # 期望：第一轮 user 的图片被剥离为占位文本，第二轮 user 是纯文本
+        from maxagent import attachments as att_mod
+        w, conv = self._make_worker()
+        att = att_mod.save_image_bytes(_png_bytes())
+        conv.add_user('识别图中人物', attachments=[att])
+        conv.add_assistant(content='图中是佐仓千代')
+        conv.add_user('你可以干什么')
+        msgs = conv.to_openai_messages()
+        out = w._apply_attachments(msgs)  # noqa: SLF001
+
+        users = [m for m in out if m.get('role') == 'user']
+        assert len(users) == 2
+        # 第一轮 user：list 但无 image_url
+        first = users[0]
+        assert isinstance(first['content'], list)
+        first_kinds = [p.get('type') for p in first['content']]
+        assert 'image_url' not in first_kinds
+        assert 'text' in first_kinds
+        # 第二轮 user：list[text]（force_multimodal）
+        second = users[1]
+        assert isinstance(second['content'], list)
+        assert second['content'][0]['type'] == 'text'
+        assert second['content'][0]['text'] == '你可以干什么'
+
+    def test_two_image_turns_only_last_keeps_full(self, tmp_config_dir):
+        # 两轮都带图：只有最后一轮保留 image_url
+        from maxagent import attachments as att_mod
+        w, conv = self._make_worker()
+        a1 = att_mod.save_image_bytes(_png_bytes())
+        a2 = att_mod.save_image_bytes(_png_bytes())
+        conv.add_user('图1', attachments=[a1])
+        conv.add_assistant(content='ok1')
+        conv.add_user('图2', attachments=[a2])
+        msgs = conv.to_openai_messages()
+        out = w._apply_attachments(msgs)  # noqa: SLF001
+
+        users = [m for m in out if m.get('role') == 'user']
+        # 第一轮：无 image_url
+        kinds1 = [p.get('type') for p in users[0]['content']]
+        assert 'image_url' not in kinds1
+        # 第二轮：有 image_url
+        kinds2 = [p.get('type') for p in users[1]['content']]
+        assert 'image_url' in kinds2
+
+    def test_non_vision_path_unchanged(self, tmp_config_dir):
+        # 非视觉模型：应保持原本行为——图片降级为纯文本，纯文本不重写
+        from maxagent import attachments as att_mod
+        w, conv = self._make_worker(model='deepseek-chat',
+                                    whitelist=('gpt-4o',))
+        att = att_mod.save_image_bytes(_png_bytes())
+        conv.add_user('看图', attachments=[att])
+        conv.add_user('再问一句')
+        msgs = conv.to_openai_messages()
+        out = w._apply_attachments(msgs)  # noqa: SLF001
+        users = [m for m in out if m.get('role') == 'user']
+        # 第一条：字符串 + 占位提示
+        assert isinstance(users[0]['content'], str)
+        assert '不支持' in users[0]['content']
+        # 第二条：原样字符串（非视觉模型不强制 multimodal）
+        assert users[1]['content'] == '再问一句'
+
+    def test_vision_pure_text_no_attachment_history(self, tmp_config_dir):
+        # 全程无附件 + 视觉模型：仍走 force_multimodal 包装所有 user
+        w, conv = self._make_worker()
+        conv.add_user('hi')
+        conv.add_assistant(content='hello')
+        conv.add_user('again')
+        msgs = conv.to_openai_messages()
+        out = w._apply_attachments(msgs)  # noqa: SLF001
+        users = [m for m in out if m.get('role') == 'user']
+        for u in users:
+            assert isinstance(u['content'], list)
+            assert u['content'][0]['type'] == 'text'
