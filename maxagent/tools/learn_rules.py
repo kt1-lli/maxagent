@@ -23,6 +23,7 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
+from ..logger import get_logger
 from ..user_rules_loader import delete_rule as _delete_rule
 from ..user_rules_loader import get_rule as _get_rule
 from ..user_rules_loader import list_rules as _list_rules
@@ -30,6 +31,9 @@ from ..user_rules_loader import validate_rule_content
 from ..user_rules_loader import validate_rule_id
 from ..user_rules_loader import write_rule
 from .registry import tool
+
+
+logger = get_logger(__name__)
 
 
 # 全局审批回调：由 UI 层在初始化时注入。
@@ -117,6 +121,10 @@ def suggest_rule_addition(
     try:
         validate_rule_id(rule_id)
     except ValueError as exc:
+        logger.warning(
+            'suggest_rule_addition rule_id 校验失败: id=%s, error=%s',
+            rule_id, exc,
+        )
         return {
             'approved': False,
             'error': str(exc),
@@ -125,12 +133,17 @@ def suggest_rule_addition(
     try:
         validate_rule_content(content)
     except ValueError as exc:
+        logger.warning(
+            'suggest_rule_addition 内容校验失败: id=%s, error=%s',
+            rule_id, exc,
+        )
         return {
             'approved': False,
             'error': str(exc),
             'stage': 'validate_content',
         }
     if not (title or '').strip():
+        logger.warning('suggest_rule_addition 标题为空: id=%s', rule_id)
         return {
             'approved': False,
             'error': '规则标题不能为空',
@@ -151,10 +164,17 @@ def suggest_rule_addition(
         'existing': existing,
     }
 
+    logger.info(
+        'suggest_rule_addition 触发审批: id=%s, overwrite=%s',
+        rule_id, bool(existing),
+    )
     cb = _APPROVAL_CB or _default_approval
     try:
         verdict = cb(proposal) or {}
     except Exception as exc:  # pylint: disable=broad-except
+        logger.exception(
+            'suggest_rule_addition 审批回调异常: id=%s', rule_id,
+        )
         return {
             'approved': False,
             'error': '审批回调异常: {}'.format(exc),
@@ -162,6 +182,10 @@ def suggest_rule_addition(
         }
 
     if not verdict.get('approved'):
+        logger.info(
+            'suggest_rule_addition 用户拒绝: id=%s, reason=%s',
+            rule_id, verdict.get('reason', ''),
+        )
         return {
             'approved': False,
             'reason': verdict.get('reason', '用户已拒绝'),
@@ -183,6 +207,10 @@ def suggest_rule_addition(
     try:
         validate_rule_content(final['content'])
     except ValueError as exc:
+        logger.warning(
+            'suggest_rule_addition 编辑后校验失败: id=%s, error=%s',
+            rule_id, exc,
+        )
         return {
             'approved': False,
             'error': '编辑后内容校验失败: {}'.format(exc),
@@ -192,12 +220,16 @@ def suggest_rule_addition(
     try:
         path = write_rule(rule_id, final)
     except (OSError, ValueError) as exc:
+        logger.exception('suggest_rule_addition 落盘失败: id=%s', rule_id)
         return {
             'approved': False,
             'error': '落盘失败: {}'.format(exc),
             'stage': 'write',
         }
 
+    logger.info(
+        'suggest_rule_addition 完成: id=%s, path=%s', rule_id, path,
+    )
     return {
         'approved': True,
         'saved': True,
@@ -250,6 +282,7 @@ def delete_learned_rule(rule_id):
     :param rule_id: 要删除的规则 ID
     """
     ok = _delete_rule(rule_id)
+    logger.info('delete_learned_rule: id=%s, ok=%s', rule_id, ok)
     return {'deleted': ok, 'rule_id': rule_id}
 
 

@@ -30,6 +30,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ..logger import get_logger
 from ..user_tools_loader import delete_user_tool
 from ..user_tools_loader import list_user_tools
 from ..user_tools_loader import reload_user_tool
@@ -37,6 +38,9 @@ from ..user_tools_loader import validate_code
 from ..user_tools_loader import validate_name
 from ..user_tools_loader import write_tool
 from .registry import tool
+
+
+logger = get_logger(__name__)
 
 
 # 全局审批回调：由 UI 层在初始化时注入，签名见 set_approval_callback。
@@ -111,6 +115,7 @@ def propose_new_tool(name, description, code, rationale=''):
         validate_name(name)
         validate_code(code)
     except ValueError as exc:
+        logger.warning('propose_new_tool 校验失败: name=%s, error=%s', name, exc)
         return {
             'approved': False,
             'error': str(exc),
@@ -124,10 +129,12 @@ def propose_new_tool(name, description, code, rationale=''):
         'rationale': rationale or '',
     }
 
+    logger.info('propose_new_tool 触发审批: name=%s', name)
     cb = _APPROVAL_CB or _default_approval
     try:
         verdict = cb(proposal) or {}
     except Exception as exc:  # pylint: disable=broad-except
+        logger.exception('propose_new_tool 审批回调异常: name=%s', name)
         return {
             'approved': False,
             'error': '审批回调异常: {}'.format(exc),
@@ -135,6 +142,10 @@ def propose_new_tool(name, description, code, rationale=''):
         }
 
     if not verdict.get('approved'):
+        logger.info(
+            'propose_new_tool 用户拒绝: name=%s, reason=%s',
+            name, verdict.get('reason', ''),
+        )
         return {
             'approved': False,
             'reason': verdict.get('reason', '用户已拒绝'),
@@ -147,6 +158,9 @@ def propose_new_tool(name, description, code, rationale=''):
     try:
         validate_code(final_code)
     except ValueError as exc:
+        logger.warning(
+            'propose_new_tool 编辑后校验失败: name=%s, error=%s', name, exc,
+        )
         return {
             'approved': False,
             'error': '用户编辑后代码校验失败: {}'.format(exc),
@@ -164,6 +178,7 @@ def propose_new_tool(name, description, code, rationale=''):
     try:
         py_path = write_tool(name, final_code, meta)
     except (OSError, ValueError) as exc:
+        logger.exception('propose_new_tool 落盘失败: name=%s', name)
         return {
             'approved': False,
             'error': '落盘失败: {}'.format(exc),
@@ -174,6 +189,7 @@ def propose_new_tool(name, description, code, rationale=''):
     try:
         reload_user_tool(name)
     except Exception as exc:  # pylint: disable=broad-except
+        logger.exception('propose_new_tool 热加载失败: name=%s', name)
         return {
             'approved': True,
             'saved': True,
@@ -183,6 +199,7 @@ def propose_new_tool(name, description, code, rationale=''):
             'message': '工具已保存但热加载失败，下次启动会重试',
         }
 
+    logger.info('propose_new_tool 完成: name=%s, py_path=%s', name, py_path)
     return {
         'approved': True,
         'saved': True,
@@ -230,6 +247,7 @@ def delete_learned_tool(name):
     :param name: 要删除的工具名
     """
     ok = delete_user_tool(name)
+    logger.info('delete_learned_tool: name=%s, ok=%s', name, ok)
     return {'deleted': ok, 'name': name}
 
 

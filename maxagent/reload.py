@@ -45,6 +45,10 @@ import traceback
 from typing import List
 from typing import Optional
 
+from .logger import get_logger
+
+
+logger = get_logger(__name__)
 
 # 顶层包名，所有以此为前缀的模块都会在重载时被清掉
 _PACKAGE_PREFIX = 'maxagent'
@@ -81,7 +85,7 @@ def _close_existing_panel():
             try:
                 flush()
             except Exception:  # pylint: disable=broad-except
-                traceback.print_exc()
+                logger.exception('reload: flush_state 失败')
 
         dock = getattr(startup_mod, '_DOCK_WIDGET', None)
         holder = getattr(startup_mod, '_QDOCK_HOLDER', None)
@@ -93,21 +97,21 @@ def _close_existing_panel():
                 try:
                     save_session()
                 except Exception:  # pylint: disable=broad-except
-                    traceback.print_exc()
+                    logger.exception('reload: 会话保存失败')
         # 销毁外层 QDockWidget（Max 主窗口的真实容器）
         if holder is not None:
             try:
                 holder.setParent(None)
                 holder.deleteLater()
             except Exception:  # pylint: disable=broad-except
-                traceback.print_exc()
+                logger.exception('reload: 销毁 QDockWidget 容器失败')
         # 销毁内部 widget
         if dock is not None:
             try:
                 dock.setParent(None)
                 dock.deleteLater()
             except Exception:  # pylint: disable=broad-except
-                traceback.print_exc()
+                logger.exception('reload: 销毁 DockWidget 内部 widget 失败')
         # 清空模块级单例引用
         try:
             startup_mod._DOCK_WIDGET = None  # noqa: SLF001
@@ -115,7 +119,7 @@ def _close_existing_panel():
         except Exception:  # pylint: disable=broad-except
             pass
     except Exception:  # pylint: disable=broad-except
-        traceback.print_exc()
+        logger.exception('reload: _close_existing_panel 整体失败')
 
 
 def _purge_modules(skip_self=True):
@@ -155,6 +159,7 @@ def reload_maxagent(reshow=True):
     使用前提：``maxagent`` 所在目录已经在 ``sys.path`` 中
     （通过 ``MAXAGENT_INSTALL.ms`` 或手工 ``sys.path.insert`` 加进去）。
     """
+    logger.info('reload: 开始热重载')
     print('[MaxAgent] reload: 开始热重载...')
 
     # 1. 先把状态落盘 + 关旧 UI
@@ -168,6 +173,7 @@ def reload_maxagent(reshow=True):
             if callable(shutdown):
                 shutdown()
     except Exception:  # pylint: disable=broad-except
+        # logger 自身已被 shutdown，不能再用 logger.exception，退回 traceback
         traceback.print_exc()
 
     # 2. 清掉模块缓存
@@ -182,8 +188,17 @@ def reload_maxagent(reshow=True):
         importlib.invalidate_caches()
         new_pkg = importlib.import_module(_PACKAGE_PREFIX)
     except ImportError:
+        # 重 import 失败时 logger 已被 shutdown 且尚未恢复，统一走 traceback
         traceback.print_exc()
         raise
+
+    # 重新拿一个 logger（新模块对象）
+    try:
+        new_logger_mod = importlib.import_module(_PACKAGE_PREFIX + '.logger')
+        new_logger = new_logger_mod.get_logger(__name__)
+        new_logger.info('reload: 已卸载 %d 个模块并重新 import', n)
+    except Exception:  # pylint: disable=broad-except
+        new_logger = None  # noqa: F841
 
     # 4. 重新创建 DockWidget
     if not reshow:
@@ -215,12 +230,13 @@ def register_maxscript_hook():
             'fn g_reload_max_agent = python.execute '
             '"import maxagent.reload as _r; _r.reload_maxagent()"\n'
         )
+        logger.info('已注册 MaxScript 函数: g_reload_max_agent()')
         print(
             '[MaxAgent] 已注册 MaxScript 函数: g_reload_max_agent()',
         )
         return True
     except Exception:  # pylint: disable=broad-except
-        traceback.print_exc()
+        logger.exception('注册 MaxScript hook 失败')
         return False
 
 

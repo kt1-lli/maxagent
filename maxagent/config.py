@@ -26,6 +26,23 @@ from typing import Optional
 
 CONFIG_VERSION = 1
 
+
+def _get_logger():
+    """Lazy 获取 logger。
+
+    config 被 logger.setup_logging 反向 import（用于解析 config_dir），
+    故此处不能在模块顶部 ``from .logger import get_logger``——会触发
+    循环 import。所有需要日志的位置统一通过本函数获取，且把 ``ImportError``
+    吞掉，保证 config 永远能加载。
+    """
+    try:
+        from .logger import get_logger
+        return get_logger(__name__)
+    except ImportError:
+        import logging
+        return logging.getLogger(__name__)
+
+
 # 内置预设：用户首次启动时可一键选用
 BUILTIN_PROFILES = [
     {
@@ -414,9 +431,14 @@ def get_config_dir() -> str:
     # 3. 兜底：~/.maxagent（包目录只读时才走这里）
     fallback = os.path.join(os.path.expanduser("~"), ".maxagent")
     os.makedirs(fallback, exist_ok=True)
-    print(
-        "[maxagent] 包目录不可写，配置已回退到: {}".format(fallback),
-    )
+    # 用 lazy logger，避免 logger.setup 过程中循环依赖
+    try:
+        _get_logger().warning(
+            "包目录不可写，配置已回退到: %s", fallback,
+        )
+    except Exception:  # pylint: disable=broad-except
+        # logger 自身异常时降级到 stderr，保证用户能看到提示
+        print("[maxagent] 包目录不可写，配置已回退到: {}".format(fallback))
     return fallback
 
 
@@ -450,15 +472,17 @@ def load_config() -> AppConfig:
         return AppConfig.from_dict(raw)
     except (OSError, ValueError, KeyError) as exc:
         # 配置损坏时回退到默认值，避免插件起不来
-        print("[maxagent] 配置加载失败，使用默认: {}".format(exc))
+        # 注意：logger 由 setup_logging 反向 import config，故此处用 lazy
+        _log = _get_logger()
+        _log.warning("配置加载失败，使用默认: %s", exc)
         # 备份损坏文件，方便用户事后排查
         try:
             if os.path.exists(path):
                 bak = path + ".corrupt"
                 os.replace(path, bak)
-                print("[maxagent] 损坏配置已备份到: {}".format(bak))
-        except OSError:
-            pass
+                _log.info("损坏配置已备份到: %s", bak)
+        except OSError as bak_exc:
+            _log.warning("损坏配置备份失败: %s", bak_exc)
         cfg = AppConfig()
         cfg.profiles = [LLMProfile.from_dict(p) for p in BUILTIN_PROFILES]
         cfg.active_profile = cfg.profiles[0].name
@@ -466,7 +490,7 @@ def load_config() -> AppConfig:
         try:
             save_config(cfg)
         except OSError as save_exc:
-            print("[maxagent] 默认配置写盘失败: {}".format(save_exc))
+            _log.error("默认配置写盘失败: %s", save_exc)
         return cfg
 
 
@@ -481,6 +505,10 @@ def save_config(cfg: AppConfig) -> None:
         os.replace(tmp, path)
     else:
         os.rename(tmp, path)
+    _get_logger().debug(
+        "配置已保存: path=%s, profiles=%d, active=%s",
+        path, len(cfg.profiles), cfg.active_profile,
+    )
 
 
 class ConfigManager:
@@ -517,17 +545,16 @@ class ConfigManager:
                 raw = json.load(fh)
             return AppConfig.from_dict(raw)
         except (OSError, ValueError, KeyError) as exc:
-            print("[maxagent] 配置加载失败，使用默认: {}".format(exc))
+            _log = _get_logger()
+            _log.warning("配置加载失败，使用默认: %s", exc)
             # 备份损坏文件，避免覆盖丢失现场
             try:
                 if os.path.exists(path):
                     bak = path + ".corrupt"
                     os.replace(path, bak)
-                    print(
-                        "[maxagent] 损坏配置已备份到: {}".format(bak),
-                    )
-            except OSError:
-                pass
+                    _log.info("损坏配置已备份到: %s", bak)
+            except OSError as bak_exc:
+                _log.warning("损坏配置备份失败: %s", bak_exc)
             cfg = AppConfig()
             cfg.profiles = [
                 LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
@@ -537,9 +564,7 @@ class ConfigManager:
             try:
                 self._save(cfg)
             except OSError as save_exc:
-                print(
-                    "[maxagent] 默认配置写盘失败: {}".format(save_exc),
-                )
+                _log.error("默认配置写盘失败: %s", save_exc)
             return cfg
 
     def _save(self, cfg: AppConfig) -> None:
@@ -580,8 +605,11 @@ class ConfigManager:
     def set_active_profile(self, name: str) -> None:
         if self.get_profile(name) is None:
             raise ValueError("Profile 不存在: {}".format(name))
+        old = self._cfg.active_profile
         self._cfg.active_profile = name
         self.save()
+        if old != name:
+            _get_logger().info("切换激活 Profile: %s -> %s", old, name)
 
     def upsert_profile(self, profile: LLMProfile) -> None:
         """新增或就地更新 profile（按 name 匹配），并立即落盘。
@@ -593,18 +621,29 @@ class ConfigManager:
             if p.name == profile.name:
                 self._cfg.profiles[i] = profile
                 self.save()
+                _get_logger().info(
+                    "Profile 已更新: name=%s, model=%s",
+                    profile.name, profile.model,
+                )
                 return
         self._cfg.profiles.append(profile)
         self.save()
+        _get_logger().info(
+            "Profile 已新增: name=%s, model=%s, base_url=%s",
+            profile.name, profile.model, profile.base_url,
+        )
 
     def delete_profile(self, name: str) -> None:
         """删除 profile（不允许删除当前激活的），并立即落盘。"""
         if name == self._cfg.active_profile:
             raise ValueError("不能删除当前激活的 Profile")
+        before = len(self._cfg.profiles)
         self._cfg.profiles = [
             p for p in self._cfg.profiles if p.name != name
         ]
         self.save()
+        if len(self._cfg.profiles) < before:
+            _get_logger().info("Profile 已删除: %s", name)
 
 
 if __name__ == "__main__":
