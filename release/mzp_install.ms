@@ -332,17 +332,18 @@ fn maxagent_mzp_install = (
     g_maxagent_mzp_root = _maxagent_resolve_mzp_root()
     if g_maxagent_mzp_root == undefined or g_maxagent_mzp_root == "" do (
         local _msg = "❌ MaxAgent 无法定位 mzp 解压目录\n\n"
-        _msg += "诊断信息（三层 fallback 全失败）:\n"
-        _msg += "  1) #temp 下未找到含 runtime\\ 的子目录\n"
+        _msg += "诊断信息（四层 fallback 全失败）:\n"
         local _tempDir = ""
         try (_tempDir = getDir #temp) catch ()
-        _msg += "     #temp = " + _tempDir + "\n"
+        _msg += "  1) " + _tempDir + "\\maxagent_install 不存在\n"
+        _msg += "     （mzp.run 的 extract to 指令未生效）\n"
+        _msg += "  2) #temp 下未找到含 runtime\\ 的子目录\n"
         -- 列出 #temp 实际能看到的前 8 个子目录，便于排查
         try (
             local _subs = getDirectories ((trimRight _tempDir "\\") + "\\*\\")
             if _subs != undefined and _subs.count > 0 then (
                 _msg += "     #temp 当前子目录（前 8 个）:\n"
-                local _n = amin _subs.count 8
+                local _n = if _subs.count < 8 then _subs.count else 8
                 for i = 1 to _n do (
                     _msg += "       - " + (filenameFromPath (trimRight _subs[i] "\\")) + "\n"
                 )
@@ -350,9 +351,9 @@ fn maxagent_mzp_install = (
                 _msg += "     #temp 下当前没有任何子目录\n"
             )
         ) catch (_msg += "     （列举 #temp 子目录失败）\n")
-        _msg += "  2) installerSource = "
+        _msg += "  3) installerSource = "
         try (_msg += (::installerSource as string)) catch (_msg += "(undefined)")
-        _msg += "\n  3) getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
+        _msg += "\n  4) getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
         _msg += "可能原因:\n"
         _msg += "  • mzp 文件损坏 / 不完整\n"
         _msg += "  • Max 拒绝了拖入操作（请确认 .mzp 不在压缩包内）\n\n"

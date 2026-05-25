@@ -1,5 +1,6 @@
 name "MaxAgent"
 version 1
 description "MaxAgent embedded AI assistant for 3ds Max"
+extract to "$temp\maxagent_install"
 drop "mzp_install.ms"
 clear temp on MAX exit
