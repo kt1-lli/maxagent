@@ -101,7 +101,17 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
     conv = Conversation()
     conv.add_user(prompt)
     dispatcher = ToolDispatcher(wrap_undo=True)
-    tools_schema = build_openai_tools_schema()
+    # Function Calling 总开关：对应 profile.supports_tools。视觉专用模型
+    # （tokenhub vita 等）必须把 tools 字段彻底剥离才能避免 5xx，故此处
+    # 同时尊重该开关——tools_enabled=False 时整轮 dispatch 不携带 tools。
+    if bool(getattr(profile, 'supports_tools', True)):
+        tools_schema = build_openai_tools_schema()
+    else:
+        logger.info(
+            'dispatch_task: Function Calling 已禁用 (profile=%s)，跳过 tools schema',
+            getattr(profile, 'name', '?'),
+        )
+        tools_schema = []
 
     started = time.time()
     deadline = started + float(timeout_sec or 0)

@@ -412,6 +412,17 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.tools_chk = QtWidgets.QCheckBox('启用 Function Calling')
         self.tools_chk.setChecked(True)
+        # 视觉/严苛网关避坑提示：vita / claude-vision 等模型对 tools 字段
+        # 极度敏感，开启后会让网关直接返回 5xx。把指南写进 tooltip 比
+        # 让用户碰壁后再回来翻文档友好得多。
+        self.tools_chk.setToolTip(
+            '关闭后本 profile 的对话不会携带 tools / tool_choice 字段。\n'
+            '什么时候关：\n'
+            '· 视觉专用模型（youtu-vita、qwen-vl 等）\n'
+            '· 网关返回 "model engine error" / 502 upstream\n'
+            '· 模型本身不支持 OpenAI Function Calling 协议\n'
+            '关闭后 LLM 不会再调用任何工具，纯对话模式。',
+        )
         right.addRow('', self.tools_chk)
 
         # 高级：自定义 header

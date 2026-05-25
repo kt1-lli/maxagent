@@ -97,8 +97,9 @@ class AgentWorker(QObject):
                  price_output_per_1m=0.0,
                  vision_enabled=True,
                  vision_whitelist=None,
+                 tools_enabled=True,
                  parent=None):
-        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, bool, Optional[List[str]], Any) -> None
+        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, bool, Optional[List[str]], bool, Any) -> None
         super(AgentWorker, self).__init__(parent)
         self._llm = llm_client
         self._conv = conversation
@@ -112,6 +113,11 @@ class AgentWorker(QObject):
         # 喂给纯文本模型导致 400 / token 浪费。
         self._vision_enabled = bool(vision_enabled)
         self._vision_whitelist = list(vision_whitelist or [])
+        # Function Calling 总开关：对应 profile.supports_tools 字段。
+        # False 时整轮 LLM 调用都不带 tools / tool_choice 字段，避免视觉专用
+        # 网关（如 tokenhub vita）因 tools 字段直接返回 5xx upstream_error。
+        # 这是在 v3 之前的版本里被错误地"只写不读"的字段——UI 勾选无效。
+        self._tools_enabled = bool(tools_enabled)
         # 在 worker 自身的线程上运行
         self._thread = None  # type: Optional[QThread]
         # 取消标志（跨线程共享）
@@ -371,6 +377,17 @@ class AgentWorker(QObject):
           让用户看到部分成果，而不是丢失整轮上下文
         """
         tools_schema = build_openai_tools_schema()
+        # Function Calling 总开关：profile.supports_tools=False 时整条
+        # tools 链路熔断——既不发 schema，也不允许过滤后的子集。这是
+        # 视觉专用网关（tokenhub vita 等）唯一可靠的工作模式。
+        if not self._tools_enabled:
+            if tools_schema:
+                logger.info(
+                    'Function Calling 已禁用 (profile.supports_tools=False)，'
+                    '本轮屏蔽 %d 个工具不发送 tools 字段',
+                    len(tools_schema),
+                )
+            tools_schema = []
         # 应用工具过滤（如本轮关闭联网时屏蔽 web_*）
         if self._tools_filter is not None and tools_schema:
             try:

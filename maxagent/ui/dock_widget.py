@@ -1665,6 +1665,13 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                                  'vision_model_whitelist', []))
         vision_on = bool(getattr(self._config.config,
                                  'vision_enabled', True))
+        # 当前 profile 的 Function Calling 总开关（profile.supports_tools）。
+        # 这个值在 UI"启用 Function Calling"复选框里维护，过去版本里只写
+        # 不读 → 用户关掉对话仍然带 tools，对 vita 这类视觉网关是致命的。
+        active_prof = self._config.get_active_profile()
+        tools_enabled = bool(
+            getattr(active_prof, 'supports_tools', True)
+        ) if active_prof is not None else True
 
         self._worker = AgentWorker(
             llm_client=self._llm,
@@ -1676,6 +1683,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             price_output_per_1m=self._get_active_prices()[1],
             vision_enabled=vision_on,
             vision_whitelist=whitelist,
+            tools_enabled=tools_enabled,
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
         self._worker.set_system_prompt_addon_provider(
