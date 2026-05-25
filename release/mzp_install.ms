@@ -1,24 +1,27 @@
 -- ----------------------------------------------------------------------
--- MaxAgent mzp 安装钩子（[install] 阶段）
+-- MaxAgent mzp 安装钩子（dropScript）
 --
--- 当用户把 maxagent-X.Y.Z.mzp 拖入 3ds Max 视口时，Max 按 mzp.run 清单
--- 调度执行：
---   [install] 阶段 -> 本脚本（mzp_install.ms）
---     1. 探测当前 Python 版本，从 runtime/cpXX/ 选择对应产物
---     2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\<lang>\scripts\maxagent\
---        （<lang> 由 getDir #userScripts 自动解析：中文版 zh-CN / 英文版 ENU）
---     3. 注入 sys.path 并立即可用
---     4. 注册菜单/工具栏宏 MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
---     5. 询问用户是否要把"MaxAgent"菜单注册到主菜单栏末尾
---     （注意：本阶段**不**直接 show_panel——见下）
+-- Autodesk mzp 协议（实测 + 官方文档）摘要：
+--   * mzp.run 是**指令序列**（不是 INI；之前实现按 INI 解析，导致 Max
+--     完全识别不了，整个 mzp 静默失败 —— "拖入没反应"）。
+--   * 拖入时 Max 只执行 `drop` 指定的那 1 个 .ms；`run` 指令在拖入
+--     上下文里被无条件忽略。所以本脚本必须当 dropScript 用，文件名
+--     必须出现在 mzp.run 的 `drop "..."` 行里。
 --
---   [run] 阶段 -> mzp_run.ms
---     6. 真正 import maxagent 并 show_panel(force=True)
+-- mzp.run 让 Max 把 mzp 内容解压到 %TEMP%\maxagent_install\，然后调用
+-- 本脚本。本脚本里以 (getDir #temp) + "\\maxagent_install" 为根目录
+-- 直接定位 sibling 文件（runtime\cpXX\、macros\、shared\），不再依赖
+-- installerSource 或 getSourceFileName()——后者实测在 Max 2022 CHS
+-- 的 drop 上下文里返回空，是上一版"完全没反应"的根因之一。
 --
--- 把"显示面板"延后到 [run] 阶段是 Autodesk 推荐的标准做法：
---   * 避开 mzp 解压期事件循环与 Qt UI 初始化抢主线程
---   * [install] 失败时 [run] 不会执行，避免"半成品"启动
---   * 异常透出位置统一在 [run]，便于用户看到真实失败原因
+-- 流程（一气呵成，不再拆 install/run 两阶段）：
+--   1. 探测当前 Max 内嵌 Python 版本，从 runtime\cpXX\ 选择对应产物
+--   2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\<lang>\scripts\maxagent\
+--      （<lang> 由 getDir #userScripts 自动解析：中文版 zh-CN / 英文版 ENU）
+--   3. 注入 sys.path 并立即可用
+--   4. 拷贝 UTF-8 BOM .mcr 到 usermacros，fileIn 注册 macroScript
+--   5. 询问用户安装方式：菜单 / 仅宏 / 跳过
+--   6. 最后 import maxagent 并 show_panel(force=True) —— 把面板拉起来
 --
 -- 兼容范围: 3ds Max 2022 / 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
 --           Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13
@@ -39,36 +42,46 @@ fn _maxagent_escape_path p = (
 
 -- 解析 mzp 解压目录
 --
--- mzp.run [install] 阶段执行 .ms 时，Max 拿不到自身路径的标准方式有：
---   1. installerSource —— Max 在 mzp 解压后自动注入的全局变量，指向解压
---      临时目录。这是 mzp 协议下**首选**的方式（Autodesk 官方文档惯例）。
---   2. getSourceFileName() —— 仅在脚本通过显式 fileIn / Run Script 执行
---      时返回路径；mzp dispatch 通过内部机制运行时**返回空字符串**。
---      实测 3ds Max 2022 CHS：mzp 内 getSourceFileName() 返回 ""。
+-- 三层 fallback（按优先级）：
+--   1. `(getDir #temp) + "\\maxagent_install"` —— mzp.run 里我们写了
+--      `extract to "maxagent_install"`，把解压目录显式定死在系统 TEMP
+--      下的固定子目录。这是**首选**，因为 Max 在 drop 上下文下保证会
+--      执行 extract to 指令；只要 mzp.run 没被改坏，这个路径必然存在。
+--   2. installerSource —— mzp 协议会自动注入此全局变量，但仅在某些
+--      版本/语言下生效，不能依赖；作为第二选择。
+--   3. getSourceFileName() —— 仅在开发态 fileIn / Run Script 调试时
+--      返回路径；drop 上下文返回空字符串，所以放最后兜底（仅给开发用）。
 --
--- 因此实现策略：先 installerSource，失败再退到 getSourceFileName，
--- 最后兜底用一个搜索：所有进程 cwd / temp 下找最近的 mzp_install.ms 同
--- 父目录。这个兜底是最后保险，正常情况下走不到。
+-- 三层都失败时弹窗显示完整诊断信息，便于排查。
 fn _maxagent_resolve_mzp_root = (
-    -- 1) 优先使用 mzp 协议注入的 installerSource 全局变量
-    --    用 try 包住，因为 installerSource 在非 mzp 上下文（比如开发态
-    --    fileIn 测试）会是 undefined，访问未定义全局会抛异常
+    -- 1) 优先：mzp.run extract to 指定的固定路径
     local rootDir = undefined
     try (
-        if (isProperty ::globalVars #installerSource) do (
-            local _src = ::installerSource
-            if _src != undefined and _src != "" do (
-                -- installerSource 可能是文件路径（指向 mzp_install.ms 自身）
-                -- 也可能直接是目录路径，二者都处理
-                if doesFileExist _src then
-                    rootDir = getFilenamePath _src
-                else if doesDirectoryExist _src then
-                    rootDir = _src
+        local _temp = getDir #temp
+        if _temp != undefined and _temp != "" do (
+            local _candidate = (trimRight _temp "\\") + "\\maxagent_install"
+            if doesDirectoryExist _candidate do (
+                rootDir = _candidate
             )
         )
     ) catch ()
 
-    -- 2) 退而求其次：getSourceFileName()（开发态 fileIn 调试时有效）
+    -- 2) installerSource 全局变量
+    if rootDir == undefined or rootDir == "" do (
+        try (
+            if (isProperty ::globalVars #installerSource) do (
+                local _src = ::installerSource
+                if _src != undefined and _src != "" do (
+                    if doesFileExist _src then
+                        rootDir = getFilenamePath _src
+                    else if doesDirectoryExist _src then
+                        rootDir = _src
+                )
+            )
+        ) catch ()
+    )
+
+    -- 3) getSourceFileName()（开发态 fileIn 调试兜底）
     if rootDir == undefined or rootDir == "" do (
         try (
             local scriptPath = getSourceFileName()
@@ -277,15 +290,17 @@ fn maxagent_mzp_install = (
     g_maxagent_mzp_root = _maxagent_resolve_mzp_root()
     if g_maxagent_mzp_root == undefined or g_maxagent_mzp_root == "" do (
         local _msg = "❌ MaxAgent 无法定位 mzp 解压目录\n\n"
-        _msg += "诊断信息:\n"
-        _msg += "  installerSource = "
+        _msg += "诊断信息（三层 fallback 全失败）:\n"
+        _msg += "  1) (getDir #temp + \\maxagent_install) 不存在\n"
+        try (_msg += "     实际 #temp = " + (getDir #temp) + "\n") catch ()
+        _msg += "  2) installerSource = "
         try (_msg += (::installerSource as string)) catch (_msg += "(undefined)")
-        _msg += "\n  getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
+        _msg += "\n  3) getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
         _msg += "可能原因:\n"
-        _msg += "  1. 拖入 mzp 时 Max 没有以标准 mzp 协议执行（极少见）\n"
-        _msg += "  2. mzp 文件损坏 / 不完整\n\n"
+        _msg += "  • mzp.run 被改坏导致 extract to 没生效\n"
+        _msg += "  • mzp 文件损坏 / 不完整\n\n"
         _msg += "解决方法:\n"
-        _msg += "  • 重新下载 mzp\n"
+        _msg += "  • 重新下载完整 mzp\n"
         _msg += "  • 或者：把 mzp 当 zip 解压，进入解压目录后\n"
         _msg += "    在 MAXScript 菜单选 Run Script，选 mzp_install.ms"
         messagebox _msg title:"MaxAgent 安装失败"
@@ -341,11 +356,43 @@ fn maxagent_mzp_install = (
         )
     )
 
-    -- 5) 显示安装完成提示（show_panel 由 mzp.run 的 [run] 阶段触发，
-    --    那个阶段会在本 [install] 阶段全部成功之后再拉起 UI——
-    --    这样能避开 mzp 解压上下文与 Qt UI 初始化的事件循环冲突）
-    messagebox ("✅ MaxAgent 安装成功 (" + abi + ")\n\n安装目录:\n" + installDir + "\n\n" + _entryDesc + "\n\n面板即将自动弹出...") title:"MaxAgent"
-    true
+    -- 5) 拉起 AI 面板
+    --
+    -- 之前版本把 show_panel 放在独立的 mzp_run.ms 里，靠 mzp.run 的 [run]
+    -- 阶段触发——但 Autodesk mzp 协议**没有 [run] 段**，那是上一版按 INI
+    -- 格式臆想出来的（参见本文件头注释）。drop 上下文下 Max 只执行 1 个
+    -- dropScript，所以现在合并到这里一气呵成。
+    --
+    -- 用 try 包住 import + show_panel：万一面板代码出错，至少安装本身
+    -- 是成功的，用户能看到下面的成功提示，而不是被 Python 异常打断。
+    local _panelOk = true
+    local _panelErr = ""
+    try (
+        -- 走 maxagent.startup.show_panel(force=True)，与菜单"显示面板"
+        -- 共用同一条入口，行为一致。force=True 表示哪怕配置里关掉了
+        -- auto_show_on_startup 也强制弹出（mzp 安装完成时用户预期看到）。
+        python.execute "import maxagent.startup as _s; _s.show_panel(force=True)"
+    ) catch (
+        _panelOk = false
+        _panelErr = getCurrentException()
+    )
+
+    -- 6) 显示最终结果
+    local _final = ""
+    if _panelOk then (
+        _final = "✅ MaxAgent 安装成功 (" + abi + ")\n\n"
+        _final += "安装目录:\n" + installDir + "\n\n"
+        _final += _entryDesc + "\n\n"
+        _final += "💡 面板已弹出。下次启动 Max 时，菜单/宏会自动加载。"
+    ) else (
+        _final = "⚠️ MaxAgent 已安装，但面板自动弹出失败 (" + abi + ")\n\n"
+        _final += "安装目录:\n" + installDir + "\n\n"
+        _final += _entryDesc + "\n\n"
+        _final += "异常信息:\n" + _panelErr + "\n\n"
+        _final += "你可以在 MaxAgent 菜单选 \"显示面板\" 手动打开。"
+    )
+    messagebox _final title:"MaxAgent"
+    _panelOk
 )
 
 -- mzp 拖入时自动执行

@@ -1,21 +1,45 @@
-; ----------------------------------------------------------------------
-; MaxAgent mzp 清单
+; MaxAgent mzp control file (drag-and-drop manifest)
 ;
-; 该文件遵循 Autodesk 3ds Max 的 MAXScript Zip Package (mzp) 协议：
+; Reference (Autodesk official, MAXDEV 2027 ENU):
+;   "Drag-and-drop MAXScript Zip files" + "Zip-file Script Packages"
 ;   https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A-CC75-4C8D-9A2A-8DFA73F2501E
 ;
-; mzp.run 是 INI 格式，告诉 Max 解压 mzp 后要执行哪些脚本以及何时执行：
-;   [install]  解压完立即执行（用于拷贝产物 / 注册宏 / 注册菜单）
-;   [run]      安装阶段全部完成后再执行（用于拉起 UI / 弹欢迎对话框等）
+; Protocol summary:
+;   * mzp.run is NOT an INI file. It is a SEQUENCE OF COMMANDS.
+;   * On drag-and-drop into 3ds Max:
+;       - 'copy' / 'move' commands run.
+;       - The first 'drop' command names the dropScript that will execute.
+;       - 'run' / 'open' / 'import' / 'merge' / 'xref' commands are IGNORED
+;         in drop context. Therefore we MUST use 'drop', not 'run'.
+;   * dropScripts in 3ds Max are .ms files (the Autodesk doc says ".ds" but
+;     this is a documentation error — Max actually accepts .ms with a
+;     standard top-level fileIn execution model).
+;   * '$max' is a special prefix for the 3ds Max install root. Relative
+;     paths (no drive letter) are resolved against the system temp dir.
 ;
-; 把"安装"与"运行"分到两个 stage 是 Autodesk 推荐的做法：
-;   * 避开 mzp 解压上下文与 Qt UI 初始化的事件循环冲突
-;   * 让"重启 Max 后再跑一次 mzp"也能复用 [run] 阶段而不重复安装
-;   * 如果 [install] 失败，[run] 不会被触发，避免"半成品"启动
-; ----------------------------------------------------------------------
+; What this manifest does:
+;   1. name / version / description — package metadata.
+;   2. extract to "maxagent_install" — extract every file in this mzp into
+;      %TEMP%\maxagent_install\ (relative path → resolved against $temp).
+;      This gives mzp_install.ms a STABLE, KNOWN root to find sibling files
+;      (runtime\cpXX\, macros\, shared\), removing the dependency on
+;      installerSource / getSourceFileName() which proved unreliable on
+;      3ds Max 2022 CHS in field testing.
+;   3. drop "mzp_install.ms" — when the user drops the mzp into a Max
+;      viewport, this is the ONE script Max will execute. Inside that
+;      script we do everything in a single linear flow:
+;        copy runtime → install dir, register macros, register menu,
+;        finally show the AI panel.
+;   4. clear temp on MAX exit — auto-clean %TEMP%\maxagent_install\ when
+;      Max exits, so we don't leave junk behind. (We CANNOT use plain
+;      'clear temp' because that would delete the staging dir as soon as
+;      drop finishes, and our install logic relies on it being present
+;      during execution.)
 
-[install]
-maxagent_install = mzp_install.ms
+name "MaxAgent"
+version 1
+description "MaxAgent — embedded AI assistant for 3ds Max"
 
-[run]
-maxagent_show_panel = mzp_run.ms
+extract to "maxagent_install"
+drop "mzp_install.ms"
+clear temp on MAX exit

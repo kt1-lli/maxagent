@@ -438,25 +438,39 @@ class TestBuildPipeline:
         assert 'deleteFile' in text, '.mcr 卸载宏未删除自身文件'
 
     def test_install_script_uses_installer_source_first(self, built_mzp):
-        """mzp_install.ms 必须优先使用 installerSource 解析解压目录。
+        """mzp_install.ms 必须用三层 fallback 解析解压目录。
 
-        实测 3ds Max 2022 CHS 在 mzp dispatch 上下文里 getSourceFileName()
-        会返回空字符串，导致老代码无法定位 mzp 根，安装直接失败。
-        修复方案是优先读 mzp 协议自动注入的全局变量 installerSource。
-        本测试防止该多重 fallback 被回退或简化。
+        历史教训：
+          * v1 只用 getSourceFileName() —— Max 2022 CHS 拖入时返回空字符串，
+            装失败。
+          * v2 加了 installerSource 优先 —— 但实测某些 Max 版本根本不注入
+            该全局变量，仍可能失败。
+          * v3（当前）首选 (getDir #temp + maxagent_install)，靠 mzp.run
+            的 ``extract to "maxagent_install"`` 指令把解压目录定死，
+            installerSource / getSourceFileName 只作 fallback。
+
+        本测试防止任何一层 fallback 被回退或简化。
         """
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:
             text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
 
-        assert 'installerSource' in text, (
-            'mzp_install.ms 未使用 installerSource 全局变量，'
-            'mzp 解压上下文下 getSourceFileName() 返回空，安装会失败'
+        # 第 1 层：mzp.run 写好的 extract to 固定子目录
+        assert 'maxagent_install' in text, (
+            'mzp_install.ms 未引用 mzp.run extract to 的固定子目录 '
+            '"maxagent_install"，第 1 层 fallback 缺失'
         )
-        # 必须仍保留 getSourceFileName 作为开发态 fileIn 测试的 fallback
+        assert 'getDir #temp' in text or 'getDir  #temp' in text, (
+            'mzp_install.ms 未通过 getDir #temp 拼接解压根，'
+            '第 1 层 fallback 不可用'
+        )
+        # 第 2 层
+        assert 'installerSource' in text, (
+            'mzp_install.ms 缺少 installerSource fallback'
+        )
+        # 第 3 层（开发态 fileIn 调试用）
         assert 'getSourceFileName' in text, (
-            'mzp_install.ms 移除了 getSourceFileName fallback，'
-            '开发态 fileIn 调试会无法工作'
+            'mzp_install.ms 缺少 getSourceFileName 兜底（开发态调试需要）'
         )
 
     def test_install_script_no_hardcoded_enu(self, built_mzp):
@@ -478,66 +492,84 @@ class TestBuildPipeline:
                 '检测到硬编码 ENU 路径片段（中文版 Max 会装错位置）：\n  ' + ln
             )
 
-    def test_mzp_run_manifest_present(self, built_mzp):
-        """mzp 必须包含 mzp.run 清单（Autodesk mzp 协议标准入口）。
+    def test_mzp_run_manifest_is_command_sequence(self, built_mzp):
+        """mzp.run 必须是 Autodesk 标准的指令序列（不是 INI！）。
 
-        没有 mzp.run 时 Max 会回退到"找根目录唯一 .ms"启发式，行为不可控；
-        显式声明 [install] / [run] 两段是 Autodesk 推荐做法。
+        关键事实（field-tested + Autodesk 文档）：
+          * mzp.run 是 ``copy / move / extract to / drop / run / clear temp``
+            等指令的序列，**不是** INI section 格式。
+          * 拖入时 Max **只**执行 ``drop`` 指定的脚本，``run`` 指令被无条件
+            忽略。所以入口必须是 ``drop "mzp_install.ms"``。
+          * 上一版误用 ``[install]`` / ``[run]`` 段名，被 Max 解析失败 →
+            退化到"找根目录唯一 .ms"启发式 → 当时根目录有 2 个 .ms（
+            mzp_install.ms 和 mzp_run.ms）→ 启发式也失败 → 整个 mzp
+            **拖入完全没反应**。这是回归保护测试。
+
+        参考: https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A
         """
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:
             names = zf.namelist()
             assert 'mzp.run' in names, 'mzp 缺少 mzp.run 清单文件'
-            text = zf.read('mzp.run').decode('utf-8', errors='replace')
+            raw = zf.read('mzp.run')
 
-        # 必须显式声明两个 stage
-        assert '[install]' in text, 'mzp.run 缺少 [install] 段'
-        assert '[run]' in text, 'mzp.run 缺少 [run] 段'
-        # 两个 stage 必须分别指向正确的 .ms
-        assert 'mzp_install.ms' in text, '[install] 段未指向 mzp_install.ms'
-        assert 'mzp_run.ms' in text, '[run] 段未指向 mzp_run.ms'
-
-    def test_mzp_run_script_shows_panel(self, built_mzp):
-        """mzp_run.ms 存在且确实在拉起 maxagent 面板。"""
-        mzp_path, _ = built_mzp
-        with zipfile.ZipFile(mzp_path) as zf:
-            assert 'mzp_run.ms' in zf.namelist(), 'mzp 缺少 mzp_run.ms'
-            text = zf.read('mzp_run.ms').decode('utf-8', errors='replace')
-
-        # 必须 import maxagent 并调用 show_panel
-        assert 'maxagent' in text and 'show_panel' in text, (
-            'mzp_run.ms 未调用 show_panel'
+        # 1) 必须是 CRLF 换行（Windows INI 解析要求）
+        assert b'\r\n' in raw, (
+            'mzp.run 必须用 Windows CRLF 换行，否则 Max 解析失败'
         )
-        # force=True 是关键——首次安装无视配置直接显示面板
-        assert 'force=True' in text, 'mzp_run.ms 未使用 force=True 显示面板'
+        # 不允许出现裸 LF（除 CRLF 中的 LF 外）
+        # 把所有 CRLF 抽掉，剩下的不应有任何 \n
+        residual = raw.replace(b'\r\n', b'')
+        assert b'\n' not in residual, (
+            'mzp.run 含有裸 LF（非 CRLF），Max 解析会失败'
+        )
 
-    def test_install_script_no_longer_directly_shows_panel(self, built_mzp):
-        """mzp_install.ms 的安装入口函数不应再在尾部直接 show_panel——已迁移到 [run] 阶段。
+        text = raw.decode('utf-8', errors='replace')
+        # 2) **禁止**出现 INI 段（这是上一版的 bug，必须钉死）
+        assert '[install]' not in text, (
+            'mzp.run 出现非法 INI 段 [install]——Autodesk mzp 协议没有此语法'
+        )
+        assert '[run]' not in text, (
+            'mzp.run 出现非法 INI 段 [run]——Autodesk mzp 协议没有此语法'
+        )
 
-        这条断言用于防止 install/run 分离的设计被误改回去。
-        注意：``MaxAgent_Show`` 等 macroScript 内部的 ``python.execute show_panel``
-        是合法的（用户点菜单时触发），仅排除安装入口函数 ``maxagent_mzp_install`` 内的调用。
+        # 3) 必须有 drop 指令指向 mzp_install.ms（拖入入口）
+        assert 'drop "mzp_install.ms"' in text, (
+            'mzp.run 缺少 drop "mzp_install.ms" 指令——拖入时 Max 无入口可执行'
+        )
+
+        # 4) 必须有 extract to 指令把解压目录定死
+        assert 'extract to' in text and 'maxagent_install' in text, (
+            'mzp.run 缺少 extract to "maxagent_install"——'
+            'mzp_install.ms 第一层 fallback 会失效'
+        )
+
+    def test_install_script_shows_panel_at_end(self, built_mzp):
+        """mzp_install.ms 末尾必须调 show_panel——drop 上下文只有这一个脚本会跑。
+
+        Autodesk mzp 协议在 drop 上下文下只执行 ``drop`` 指定的 1 个脚本，
+        不存在 [install]/[run] 两阶段（那是上一版的误解）。所以拉起面板的
+        逻辑必须合并在 mzp_install.ms 末尾。
+
+        本测试防止 show_panel 调用被误删或被错误地拆回独立 mzp_run.ms。
         """
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:
+            names = zf.namelist()
             text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
 
-        # 提取 maxagent_mzp_install 函数体（从 'fn maxagent_mzp_install =' 到下一个顶级 fn 或文件尾）
-        marker = 'fn maxagent_mzp_install'
-        idx = text.find(marker)
-        assert idx >= 0, '未找到 maxagent_mzp_install 函数定义'
-        # 截取从 marker 到文件末尾——install 入口是文件最后一个 fn，
-        # 后面只跟 ``maxagent_mzp_install()`` 调用本身，不会有其他 fn 干扰。
-        install_body = text[idx:]
+        # 1) 不应再有独立 mzp_run.ms（避免根目录两个 .ms 让启发式失效）
+        assert 'mzp_run.ms' not in names, (
+            'mzp 不应再包含 mzp_run.ms——drop 上下文 run 指令被忽略，'
+            '该文件永远跑不到，且会让无 mzp.run 的启发式失效'
+        )
 
-        # 在该函数体内不应有 show_panel 的直接调用
-        py_exec_calls = [
-            line for line in install_body.splitlines()
-            if 'python.execute' in line and 'show_panel' in line
-        ]
-        assert not py_exec_calls, (
-            'maxagent_mzp_install 仍在直接调用 show_panel，应迁移到 mzp_run.ms：\n  '
-            + '\n  '.join(py_exec_calls)
+        # 2) install 脚本里必须 import maxagent.startup 并调 show_panel(force=True)
+        assert 'maxagent.startup' in text, (
+            'mzp_install.ms 未 import maxagent.startup'
+        )
+        assert 'show_panel' in text and 'force=True' in text, (
+            'mzp_install.ms 未在末尾调用 show_panel(force=True)'
         )
 
 

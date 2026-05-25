@@ -550,21 +550,41 @@ def _make_mzp(
             json.dumps(meta, ensure_ascii=False, indent=2),
         )
 
-        # 安装钩子（按 mzp 协议组织）
-        #   * mzp.run        : 清单文件，告诉 Max [install]/[run] 各执行哪个 .ms
-        #   * mzp_install.ms : [install] 阶段——拷贝产物 / 注册宏 / 注册菜单
-        #   * mzp_run.ms     : [run]     阶段——拉起 UI 面板
-        # 这是 Autodesk 推荐的"安装/运行分离"做法，能避开 mzp 解压上下文
-        # 与 Qt UI 初始化的主线程冲突，并让异常更可见。
-        # 参考: MAXScript Zip Package (mzp) 文档
-        for hook_name in ('mzp.run', 'mzp_install.ms', 'mzp_run.ms'):
-            hook_path = RELEASE_DIR / hook_name
-            if hook_path.exists():
-                zf.write(hook_path, arcname=hook_name)
-            else:
-                # mzp.run 缺失 -> Max 会回退到"找根目录唯一 .ms"启发式，
-                # 行为不可控；mzp_install.ms 缺失 -> mzp 完全无法自动安装。
-                LOG.warning('mzp 钩子文件 %s 缺失，安装行为可能异常', hook_name)
+        # 安装钩子（按 Autodesk mzp 协议组织）
+        #
+        #   * mzp.run        : 拖入清单文件（指令序列，非 INI），告诉 Max
+        #                       拖入时如何解压、执行哪个 dropScript。
+        #   * mzp_install.ms : 唯一的 dropScript——拷贝产物 / 注册宏 /
+        #                      注册菜单 / 最后拉起 AI 面板，全部一次完成。
+        #
+        # 关键约束：
+        #   * mzp.run 必须用 Windows CRLF 换行（INI 风格被 Max 严格按行
+        #     解析，Unix LF 会让 Max 把整个文件当作一行解释失败 → 退化到
+        #     "运行第一个文件"启发式 → 进而失败）。即使源仓库里的 mzp.run
+        #     是 LF，打包时也要在 zip 字节流里强制改成 CRLF。
+        #   * mzp_install.ms 不强制 CRLF——getSourceFileName() 在 drop
+        #     上下文返回空，所以解压目录定位不依赖它（见 mzp.run 里的
+        #     `extract to maxagent_install` 把根目录定死在 %TEMP% 下）。
+        #
+        # 参考: https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A
+        mzp_run_src = RELEASE_DIR / 'mzp.run'
+        if mzp_run_src.exists():
+            raw = mzp_run_src.read_bytes()
+            # 统一换行：先把所有 CRLF/CR 归一成 LF，再统一替换为 CRLF
+            normalized = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            crlf_bytes = normalized.replace(b'\n', b'\r\n')
+            zf.writestr('mzp.run', crlf_bytes)
+        else:
+            LOG.warning(
+                'mzp.run 缺失 -> Max 会退化到"找根目录唯一 .ms"启发式，'
+                '行为不可控',
+            )
+
+        install_src = RELEASE_DIR / 'mzp_install.ms'
+        if install_src.exists():
+            zf.write(install_src, arcname='mzp_install.ms')
+        else:
+            LOG.warning('mzp_install.ms 缺失 -> mzp 完全无法自动安装')
 
         # 预打包的 macroScript 文件（UTF-8 BOM .mcr）
         # 不让 Max 自动从内联 macroScript 块生成 .mcr——那种方式编码与
