@@ -513,3 +513,88 @@ class TestPackOnlyMode:
         ret = build.main(['--pack-only', '--abis', 'cp311'])
         # _make_mzp 在没有 ABI 时返回 5
         assert ret == 5
+
+
+# ============================================================
+# --all-abis 一键多 ABI 调度（轻量单测，不启动真实子进程矩阵）
+# ============================================================
+
+
+class TestAllAbisOrchestration:
+    """验证 --all-abis 模式的参数解析、互斥规则与辅助函数。"""
+
+    def test_all_abis_helpers_exist(self):
+        """build 模块暴露多 ABI 调度所需的全部辅助函数。"""
+        import build  # type: ignore
+        for name in (
+            '_has_uv',
+            '_list_uv_pythons',
+            '_ensure_uv_pythons',
+            '_abi_already_built',
+            '_orchestrate_all_abis',
+        ):
+            assert hasattr(build, name), '缺少辅助函数 ' + name
+            assert callable(getattr(build, name)), name + ' 不可调用'
+
+    def test_all_abis_conflict_with_quick(self):
+        """--all-abis 与 --quick 互斥，应早退非 0。"""
+        import build  # type: ignore
+        ret = build.main(['--all-abis', '--quick'])
+        assert ret == 7
+
+    def test_all_abis_conflict_with_pack_only(self):
+        """--all-abis 与 --pack-only 互斥，应早退非 0。"""
+        import build  # type: ignore
+        ret = build.main(['--all-abis', '--pack-only'])
+        assert ret == 7
+
+    def test_all_abis_dry_run_succeeds(self, monkeypatch):
+        """--all-abis --dry-run 应跑通整个调度计划而不真正启动子进程。"""
+        import build  # type: ignore
+
+        # 即便沙箱里没装 uv，也假装它存在 + 假装目标 Python 都可用，
+        # 这样 dry-run 路径能完整覆盖到 _orchestrate_all_abis 主体
+        monkeypatch.setattr(build, '_has_uv', lambda: True)
+        monkeypatch.setattr(
+            build,
+            '_list_uv_pythons',
+            lambda: ['3.7.9', '3.9.7', '3.10.8', '3.11.9', '3.13.9'],
+        )
+        ret = build.main(['--all-abis', '--dry-run'])
+        # dry-run 不真编不真打包，应返回 0
+        assert ret == 0
+
+    def test_all_abis_without_uv_raises_clear_error(self, monkeypatch):
+        """--all-abis 但本机没装 uv，应给出明确错误并非零退出。"""
+        import build  # type: ignore
+        monkeypatch.setattr(build, '_has_uv', lambda: False)
+        ret = build.main(['--all-abis'])
+        # _orchestrate_all_abis 抛 RuntimeError，main 内 except 链让其
+        # 在 ABI 编译阶段返回 3 — 但 --all-abis 是在编译之前抛，
+        # 直接传播；这里只断言 != 0 即可（具体码不强约束）
+        assert ret != 0
+
+    def test_abi_already_built_detects_extension_modules(self, tmp_path, monkeypatch):
+        """_abi_already_built 应靠 .pyd / .so 的存在判断已编译。"""
+        import build  # type: ignore
+
+        monkeypatch.setattr(build, 'BUILD_CACHE_DIR', tmp_path)
+
+        # 空目录 → False
+        assert build._abi_already_built('cp311') is False
+
+        # 仅 .py 没扩展 → 也算未编译（避免半成品被误判）
+        pkg = tmp_path / 'cp311' / 'maxagent'
+        pkg.mkdir(parents=True)
+        (pkg / '__init__.py').write_text('', encoding='utf-8')
+        assert build._abi_already_built('cp311') is False
+
+        # 有 .pyd → True
+        (pkg / 'config.cp311-win_amd64.pyd').write_bytes(b'\x00')
+        assert build._abi_already_built('cp311') is True
+
+        # Linux 用 .so 也应识别
+        pkg2 = tmp_path / 'cp310' / 'maxagent'
+        pkg2.mkdir(parents=True)
+        (pkg2 / 'tool.cpython-310-x86_64-linux-gnu.so').write_bytes(b'\x00')
+        assert build._abi_already_built('cp310') is True

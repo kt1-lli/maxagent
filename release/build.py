@@ -28,8 +28,9 @@
 ====
 ::
 
-    python release/build.py                # 完整 5 ABI 构建
+    python release/build.py                # 完整 5 ABI 构建（要求当前解释器能编全部）
     python release/build.py --quick        # 仅当前 ABI（开发期）
+    python release/build.py --all-abis     # ⭐ 一键全 ABI：通过 uv 调度 5 个 Python 子进程并聚合
     python release/build.py --version X.Y  # 同时更新 version.py
     python release/build.py --abis cp311   # 指定单 ABI
     python release/build.py --skip-pyarmor # 调试期跳过 PyArmor
@@ -584,6 +585,200 @@ def _make_mzp(
     return out_path
 
 
+# -------------------------- 多 ABI 一键调度（uv 矩阵） --------------------------
+
+
+def _has_uv() -> bool:
+    """探测 uv 是否安装并可执行。"""
+    try:
+        proc = subprocess.run(
+            ['uv', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _list_uv_pythons() -> List[str]:
+    """枚举本机 uv 已安装的 Python 版本号字符串列表（如 ['3.7.9', '3.11.13']）。"""
+    try:
+        proc = subprocess.run(
+            ['uv', 'python', 'list', '--only-installed'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    versions: List[str] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # uv python list 格式：cpython-3.11.13-windows-x86_64-none  C:\path\to\python.exe
+        m = re.match(r'(?:cpython|pypy)-(\d+\.\d+\.\d+)[\w\-]*\s', line)
+        if m:
+            versions.append(m.group(1))
+    return versions
+
+
+def _ensure_uv_pythons(targets: Sequence[str], dry_run: bool, auto_install: bool) -> List[str]:
+    """确保 uv 已安装目标 Python 版本列表。
+
+    :param targets: 期望的 Python 完整版本号（如 ['3.7.9', '3.9.7', ...]）
+    :param dry_run: 仅打印不执行
+    :param auto_install: True 时自动调 ``uv python install`` 补齐缺失版本
+    :return: 当前已可用的 Python 版本列表（可能少于 targets）
+    """
+    installed = set(_list_uv_pythons())
+    missing = [v for v in targets if v not in installed]
+    if not missing:
+        LOG.info('uv 已安装全部目标 Python: %s', list(targets))
+        return list(targets)
+
+    LOG.warning('uv 缺少以下 Python 版本: %s', missing)
+    if dry_run:
+        LOG.info('[dry-run] 将通过 uv 安装上述版本')
+        return list(targets)
+
+    if not auto_install:
+        LOG.error(
+            '请先安装缺失的 Python（任选其一）:\n'
+            '  uv python install %s\n'
+            '或在本命令上加 --auto-install-pythons 自动安装。',
+            ' '.join(missing),
+        )
+        return [v for v in targets if v in installed]
+
+    LOG.info('自动安装缺失的 Python: %s', missing)
+    proc = subprocess.run(
+        ['uv', 'python', 'install'] + list(missing),
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+    )
+    if proc.returncode != 0:
+        LOG.error('uv python install 失败，退出码 %s', proc.returncode)
+        return [v for v in targets if v in installed]
+    return list(targets)
+
+
+def _abi_already_built(abi: str) -> bool:
+    """判断 build_cache/cpXX/maxagent/ 是否已存在编译产物。
+
+    判断条件：maxagent/ 包目录存在 + 至少一个扩展模块（.pyd/.so）。
+    """
+    pkg_dir = BUILD_CACHE_DIR / abi / 'maxagent'
+    if not pkg_dir.is_dir():
+        return False
+    for ext in ('*.pyd', '*.so'):
+        if any(pkg_dir.rglob(ext)):
+            return True
+    # 没有扩展模块也算"未构建"，避免把上一次失败的半成品当作有效产物
+    return False
+
+
+def _orchestrate_all_abis(
+    abis: Sequence[str],
+    abi_to_python: dict,
+    version: str,
+    skip_pyarmor: bool,
+    skip_existing: bool,
+    auto_install_pythons: bool,
+    dry_run: bool,
+    verbose: bool,
+) -> Tuple[List[str], List[str]]:
+    """通过 uv 多 Python 子进程，串行触发每个 ABI 的本机编译。
+
+    最终由调用方再跑 ``--pack-only`` 聚合 mzp。
+
+    :return: (成功列表, 失败列表)
+    """
+    if not _has_uv():
+        raise RuntimeError(
+            '--all-abis 模式需要 uv（https://docs.astral.sh/uv/）。\n'
+            '请先安装 uv 或退回 --quick / 单 --abis 单 ABI 构建。'
+        )
+
+    py_targets = [abi_to_python[abi] for abi in abis if abi in abi_to_python]
+    available_pys = set(_ensure_uv_pythons(py_targets, dry_run, auto_install_pythons))
+
+    succeeded: List[str] = []
+    failed: List[str] = []
+
+    for abi in abis:
+        py_ver = abi_to_python.get(abi)
+        if py_ver is None:
+            LOG.error('[%s] version.py 未提供 ABI_TO_PYTHON 映射，跳过', abi)
+            failed.append(abi)
+            continue
+
+        if py_ver not in available_pys and not dry_run:
+            LOG.error('[%s] 缺少 Python %s（uv 未安装），跳过', abi, py_ver)
+            failed.append(abi)
+            continue
+
+        if skip_existing and _abi_already_built(abi):
+            LOG.info('[%s] 已有产物，--skip-existing 跳过（如需重建请去除该参数）', abi)
+            succeeded.append(abi)
+            continue
+
+        # 拼装子命令：uv run --python <ver> python release/build.py --abis cpXX
+        sub_cmd: List[str] = [
+            'uv', 'run', '--python', py_ver,
+            '--no-project',  # 避免 uv 把 release/ 当成 editable 项目反复装
+            'python', str(Path(__file__).resolve()),
+            '--abis', abi,
+        ]
+        if skip_pyarmor:
+            sub_cmd.append('--skip-pyarmor')
+        if dry_run:
+            sub_cmd.append('--dry-run')
+        if verbose:
+            sub_cmd.append('--verbose')
+
+        LOG.info('=' * 60)
+        LOG.info('[%s] 调度子进程: Python %s', abi, py_ver)
+        LOG.info('=' * 60)
+        LOG.debug('cmd: %s', ' '.join(sub_cmd))
+
+        if dry_run:
+            LOG.info('[dry-run] 将执行: %s', ' '.join(sub_cmd))
+            succeeded.append(abi)
+            continue
+
+        # 不捕获子进程输出，让用户实时看到进度（Cython 编译可能耗时几十秒）
+        proc = subprocess.run(sub_cmd)
+        if proc.returncode == 0:
+            LOG.info('[%s] ✅ 构建成功', abi)
+            succeeded.append(abi)
+        else:
+            LOG.error('[%s] ❌ 构建失败（退出码 %s），其它 ABI 继续',
+                      abi, proc.returncode)
+            failed.append(abi)
+
+    LOG.info('=' * 60)
+    LOG.info('多 ABI 调度结束。成功 %d 个: %s', len(succeeded), succeeded)
+    if failed:
+        LOG.warning('失败 %d 个: %s', len(failed), failed)
+    LOG.info('=' * 60)
+
+    # 若至少有一个 ABI 成功，就尝试聚合 mzp（即便不全也允许出包，给用户选择权）
+    if succeeded and not dry_run:
+        LOG.info('开始聚合 mzp（仅含成功 ABI: %s）...', succeeded)
+        # 直接复用 _make_mzp，绕过命令行再开一进程
+        _make_mzp(version, succeeded, dry_run=False)
+
+    return succeeded, failed
+
+
 # -------------------------- 主入口 --------------------------
 
 
@@ -605,6 +800,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument('--version', help='覆盖 release/version.py 中的版本号', default=None)
     parser.add_argument('--quick', action='store_true', help='仅构建当前本地 ABI（开发期）')
     parser.add_argument('--abis', nargs='+', help='指定 ABI 列表（如 cp311 cp313）')
+    parser.add_argument('--all-abis', action='store_true',
+                        help='一键全 ABI 构建：通过 uv 调度 5 个 Python 子进程并聚合。'
+                             '需要本机已装 uv，缺失的 Python 可加 --auto-install-pythons '
+                             '让 uv 自动下载。')
+    parser.add_argument('--auto-install-pythons', action='store_true',
+                        help='[配合 --all-abis] 自动通过 uv 下载缺失的 Python 版本。')
+    parser.add_argument('--skip-existing', action='store_true',
+                        help='[配合 --all-abis] 跳过 build_cache/ 中已有产物的 ABI，'
+                             '只构建缺失的。便于失败重试。')
     parser.add_argument('--skip-pyarmor', action='store_true',
                         help='跳过 PyArmor 加密（调试用，发布禁止）')
     parser.add_argument('--pack-only', action='store_true',
@@ -633,6 +837,45 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # 2) 决定要构建的 ABI
     abis = _resolve_abis(args.abis, args.quick, supported_abis, _current_abi())
     LOG.info('目标 ABIs: %s', abis)
+
+    # 2.05) --all-abis 一键多 ABI：调度 uv 子进程矩阵，主进程不参与编译
+    # ----------------------------------------------------------------
+    # 设计：本机若装了 uv，可用 5 个 Python 各跑一次单 ABI 构建，再由主进程
+    # 复用 _make_mzp() 聚合产物。每个子进程内的 _current_abi() 等于自己的目标
+    # ABI，自然绕过 ABI 一致性校验。失败的 ABI 不阻塞其它 ABI（fail-soft）。
+    if args.all_abis:
+        if args.pack_only:
+            LOG.error('--all-abis 与 --pack-only 互斥（前者会自动调用聚合）')
+            return 7
+        if args.quick:
+            LOG.error('--all-abis 与 --quick 互斥（前者目标是全 ABI，后者是单 ABI）')
+            return 7
+        # 强制把目标拉回完整 supported_abis，忽略 --abis（避免半全半快混用）
+        if args.abis:
+            LOG.warning('--all-abis 模式忽略 --abis %s，目标为全部 supported_abis',
+                        args.abis)
+        target_abis = list(supported_abis)
+        LOG.info('--all-abis 模式：目标 = %s', target_abis)
+        try:
+            succeeded, failed = _orchestrate_all_abis(
+                abis=target_abis,
+                abi_to_python=getattr(version_mod, 'ABI_TO_PYTHON', {}),
+                version=version,
+                skip_pyarmor=args.skip_pyarmor,
+                skip_existing=args.skip_existing,
+                auto_install_pythons=args.auto_install_pythons,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+        except RuntimeError as exc:
+            # 典型场景：本机未装 uv。给用户一句话说明，避免抛 traceback。
+            LOG.error('%s', exc)
+            return 9
+        if failed:
+            # 部分失败：mzp 已含成功的 ABI，但仍以非零状态码反馈
+            return 8
+        LOG.info('--all-abis 全部完成 ✅')
+        return 0
 
     # 2.1) ABI 一致性自检
     # ----------------------------------------------------------------
