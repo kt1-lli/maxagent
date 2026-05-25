@@ -352,16 +352,20 @@ def _pyarmor_encrypt(
 ) -> int:
     """对 snapshot_pkg_dir 内剩余 .py 文件运行 PyArmor。
 
-    :param excludes: 不加密的文件名集合（相对路径或文件名）
+    :param excludes: 不加密的文件名集合（相对包根的路径，也可以是裸文件名）
     :return: 已加密文件数
     """
     remaining = sorted(snapshot_pkg_dir.rglob('*.py'))
-    # 过滤掉明文保留文件
+    # 过滤掉明文保留文件（精确匹配 + 裸文件名匹配）
     keepset = set()
     for keep in excludes:
-        keep_path = snapshot_pkg_dir / keep
-        keepset.add(keep_path.resolve())
-    targets = [p for p in remaining if p.resolve() not in keepset]
+        keep_path = (snapshot_pkg_dir / keep).resolve()
+        keepset.add(keep_path)
+    keep_basenames = {Path(k).name for k in excludes}
+    targets = [
+        p for p in remaining
+        if p.resolve() not in keepset and p.name not in keep_basenames
+    ]
 
     if dry_run:
         LOG.info('[dry-run][%s] 将 PyArmor 加密 %d 个 .py 文件', abi, len(targets))
@@ -373,22 +377,22 @@ def _pyarmor_encrypt(
         return 0
     if not _has_pyarmor():
         LOG.warning(
-            '[%s] PyArmor 未安装，跳过加密。Tier-3 文件将以 .py 明文打包！\n'
+            '[%s] PyArmor 未安装，回退到 compileall 字节码（保护强度仅 L1）。\n'
             '    安装：uv pip install pyarmor>=8.5.11',
             abi,
         )
-        return 0
+        return _compileall_fallback(snapshot_pkg_dir, targets, abi)
 
     LOG.info('[%s] PyArmor 加密 %d 个文件...', abi, len(targets))
-    # 使用 pyarmor 8 的 gen 命令，原地输出
     out_dir = BUILD_CACHE_DIR / abi / '_pyarmor_out'
     _clean_dir(out_dir)
-    cmd = [
-        'pyarmor', 'gen',
-        '--output', str(out_dir),
-        '--recursive',
-        str(snapshot_pkg_dir),
-    ]
+    # 把 keep 列表传给 pyarmor 的 --exclude（每个 keep 一个参数）
+    cmd: List[str] = ['pyarmor', 'gen', '-O', str(out_dir), '-r', '-i']
+    for keep in excludes:
+        cmd += ['--exclude', keep]
+    cmd.append(str(snapshot_pkg_dir))
+    LOG.debug('pyarmor cmd: %s', ' '.join(cmd))
+
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -397,21 +401,81 @@ def _pyarmor_encrypt(
         errors='replace',
     )
     if proc.returncode != 0:
-        LOG.error('PyArmor 失败:\n%s\n%s', proc.stdout, proc.stderr)
+        # 软退化：trial 版常见的 "out of license" 限制
+        combined = (proc.stdout or '') + (proc.stderr or '')
+        if 'out of license' in combined.lower():
+            LOG.warning(
+                '[%s] PyArmor trial 试用版受限（out of license）。\n'
+                '    自动回退到 compileall 字节码兜底。\n'
+                '    正式发布请使用 PyArmor 商业 license（避免此回退）。',
+                abi,
+            )
+            return _compileall_fallback(snapshot_pkg_dir, targets, abi)
+        LOG.error('PyArmor 失败:\n--- stdout ---\n%s\n--- stderr ---\n%s',
+                  proc.stdout, proc.stderr)
         raise RuntimeError('PyArmor 加密失败 (ABI={})'.format(abi))
 
-    # 把加密产物覆盖回 snapshot_pkg_dir
+    # 把加密产物逐文件覆盖回 snapshot_pkg_dir，保留明文白名单不动
     encrypted_pkg = out_dir / SOURCE_PKG_DIR.name
-    if encrypted_pkg.exists():
-        for item in encrypted_pkg.iterdir():
-            dest = snapshot_pkg_dir / item.name
-            if dest.exists() and dest.is_dir():
-                shutil.rmtree(dest)
-            elif dest.exists():
-                dest.unlink()
-            shutil.move(str(item), str(dest))
-    LOG.info('[%s] PyArmor 完成', abi)
+    if not encrypted_pkg.exists():
+        LOG.warning('[%s] pyarmor 输出目录缺 maxagent/，跳过回拷', abi)
+        return 0
+
+    encrypted_count = 0
+    for src_file in encrypted_pkg.rglob('*'):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(encrypted_pkg)
+        dest_file = snapshot_pkg_dir / rel
+        # 如果目标在 keepset，跳过覆盖（保留明文）
+        if dest_file.resolve() in keepset or dest_file.name in keep_basenames:
+            continue
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        if dest_file.exists():
+            dest_file.unlink()
+        shutil.copy2(str(src_file), str(dest_file))
+        encrypted_count += 1
+
+    LOG.info('[%s] PyArmor 完成，回写 %d 个文件', abi, encrypted_count)
     return len(targets)
+
+
+def _compileall_fallback(
+    snapshot_pkg_dir: Path,
+    targets: Sequence[Path],
+    abi: str,
+) -> int:
+    """PyArmor 不可用 / trial 受限时的兜底：用 compileall 把 .py 编译为 .pyc。
+
+    保护强度仅 L1（标准字节码反编译工具如 uncompyle6 可逆向），
+    但至少不再以源码明文形式分发。
+
+    :return: 已编译的文件数
+    """
+    import py_compile
+
+    LOG.info('[%s] py_compile 编译 %d 个 .py → .pyc', abi, len(targets))
+    success_count = 0
+    for src in targets:
+        try:
+            # cfile 与源 .py 同目录、同名（仅扩展名换为 .pyc），不走 __pycache__
+            pyc_path = src.with_suffix('.pyc')
+            py_compile.compile(
+                str(src),
+                cfile=str(pyc_path),
+                doraise=True,
+            )
+            if pyc_path.exists():
+                src.unlink()
+                success_count += 1
+        except py_compile.PyCompileError as exc:
+            LOG.warning('[%s] py_compile 失败 %s: %s', abi, src.name, exc)
+        except Exception as exc:  # pylint: disable=broad-except
+            LOG.warning('[%s] py_compile 跳过 %s: %s', abi, src.name, exc)
+
+    LOG.info('[%s] py_compile 完成，%d 个文件已转 .pyc', abi, success_count)
+    return success_count
+
 
 
 # -------------------------- 单 ABI 打包 --------------------------
@@ -493,15 +557,20 @@ def _make_mzp(
             LOG.warning('mzp_install.ms 缺失，mzp 将无法自动安装')
 
         # 各 ABI 产物
+        # 排除中间构建目录（仅匹配目录段以 _ 开头，不匹配最终文件名如 __init__.py）
+        intermediate_prefixes = ('_cython_build', '_pyarmor_out')
         for abi in available_abis:
             abi_root = BUILD_CACHE_DIR / abi
             for f in abi_root.rglob('*'):
-                if f.is_file():
-                    if any(part.startswith('_') for part in f.relative_to(abi_root).parts):
-                        # 跳过 _cython_build / _pyarmor_out 中间目录
-                        continue
-                    arc = Path('runtime') / abi / f.relative_to(abi_root)
-                    zf.write(f, arcname=str(arc).replace('\\', '/'))
+                if not f.is_file():
+                    continue
+                rel_parts = f.relative_to(abi_root).parts
+                # 仅检查目录段（去掉最末段文件名）是否落在中间目录里
+                dir_parts = rel_parts[:-1]
+                if any(seg in intermediate_prefixes for seg in dir_parts):
+                    continue
+                arc = Path('runtime') / abi / f.relative_to(abi_root)
+                zf.write(f, arcname=str(arc).replace('\\', '/'))
 
         # 共享资源
         if SHARED_DIR.exists():
