@@ -8,11 +8,11 @@
 --     上下文里被无条件忽略。所以本脚本必须当 dropScript 用，文件名
 --     必须出现在 mzp.run 的 `drop "..."` 行里。
 --
--- mzp.run 让 Max 把 mzp 内容解压到 %TEMP%\maxagent_install\，然后调用
--- 本脚本。本脚本里以 (getDir #temp) + "\\maxagent_install" 为根目录
--- 直接定位 sibling 文件（runtime\cpXX\、macros\、shared\），不再依赖
--- installerSource 或 getSourceFileName()——后者实测在 Max 2022 CHS
--- 的 drop 上下文里返回空，是上一版"完全没反应"的根因之一。
+-- mzp.run 让 Max 解压 mzp 内容到 (getDir #temp)\<mzp 文件名>\，然后调用
+-- 本脚本（drop 指令指定）。本脚本通过扫 (getDir #temp)\maxagent-*\ 找到
+-- 真实解压根目录，再以此为基准定位 sibling 文件（runtime\cpXX\、macros\
+-- 、shared\）。不再依赖 installerSource 或 getSourceFileName()——后者实测
+-- 在 Max 2022 CHS 的 drop 上下文里返回空，是上一版"完全没反应"的根因。
 --
 -- 流程（一气呵成，不再拆 install/run 两阶段）：
 --   1. 探测当前 Max 内嵌 Python 版本，从 runtime\cpXX\ 选择对应产物
@@ -42,31 +42,47 @@ fn _maxagent_escape_path p = (
 
 -- 解析 mzp 解压目录
 --
--- 三层 fallback（按优先级）：
---   1. `(getDir #temp) + "\\maxagent_install"` —— mzp.run 里我们写了
---      `extract to "maxagent_install"`，把解压目录显式定死在系统 TEMP
---      下的固定子目录。这是**首选**，因为 Max 在 drop 上下文下保证会
---      执行 extract to 指令；只要 mzp.run 没被改坏，这个路径必然存在。
---   2. installerSource —— mzp 协议会自动注入此全局变量，但仅在某些
---      版本/语言下生效，不能依赖；作为第二选择。
---   3. getSourceFileName() —— 仅在开发态 fileIn / Run Script 调试时
---      返回路径；drop 上下文返回空字符串，所以放最后兜底（仅给开发用）。
+-- mzp.run 里写了 `extract to "$temp\\maxagent_install"`，Max 会把整个
+-- mzp 解压到 `(getDir #temp) + "\\maxagent_install\\"` 这个固定路径——
+-- 这是**首选**，目录确定性最高，不依赖命名规律也不依赖文件时间戳。
 --
--- 三层都失败时弹窗显示完整诊断信息，便于排查。
+-- 其他 fallback 只是保险（如 mzp.run 的 extract 指令在某些 Max 版本上
+-- 不生效时兜底）：
+--   2. 兜底：扫 `getDir #temp` 下所有一级子目录，找含 `runtime\` 的那个
+--      （不依赖目录命名规律，只认结构 sentinel）。
+--   3. installerSource 全局变量（mzp 协议可选注入，Max 2022 CHS 实测为空）
+--   4. getSourceFileName()（开发态 fileIn 调试用；drop 上下文返回空）
 fn _maxagent_resolve_mzp_root = (
-    -- 1) 优先：mzp.run extract to 指定的固定路径
     local rootDir = undefined
+
+    -- 1) 首选：mzp.run extract to 指定的固定目录 #temp\maxagent_install
     try (
         local _temp = getDir #temp
         if _temp != undefined and _temp != "" do (
             local _candidate = (trimRight _temp "\\") + "\\maxagent_install"
-            if doesDirectoryExist _candidate do (
-                rootDir = _candidate
-            )
+            if doesDirectoryExist _candidate do rootDir = _candidate
         )
     ) catch ()
 
-    -- 2) installerSource 全局变量
+    -- 2) 兜底：遍历 #temp 下所有一级子目录，找含 runtime\ 的那个
+    if rootDir == undefined or rootDir == "" do (
+        try (
+            local _temp = getDir #temp
+            if _temp != undefined and _temp != "" do (
+                _temp = trimRight _temp "\\"
+                local _allSubs = getDirectories (_temp + "\\*\\")
+                if _allSubs != undefined and _allSubs.count > 0 do (
+                    for _c in _allSubs while rootDir == undefined do (
+                        local _trimmed = trimRight _c "\\"
+                        if doesDirectoryExist (_trimmed + "\\runtime") do
+                            rootDir = _trimmed
+                    )
+                )
+            )
+        ) catch ()
+    )
+
+    -- 3) installerSource 兜底
     if rootDir == undefined or rootDir == "" do (
         try (
             if (isProperty ::globalVars #installerSource) do (
@@ -81,7 +97,7 @@ fn _maxagent_resolve_mzp_root = (
         ) catch ()
     )
 
-    -- 3) getSourceFileName()（开发态 fileIn 调试兜底）
+    -- 4) getSourceFileName() 末位兜底（开发态 fileIn 调试用）
     if rootDir == undefined or rootDir == "" do (
         try (
             local scriptPath = getSourceFileName()
@@ -97,8 +113,34 @@ fn _maxagent_resolve_mzp_root = (
 )
 
 -- 探测当前 Max 内嵌 Python 的小版本，返回如 "cp311" 的字符串
+--
+-- 关键实现细节（按 Autodesk 官方文档 "Executing Python from MAXScript"）：
+--   * `python.execute "..."` **不返回 Python 表达式的值**——它返回执行
+--     状态枚举 `#success` / `#pathError` / `#initError` / `#scriptFileError`
+--     / `#executeError`。早期实现直接把它当成 abi 字符串用，导致每次都
+--     报"不支持的 Python 版本: success"。
+--   * `python.GetVariable` **不存在**——MAXScript Python 接口只有
+--     Import / Reload / Init / Execute / ExecuteFile / GetLastError，
+--     没有变量回读 API（实测在 Max 2022 抛 "未知属性 GetVariable"）。
+--   * **正确做法**（文档明示）：用 `Python.Import "sys"` 拿到模块
+--     wrapper，wrapper 的属性可以直接当 MaxScript 值读：
+--         _sys = Python.Import "sys"
+--         _sys.version_info.major   -- 直接返回 int
+--   * 失败时返回 undefined，调用方负责给出含诊断信息的错误提示。
 fn _maxagent_detect_python_abi = (
-    local pyTag = python.execute "import sys; 'cp{}{}'.format(sys.version_info.major, sys.version_info.minor)"
+    local pyTag = undefined
+    try (
+        local _sys = Python.Import "sys"
+        local _vi = _sys.version_info
+        local _major = _vi.major as integer
+        local _minor = _vi.minor as integer
+        if _major != undefined and _minor != undefined do
+            pyTag = "cp" + (_major as string) + (_minor as string)
+    ) catch (
+        pyTag = undefined
+    )
+    if pyTag == undefined or (classOf pyTag) != String do return undefined
+    if (matchPattern pyTag pattern:"cp[0-9]*") == false do return undefined
     pyTag
 )
 
@@ -291,14 +333,29 @@ fn maxagent_mzp_install = (
     if g_maxagent_mzp_root == undefined or g_maxagent_mzp_root == "" do (
         local _msg = "❌ MaxAgent 无法定位 mzp 解压目录\n\n"
         _msg += "诊断信息（三层 fallback 全失败）:\n"
-        _msg += "  1) (getDir #temp + \\maxagent_install) 不存在\n"
-        try (_msg += "     实际 #temp = " + (getDir #temp) + "\n") catch ()
+        _msg += "  1) #temp 下未找到含 runtime\\ 的子目录\n"
+        local _tempDir = ""
+        try (_tempDir = getDir #temp) catch ()
+        _msg += "     #temp = " + _tempDir + "\n"
+        -- 列出 #temp 实际能看到的前 8 个子目录，便于排查
+        try (
+            local _subs = getDirectories ((trimRight _tempDir "\\") + "\\*\\")
+            if _subs != undefined and _subs.count > 0 then (
+                _msg += "     #temp 当前子目录（前 8 个）:\n"
+                local _n = amin _subs.count 8
+                for i = 1 to _n do (
+                    _msg += "       - " + (filenameFromPath (trimRight _subs[i] "\\")) + "\n"
+                )
+            ) else (
+                _msg += "     #temp 下当前没有任何子目录\n"
+            )
+        ) catch (_msg += "     （列举 #temp 子目录失败）\n")
         _msg += "  2) installerSource = "
         try (_msg += (::installerSource as string)) catch (_msg += "(undefined)")
         _msg += "\n  3) getSourceFileName() = \"" + (getSourceFileName() as string) + "\"\n\n"
         _msg += "可能原因:\n"
-        _msg += "  • mzp.run 被改坏导致 extract to 没生效\n"
-        _msg += "  • mzp 文件损坏 / 不完整\n\n"
+        _msg += "  • mzp 文件损坏 / 不完整\n"
+        _msg += "  • Max 拒绝了拖入操作（请确认 .mzp 不在压缩包内）\n\n"
         _msg += "解决方法:\n"
         _msg += "  • 重新下载完整 mzp\n"
         _msg += "  • 或者：把 mzp 当 zip 解压，进入解压目录后\n"
@@ -308,6 +365,14 @@ fn maxagent_mzp_install = (
     )
 
     local abi = _maxagent_detect_python_abi()
+    if abi == undefined then (
+        local msg = "❌ 无法探测 Python 版本（Python.Import \"sys\" 调用失败）\n\n"
+        msg += "请把以下信息反馈给开发者：\n"
+        msg += "  • 3ds Max 版本: " + (maxVersion())[1] as string + "\n"
+        msg += "  • 系统语言目录: " + getDir #userScripts
+        messagebox msg title:"MaxAgent 安装失败"
+        return false
+    )
     if findItem g_maxagent_supported_abis abi == 0 then (
         local msg = "❌ 不支持的 Python 版本: " + abi + "\n\n"
         msg += "MaxAgent 0.4 系列支持: 3ds Max 2022~2027\n"
@@ -317,9 +382,11 @@ fn maxagent_mzp_install = (
     )
 
     local srcPkg = (g_maxagent_mzp_root + "\\runtime\\" + abi + "\\maxagent")
-    local pkgExists = python.execute ("import os; os.path.isdir(r'" + srcPkg + "')")
-    if pkgExists != true then (
-        messagebox ("❌ mzp 内缺少 " + abi + " 产物，请下载完整版本") title:"MaxAgent 安装失败"
+    -- 用 MaxScript 原生 API 判存在性，避免重蹈 python.execute 不返回
+    -- 表达式值的覆辙（getDirectories 在路径存在时返回非空数组）
+    local pkgDirs = getDirectories (srcPkg + "\\")
+    if pkgDirs == undefined or pkgDirs.count == 0 then (
+        messagebox ("❌ mzp 内缺少 " + abi + " 产物，请下载完整版本\n\n查找路径:\n" + srcPkg) title:"MaxAgent 安装失败"
         return false
     )
 

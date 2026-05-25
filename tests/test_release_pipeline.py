@@ -445,9 +445,14 @@ class TestBuildPipeline:
             装失败。
           * v2 加了 installerSource 优先 —— 但实测某些 Max 版本根本不注入
             该全局变量，仍可能失败。
-          * v3（当前）首选 (getDir #temp + maxagent_install)，靠 mzp.run
-            的 ``extract to "maxagent_install"`` 指令把解压目录定死，
-            installerSource / getSourceFileName 只作 fallback。
+          * v3 用 mzp.run 的 ``extract to "maxagent_install"`` 把解压目录
+            定死——结果 Max 的 extract to 在某些版本上语义不明，目录根本
+            不被创建。
+          * v4（当前）按 MaxToolBox 等成熟插件的实战模式：扫
+            ``(getDir #temp)\\maxagent-*\\`` 子目录找含 ``runtime\\`` 的
+            那个——Max 默认就把 mzp 解压到 ``#temp\\<mzp 文件名>\\``，
+            扫描法对所有 Max 版本都鲁棒。installerSource / getSourceFileName
+            只作 fallback。
 
         本测试防止任何一层 fallback 被回退或简化。
         """
@@ -455,14 +460,18 @@ class TestBuildPipeline:
         with zipfile.ZipFile(mzp_path) as zf:
             text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
 
-        # 第 1 层：mzp.run 写好的 extract to 固定子目录
-        assert 'maxagent_install' in text, (
-            'mzp_install.ms 未引用 mzp.run extract to 的固定子目录 '
-            '"maxagent_install"，第 1 层 fallback 缺失'
+        # 第 1 层：扫描 #temp\maxagent-*\ 下含 runtime\ 的子目录
+        assert 'maxagent-*' in text, (
+            'mzp_install.ms 未通过 maxagent-* 通配模式扫描 #temp 子目录，'
+            '第 1 层 fallback 缺失'
         )
         assert 'getDir #temp' in text or 'getDir  #temp' in text, (
             'mzp_install.ms 未通过 getDir #temp 拼接解压根，'
             '第 1 层 fallback 不可用'
+        )
+        assert 'getDirectories' in text, (
+            'mzp_install.ms 未用 getDirectories 扫描 #temp 子目录，'
+            '不能定位真实解压目录'
         )
         # 第 2 层
         assert 'installerSource' in text, (
@@ -538,10 +547,13 @@ class TestBuildPipeline:
             'mzp.run 缺少 drop "mzp_install.ms" 指令——拖入时 Max 无入口可执行'
         )
 
-        # 4) 必须有 extract to 指令把解压目录定死
-        assert 'extract to' in text and 'maxagent_install' in text, (
-            'mzp.run 缺少 extract to "maxagent_install"——'
-            'mzp_install.ms 第一层 fallback 会失效'
+        # 4) **禁止** extract to 指令——v3 曾用 ``extract to "maxagent_install"``
+        # 把解压目录定死，但实测 Max 在多个版本上对该指令的相对路径语义不一致，
+        # 导致目录根本不被创建。改为依赖 Max 默认行为（解压到 #temp\<mzp名>\）
+        # 并在 mzp_install.ms 里扫 #temp\maxagent-*\ 主动定位。
+        assert 'extract to' not in text, (
+            'mzp.run 不应有 extract to 指令——已改为扫 #temp\\maxagent-*\\ '
+            '主动定位（Max 默认行为足够，extract to 反而引入版本兼容问题）'
         )
 
     def test_install_script_shows_panel_at_end(self, built_mzp):
