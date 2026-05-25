@@ -9,15 +9,15 @@
 --   4. 注册菜单/工具栏宏 MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
 --   5. 询问用户是否要把"MaxAgent"菜单注册到主菜单栏末尾
 --
--- 兼容范围: 3ds Max 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
---           Python 3.9 / 3.10 / 3.11 / 3.13
+-- 兼容范围: 3ds Max 2022 / 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
+--           Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13
 --
 -- 与 MAXAGENT_INSTALL.ms（开发态启动器）相互独立，互不冲突。
 -- ----------------------------------------------------------------------
 
 global g_maxagent_mzp_root
 global g_maxagent_install_dir
-global g_maxagent_supported_abis = #("cp39", "cp310", "cp311", "cp313")
+global g_maxagent_supported_abis = #("cp37", "cp39", "cp310", "cp311", "cp313")
 global g_maxagent_menu_name = "MaxAgent"
 global g_maxagent_macro_category = "MaxAgent"
 
@@ -274,8 +274,8 @@ fn maxagent_mzp_install = (
     local abi = _maxagent_detect_python_abi()
     if findItem g_maxagent_supported_abis abi == 0 then (
         local msg = "❌ 不支持的 Python 版本: " + abi + "\n\n"
-        msg += "MaxAgent 0.4 系列支持: 3ds Max 2023~2027\n"
-        msg += "对应 Python: 3.9 / 3.10 / 3.11 / 3.13"
+        msg += "MaxAgent 0.4 系列支持: 3ds Max 2022~2027\n"
+        msg += "对应 Python: 3.7 / 3.9 / 3.10 / 3.11 / 3.13"
         messagebox msg title:"MaxAgent 安装失败"
         return false
     )

@@ -37,13 +37,13 @@ uv run python release/build.py --quick
 
 `--quick` 只构建当前本地 Python 对应的 ABI（默认 cp311），约 30 秒出 mzp。
 
-### 完整 4 ABI 构建（发布前）
+### 完整 5 ABI 构建（发布前）
 
 ```bash
 uv run python release/build.py
 ```
 
-需要本地或 CI 有 Python 3.9 / 3.10 / 3.11 / 3.13 四套环境。
+需要本地或 CI 有 Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13 五套环境。
 推荐用 `pyenv-win`（Windows）或 `uv python install <版本>`（跨平台）准备。
 
 ### 指定版本号发布
@@ -92,7 +92,7 @@ mzp_install.ms 自动执行
 `ci/bk-pipelines.yml` 是工蜂蓝盾的流水线模板。需要在工蜂项目设置中启用蓝盾后，
 该 yaml 会被自动识别。每次 `master` 推送会触发：
 
-1. 4 ABI 矩阵并行构建（cp39 / cp310 / cp311 / cp313）
+1. 5 ABI 矩阵并行构建（cp37 / cp39 / cp310 / cp311 / cp313）
 2. 产物归并 → mzp 打包
 3. 上传到工蜂制品库
 4. 当 git tag `v*.*.*` 推送时同步推送到 Gitee Release

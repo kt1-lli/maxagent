@@ -84,8 +84,8 @@ class TestPublishGiteeHelpers:
         notes = publish_gitee_mod._generate_default_notes('0.4.0', [f1])
         assert 'MaxAgent v0.4.0' in notes
         assert 'maxagent-0.4.0.mzp' in notes
-        assert '3ds Max 2023 ~ 2027' in notes
-        assert 'Python 3.9' in notes
+        assert '3ds Max 2022 ~ 2027' in notes
+        assert 'Python 3.7' in notes
 
     def test_build_multipart_body_format(self, publish_gitee_mod, tmp_path):
         """multipart body 格式正确：含 boundary、文件名、文件内容。"""

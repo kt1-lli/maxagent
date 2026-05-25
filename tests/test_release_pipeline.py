@@ -87,21 +87,16 @@ class TestBuildHelpers:
         assert 'qt_compat.py' in excludes
 
     def test_target_abis_constant(self):
-        """支持 4 个 Python ABI（覆盖 Max 2023~2027）。
-
-        cp37（Max 2022）已在 0.4.1 起停止支持：
-        Python 3.7 EOL + uv 默认不下载 + PyArmor 8.5+ 已停止 3.7 支持。
-        """
+        """支持 5 个 Python ABI（覆盖 Max 2022~2027）。"""
         import build  # type: ignore
 
         version_mod = build._load_version_module()
         abis = version_mod.SUPPORTED_ABIS
-        assert 'cp37' not in abis, '0.4.1 起不再支持 cp37（Python 3.7 EOL）'
+        assert 'cp37' in abis
         assert 'cp39' in abis
         assert 'cp310' in abis
         assert 'cp311' in abis
         assert 'cp313' in abis
-        assert len(abis) == 4
 
     def test_version_module_present(self):
         """version.py 存在且可读出语义化版本号。"""
@@ -563,7 +558,7 @@ class TestAllAbisOrchestration:
         monkeypatch.setattr(
             build,
             '_list_uv_pythons',
-            lambda: ['3.9.7', '3.10.8', '3.11.9', '3.13.9'],
+            lambda: ['3.7.9', '3.9.7', '3.10.8', '3.11.9', '3.13.9'],
         )
         ret = build.main(['--all-abis', '--dry-run'])
         # dry-run 不真编不真打包，应返回 0

@@ -1,6 +1,6 @@
 # CI / CD 工作流说明
 
-MaxAgent 采用 **多 ABI 矩阵构建** 策略：每个 Python 版本（cp39/cp310/cp311/cp313）
+MaxAgent 采用 **多 ABI 矩阵构建** 策略：每个 Python 版本（cp37/cp39/cp310/cp311/cp313）
 在独立 Windows runner 上分别编译 `.pyd`，最后聚合成单个跨版本 `.mzp` 包。
 
 ## 流水线选择
@@ -26,11 +26,13 @@ MaxAgent 采用 **多 ABI 矩阵构建** 策略：每个 Python 版本（cp39/cp
 
 ```mermaid
 graph LR
-    A[precheck<br/>预检/PEP8/pytest] --> B2[build-cp39]
+    A[precheck<br/>预检/PEP8/pytest] --> B1[build-cp37]
+    A --> B2[build-cp39]
     A --> B3[build-cp310]
     A --> B4[build-cp311]
     A --> B5[build-cp313]
-    B2 --> C[pack<br/>聚合 mzp]
+    B1 --> C[pack<br/>聚合 mzp]
+    B2 --> C
     B3 --> C
     B4 --> C
     B5 --> C
@@ -44,9 +46,9 @@ graph LR
 - 全量回归测试（633 项含 release pipeline 慢测）
 - `build.py --dry-run` 验证
 
-### 阶段 2 — build（Windows，4 ABI 并行）
+### 阶段 2 — build（Windows，5 ABI 并行）
 
-- 装对应 Python（3.9.7 / 3.10.8 / 3.11.9 / 3.13.9）
+- 装对应 Python（3.7.9 / 3.9.7 / 3.10.8 / 3.11.9 / 3.13.9）
 - 装 MSVC（Cython 编译需要）
 - 装 Cython >= 3.0.11 / PyArmor >= 8.5.11
 - 注册 PyArmor license（仅当 `secrets.PYARMOR_LICENSE` 存在）
@@ -56,9 +58,9 @@ graph LR
 
 ### 阶段 3 — pack（Windows）
 
-- 下载 4 个 `build-cpXX` artifact
+- 下载 5 个 `build-cpXX` artifact
 - 重组为 `release/build_cache/cpXX/` 目录结构
-- 跑 `python release/build.py --pack-only --abis cp39 cp310 cp311 cp313`
+- 跑 `python release/build.py --pack-only --abis cp37 cp39 cp310 cp311 cp313`
 - 上传 `*.mzp` 为发布制品
 
 ### 阶段 4 — publish（仅 tag 触发）
