@@ -11,13 +11,27 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
+# 注意：本 pyproject.toml 仅用于声明"打包流水线"自身的构建依赖
+# （Cython / PyArmor / wheel / setuptools），release 目录本身**不作为可安装包**分发。
+# 真实版本号定义在 release/version.py，由 build.py 读取注入到 mzp 产物。
+#
+# 下方 [tool.setuptools] 显式 packages=[] / py-modules=[] 是为了告诉 setuptools
+# “请不要自动发现 release/ 下的 shared/、build_cache/ 等子目录作为顶层包”。
+# 否则 uv add / uv run 会在 editable install 阶段触发 flat-layout 多包冲突。
 [project]
 name = "maxagent-release"
+version = "0.0.0"
 description = "MaxAgent release pipeline (Cython + PyArmor + mzp)"
 readme = "README.md"
 requires-python = ">=3.7"
-license = {text = "MIT"}
-dynamic = ["version"]
+license = "MIT"
+
+[tool.setuptools]
+# 显式声明本项目不包含任何 Python 包/模块——release/ 下的子目录均为构建脚本
+# 的工作区（shared/ 是资源目录、build_cache/ 是中间产物、ci/ 是 CI 配置），
+# 不应被打包成 wheel。
+packages = []
+py-modules = []
 
 [tool.maxagent-release]
 # 单一版本号源
