@@ -550,12 +550,21 @@ def _make_mzp(
             json.dumps(meta, ensure_ascii=False, indent=2),
         )
 
-        # 安装钩子
-        install_ms = RELEASE_DIR / 'mzp_install.ms'
-        if install_ms.exists():
-            zf.write(install_ms, arcname='mzp_install.ms')
-        else:
-            LOG.warning('mzp_install.ms 缺失，mzp 将无法自动安装')
+        # 安装钩子（按 mzp 协议组织）
+        #   * mzp.run        : 清单文件，告诉 Max [install]/[run] 各执行哪个 .ms
+        #   * mzp_install.ms : [install] 阶段——拷贝产物 / 注册宏 / 注册菜单
+        #   * mzp_run.ms     : [run]     阶段——拉起 UI 面板
+        # 这是 Autodesk 推荐的"安装/运行分离"做法，能避开 mzp 解压上下文
+        # 与 Qt UI 初始化的主线程冲突，并让异常更可见。
+        # 参考: MAXScript Zip Package (mzp) 文档
+        for hook_name in ('mzp.run', 'mzp_install.ms', 'mzp_run.ms'):
+            hook_path = RELEASE_DIR / hook_name
+            if hook_path.exists():
+                zf.write(hook_path, arcname=hook_name)
+            else:
+                # mzp.run 缺失 -> Max 会回退到"找根目录唯一 .ms"启发式，
+                # 行为不可控；mzp_install.ms 缺失 -> mzp 完全无法自动安装。
+                LOG.warning('mzp 钩子文件 %s 缺失，安装行为可能异常', hook_name)
 
         # 各 ABI 产物
         # 排除中间构建目录（仅匹配目录段以 _ 开头，不匹配最终文件名如 __init__.py）

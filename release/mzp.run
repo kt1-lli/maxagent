@@ -1,0 +1,21 @@
+; ----------------------------------------------------------------------
+; MaxAgent mzp 清单
+;
+; 该文件遵循 Autodesk 3ds Max 的 MAXScript Zip Package (mzp) 协议：
+;   https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A-CC75-4C8D-9A2A-8DFA73F2501E
+;
+; mzp.run 是 INI 格式，告诉 Max 解压 mzp 后要执行哪些脚本以及何时执行：
+;   [install]  解压完立即执行（用于拷贝产物 / 注册宏 / 注册菜单）
+;   [run]      安装阶段全部完成后再执行（用于拉起 UI / 弹欢迎对话框等）
+;
+; 把"安装"与"运行"分到两个 stage 是 Autodesk 推荐的做法：
+;   * 避开 mzp 解压上下文与 Qt UI 初始化的事件循环冲突
+;   * 让"重启 Max 后再跑一次 mzp"也能复用 [run] 阶段而不重复安装
+;   * 如果 [install] 失败，[run] 不会被触发，避免"半成品"启动
+; ----------------------------------------------------------------------
+
+[install]
+maxagent_install = mzp_install.ms
+
+[run]
+maxagent_show_panel = mzp_run.ms

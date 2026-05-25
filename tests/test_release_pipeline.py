@@ -403,6 +403,68 @@ class TestBuildPipeline:
         # 卸载宏要同步移除菜单（避免重启后残留菜单项）
         assert 'removeItemByPosition' in text, '卸载宏未清理菜单项'
 
+    def test_mzp_run_manifest_present(self, built_mzp):
+        """mzp 必须包含 mzp.run 清单（Autodesk mzp 协议标准入口）。
+
+        没有 mzp.run 时 Max 会回退到"找根目录唯一 .ms"启发式，行为不可控；
+        显式声明 [install] / [run] 两段是 Autodesk 推荐做法。
+        """
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            names = zf.namelist()
+            assert 'mzp.run' in names, 'mzp 缺少 mzp.run 清单文件'
+            text = zf.read('mzp.run').decode('utf-8', errors='replace')
+
+        # 必须显式声明两个 stage
+        assert '[install]' in text, 'mzp.run 缺少 [install] 段'
+        assert '[run]' in text, 'mzp.run 缺少 [run] 段'
+        # 两个 stage 必须分别指向正确的 .ms
+        assert 'mzp_install.ms' in text, '[install] 段未指向 mzp_install.ms'
+        assert 'mzp_run.ms' in text, '[run] 段未指向 mzp_run.ms'
+
+    def test_mzp_run_script_shows_panel(self, built_mzp):
+        """mzp_run.ms 存在且确实在拉起 maxagent 面板。"""
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            assert 'mzp_run.ms' in zf.namelist(), 'mzp 缺少 mzp_run.ms'
+            text = zf.read('mzp_run.ms').decode('utf-8', errors='replace')
+
+        # 必须 import maxagent 并调用 show_panel
+        assert 'maxagent' in text and 'show_panel' in text, (
+            'mzp_run.ms 未调用 show_panel'
+        )
+        # force=True 是关键——首次安装无视配置直接显示面板
+        assert 'force=True' in text, 'mzp_run.ms 未使用 force=True 显示面板'
+
+    def test_install_script_no_longer_directly_shows_panel(self, built_mzp):
+        """mzp_install.ms 的安装入口函数不应再在尾部直接 show_panel——已迁移到 [run] 阶段。
+
+        这条断言用于防止 install/run 分离的设计被误改回去。
+        注意：``MaxAgent_Show`` 等 macroScript 内部的 ``python.execute show_panel``
+        是合法的（用户点菜单时触发），仅排除安装入口函数 ``maxagent_mzp_install`` 内的调用。
+        """
+        mzp_path, _ = built_mzp
+        with zipfile.ZipFile(mzp_path) as zf:
+            text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
+
+        # 提取 maxagent_mzp_install 函数体（从 'fn maxagent_mzp_install =' 到下一个顶级 fn 或文件尾）
+        marker = 'fn maxagent_mzp_install'
+        idx = text.find(marker)
+        assert idx >= 0, '未找到 maxagent_mzp_install 函数定义'
+        # 截取从 marker 到文件末尾——install 入口是文件最后一个 fn，
+        # 后面只跟 ``maxagent_mzp_install()`` 调用本身，不会有其他 fn 干扰。
+        install_body = text[idx:]
+
+        # 在该函数体内不应有 show_panel 的直接调用
+        py_exec_calls = [
+            line for line in install_body.splitlines()
+            if 'python.execute' in line and 'show_panel' in line
+        ]
+        assert not py_exec_calls, (
+            'maxagent_mzp_install 仍在直接调用 show_panel，应迁移到 mzp_run.ms：\n  '
+            + '\n  '.join(py_exec_calls)
+        )
+
 
 # ============================================================
 # 软退化路径单元测试（不需要真实 build 产物）

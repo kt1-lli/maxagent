@@ -1,13 +1,23 @@
 -- ----------------------------------------------------------------------
--- MaxAgent mzp 安装钩子
+-- MaxAgent mzp 安装钩子（[install] 阶段）
 --
--- 当用户把 maxagent-X.Y.Z.mzp 拖入 3ds Max 视口时，Max 会解压 mzp 并
--- 自动执行本脚本（mzp 协议规定）。本脚本任务：
---   1. 探测当前 Python 版本，从 runtime/cpXX/ 选择对应产物
---   2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\ENU\scripts\maxagent\
---   3. 注入 sys.path 并立即可用
---   4. 注册菜单/工具栏宏 MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
---   5. 询问用户是否要把"MaxAgent"菜单注册到主菜单栏末尾
+-- 当用户把 maxagent-X.Y.Z.mzp 拖入 3ds Max 视口时，Max 按 mzp.run 清单
+-- 调度执行：
+--   [install] 阶段 -> 本脚本（mzp_install.ms）
+--     1. 探测当前 Python 版本，从 runtime/cpXX/ 选择对应产物
+--     2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\ENU\scripts\maxagent\
+--     3. 注入 sys.path 并立即可用
+--     4. 注册菜单/工具栏宏 MaxAgent_Show / MaxAgent_Toggle / MaxAgent_Uninstall
+--     5. 询问用户是否要把"MaxAgent"菜单注册到主菜单栏末尾
+--     （注意：本阶段**不**直接 show_panel——见下）
+--
+--   [run] 阶段 -> mzp_run.ms
+--     6. 真正 import maxagent 并 show_panel(force=True)
+--
+-- 把"显示面板"延后到 [run] 阶段是 Autodesk 推荐的标准做法：
+--   * 避开 mzp 解压期事件循环与 Qt UI 初始化抢主线程
+--   * [install] 失败时 [run] 不会执行，避免"半成品"启动
+--   * 异常透出位置统一在 [run]，便于用户看到真实失败原因
 --
 -- 兼容范围: 3ds Max 2022 / 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
 --           Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13
@@ -319,16 +329,10 @@ fn maxagent_mzp_install = (
         )
     )
 
-    -- 5) 立即显示面板
-    try (
-        python.execute "import maxagent.startup as _s; _s.show_panel(force=True)"
-    ) catch (
-        local err = getCurrentException()
-        messagebox ("✅ MaxAgent 已安装到:\n" + installDir + "\n\n" + _entryDesc + "\n\n但首次启动失败:\n" + err + "\n\n请重启 3ds Max 后从菜单/快捷方式打开") title:"MaxAgent"
-        return true
-    )
-
-    messagebox ("✅ MaxAgent 安装成功 (" + abi + ")\n\n安装目录:\n" + installDir + "\n\n" + _entryDesc) title:"MaxAgent"
+    -- 5) 显示安装完成提示（show_panel 由 mzp.run 的 [run] 阶段触发，
+    --    那个阶段会在本 [install] 阶段全部成功之后再拉起 UI——
+    --    这样能避开 mzp 解压上下文与 Qt UI 初始化的事件循环冲突）
+    messagebox ("✅ MaxAgent 安装成功 (" + abi + ")\n\n安装目录:\n" + installDir + "\n\n" + _entryDesc + "\n\n面板即将自动弹出...") title:"MaxAgent"
     true
 )
 
