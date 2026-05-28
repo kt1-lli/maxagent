@@ -114,32 +114,122 @@ fn _maxagent_resolve_mzp_root = (
 
 -- 探测当前 Max 内嵌 Python 的小版本，返回如 "cp311" 的字符串
 --
--- 关键实现细节（按 Autodesk 官方文档 "Executing Python from MAXScript"）：
---   * `python.execute "..."` **不返回 Python 表达式的值**——它返回执行
---     状态枚举 `#success` / `#pathError` / `#initError` / `#scriptFileError`
---     / `#executeError`。早期实现直接把它当成 abi 字符串用，导致每次都
+-- 关键事实（按 Autodesk 官方文档 + Max 2022~2026 实测）：
+--   * `python.execute "..."` 只返回执行状态枚举（#success/#pathError/...），
+--     **不返回 Python 表达式的值**。早期实现把它当 abi 字符串用，每次都
 --     报"不支持的 Python 版本: success"。
---   * `python.GetVariable` **不存在**——MAXScript Python 接口只有
---     Import / Reload / Init / Execute / ExecuteFile / GetLastError，
---     没有变量回读 API（实测在 Max 2022 抛 "未知属性 GetVariable"）。
---   * **正确做法**（文档明示）：用 `Python.Import "sys"` 拿到模块
---     wrapper，wrapper 的属性可以直接当 MaxScript 值读：
---         _sys = Python.Import "sys"
---         _sys.version_info.major   -- 直接返回 int
---   * 失败时返回 undefined，调用方负责给出含诊断信息的错误提示。
+--   * `python.GetVariable` **不存在**（实测 Max 2022 抛"未知属性 GetVariable"）。
+--   * `python.Import` 是文档推荐做法，但**首字母大小写在不同 Max 版本不一致**——
+--     Max 2023 实测大写 `Python.Import` 调用失败（即使 try/catch 也是 abi
+--     返回 undefined）。
+--
+-- 4 层 fallback（任一成功即返回）：
+--   1) python.import "sys"          —— pymxs 接口风格（小写），新版 Max
+--   2) Python.Import "sys"          —— 老文档大写写法，Max 2024+
+--   3) pymxs.runtime 注入回调       —— python.execute 把 ABI 写到全局 MAXScript
+--      变量，绕过模块 wrapper 不可用的问题（最通用）
+--   4) python.executeFile + 临时脚本 —— 终极兜底，写一个 .py 文件让 Python
+--      把 ABI 字符串写到文本文件，MaxScript 再读这个文件
+--
+-- g_maxagent_abi_diag：记录每层尝试的失败原因，供诊断弹窗显示。
+global g_maxagent_abi_diag = ""
+
 fn _maxagent_detect_python_abi = (
     local pyTag = undefined
-    try (
-        local _sys = Python.Import "sys"
-        local _vi = _sys.version_info
-        local _major = _vi.major as integer
-        local _minor = _vi.minor as integer
-        if _major != undefined and _minor != undefined do
-            pyTag = "cp" + (_major as string) + (_minor as string)
-    ) catch (
-        pyTag = undefined
+    g_maxagent_abi_diag = ""
+
+    -- 1) python.import "sys"（小写，pymxs runtime 接口风格）
+    if pyTag == undefined do (
+        try (
+            local _sys = python.import "sys"
+            if _sys != undefined do (
+                local _vi = _sys.version_info
+                if _vi != undefined do (
+                    local _major = _vi.major as integer
+                    local _minor = _vi.minor as integer
+                    if _major != undefined and _minor != undefined do
+                        pyTag = "cp" + (_major as string) + (_minor as string)
+                )
+            )
+            if pyTag == undefined do
+                g_maxagent_abi_diag += "  [1] python.import \"sys\" 返回 undefined\n"
+        ) catch (
+            g_maxagent_abi_diag += "  [1] python.import \"sys\" 抛异常: " + (getCurrentException()) + "\n"
+        )
     )
-    if pyTag == undefined or (classOf pyTag) != String do return undefined
+
+    -- 2) Python.Import "sys"（大写，老文档写法）
+    if pyTag == undefined do (
+        try (
+            local _sys = Python.Import "sys"
+            if _sys != undefined do (
+                local _vi = _sys.version_info
+                if _vi != undefined do (
+                    local _major = _vi.major as integer
+                    local _minor = _vi.minor as integer
+                    if _major != undefined and _minor != undefined do
+                        pyTag = "cp" + (_major as string) + (_minor as string)
+                )
+            )
+            if pyTag == undefined do
+                g_maxagent_abi_diag += "  [2] Python.Import \"sys\" 返回 undefined\n"
+        ) catch (
+            g_maxagent_abi_diag += "  [2] Python.Import \"sys\" 抛异常: " + (getCurrentException()) + "\n"
+        )
+    )
+
+    -- 3) python.execute 把 ABI 写到 pymxs.runtime 的全局 MAXScript 变量
+    --    Autodesk 文档"Executing Python from MAXScript"标准方法 B：
+    --    Python 端通过 pymxs.runtime 设置 MaxScript 变量，MaxScript 端直接读。
+    if pyTag == undefined do (
+        try (
+            global g_maxagent_abi_buf
+            g_maxagent_abi_buf = undefined
+            local pycode = ""
+            pycode += "import sys as _s\n"
+            pycode += "from pymxs import runtime as _rt\n"
+            pycode += "_rt.g_maxagent_abi_buf = 'cp%d%d' % (_s.version_info.major, _s.version_info.minor)\n"
+            local _r = python.execute pycode
+            if _r == #success and g_maxagent_abi_buf != undefined and (classOf g_maxagent_abi_buf) == String do (
+                pyTag = g_maxagent_abi_buf
+            ) else (
+                g_maxagent_abi_diag += "  [3] python.execute pymxs.runtime 注入失败 (status=" + (_r as string) + ", buf=" + (g_maxagent_abi_buf as string) + ")\n"
+            )
+        ) catch (
+            g_maxagent_abi_diag += "  [3] pymxs.runtime 注入抛异常: " + (getCurrentException()) + "\n"
+        )
+    )
+
+    -- 4) 写临时 .py 文件 + 让 Python 写 ABI 到文本文件，MaxScript 读回
+    if pyTag == undefined do (
+        try (
+            local _tmpDir = trimRight (getDir #temp) "\\"
+            local _abiTxt = _tmpDir + "\\maxagent_abi.txt"
+            -- 删旧文件
+            try (deleteFile _abiTxt) catch ()
+            local pycode = ""
+            pycode += "import sys\n"
+            pycode += "with open(r'" + _abiTxt + "', 'w', encoding='utf-8') as f:\n"
+            pycode += "    f.write('cp%d%d' % (sys.version_info.major, sys.version_info.minor))\n"
+            local _r = python.execute pycode
+            if _r == #success and doesFileExist _abiTxt do (
+                local _f = openFile _abiTxt
+                if _f != undefined do (
+                    local _line = readLine _f
+                    close _f
+                    if _line != undefined and (classOf _line) == String and _line != "" do
+                        pyTag = trimRight (trimLeft _line) "\r\n "
+                )
+            )
+            if pyTag == undefined do
+                g_maxagent_abi_diag += "  [4] python.execute 写临时文件失败 (status=" + (_r as string) + ")\n"
+        ) catch (
+            g_maxagent_abi_diag += "  [4] 临时文件回读抛异常: " + (getCurrentException()) + "\n"
+        )
+    )
+
+    if pyTag == undefined do return undefined
+    if (classOf pyTag) != String do return undefined
     if (matchPattern pyTag pattern:"cp[0-9]*") == false do return undefined
     pyTag
 )
@@ -367,8 +457,13 @@ fn maxagent_mzp_install = (
 
     local abi = _maxagent_detect_python_abi()
     if abi == undefined then (
-        local msg = "❌ 无法探测 Python 版本（Python.Import \"sys\" 调用失败）\n\n"
-        msg += "请把以下信息反馈给开发者：\n"
+        local msg = "❌ 无法探测 Python 版本（4 层 fallback 全失败）\n\n"
+        msg += "诊断信息:\n"
+        if g_maxagent_abi_diag != undefined and g_maxagent_abi_diag != "" then
+            msg += g_maxagent_abi_diag
+        else
+            msg += "  （无诊断记录，请上报）\n"
+        msg += "\n请把以下信息反馈给开发者：\n"
         msg += "  • 3ds Max 版本: " + (maxVersion())[1] as string + "\n"
         msg += "  • 系统语言目录: " + getDir #userScripts
         messagebox msg title:"MaxAgent 安装失败"
