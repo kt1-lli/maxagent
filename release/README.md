@@ -27,31 +27,68 @@ release/
 
 ## 快速开始
 
-### 本地一键打包（开发期，单 ABI 快速迭代）
+最常用：日常开发期增量打包当前本地 ABI（约 30 秒出 mzp）
 
 ```bash
 cd <仓库根>
 uv run python release/build.py --quick
 ```
 
-`--quick` 只构建当前本地 Python 对应的 ABI（默认 cp311），约 30 秒出 mzp。
+完整命令清单见下文 [命令速查](#命令速查)。
 
-### 完整 5 ABI 构建（发布前）
+---
 
-```bash
-uv run python release/build.py
+## 命令速查
+
+> 所有命令统一以 `uv run python release/build.py` 为入口（下表省略前缀），
+> 运行目录为仓库根。
+
+### 1. 主命令（决定构建什么 ABI）
+
+| 命令 | 输出 ABI | 适用场景 | 备注 |
+|------|---------|---------|------|
+| `--quick` | 当前本地 1 个 ABI | 日常开发迭代、快速回归 | 默认 cp311；约 30 秒 |
+| *（不传任何参数）* | 全部 5 个 ABI<br/>cp37/cp39/cp310/cp311/cp313 | 单机多 Python 环境下出完整 mzp | 要求本地能解析全部 SUPPORTED_ABIS，否则报 `ABI cpXX unavailable` |
+| `--abis cp311 cp313` | 指定子集 | 仅出某几个 Max 版本对应的产物 | 多个 ABI 用空格分隔；非法值会报错 |
+| `--all-abis` | 全部 5 个 ABI | 单机自动调度多 Python 子进程出齐全 mzp | 需要本机已装 uv；与 `--quick` / `--abis` 互斥 |
+
+### 2. 辅助参数（与上面主命令组合使用）
+
+| 命令 | 用途 | 适用场景 | 备注 |
+|------|------|---------|------|
+| `--version 1.0.1` | 同时改写 `release/version.py` 后再打包 | 发版打 tag 前的版本递增 | 必须是 SemVer，如 `1.0.1` 或 `1.0.1-rc1` |
+| `--auto-install-pythons` | 缺失的 Python 自动通过 uv 下载 | 全新环境首次构建、CI runner 启动 | 必须配合 `--all-abis`；首次会下数百 MB |
+| `--skip-existing` | 已有 `build_cache/cpXX/` 产物的 ABI 直接跳过 | 大矩阵失败重试、增量补出缺失 ABI | 必须配合 `--all-abis` |
+| `--skip-pyarmor` | 跳过 PyArmor 加密阶段，仅做 Cython | 调试阶段排查问题 | **发布禁用**，产物中 .py 仍为明文 |
+| `--pack-only` | 跳过 Cython/PyArmor，直接用 `build_cache/` 现有产物组装 mzp | CI 矩阵完成后的聚合作业；本地仅修改 `mzp_install.ms` 后重出包 | 不重新编译，速度最快（< 5s） |
+| `--allow-cross-abi` | 允许目标 ABI 与当前解释器 ABI 不一致 | 高级用法，跨 ABI 调试 | 默认禁止；启用后可能触发 `SystemError: unknown opcode` |
+
+### 3. 调试 / 信息输出
+
+| 命令 | 用途 | 适用场景 |
+|------|------|---------|
+| `--dry-run` | 仅打印执行计划，不真正动文件 | 检查参数搭配是否符合预期 |
+| `-v` / `--verbose` | 打开详细日志 | 排查构建失败、查看每个文件的处理时延 |
+
+### 4. 典型组合
+
+| 场景 | 命令 |
+|------|------|
+| 日常单 ABI 快速迭代 | `uv run python release/build.py --quick` |
+| 改完 `mzp_install.ms` 想立刻重出包 | `uv run python release/build.py --pack-only` |
+| 发版：递增版本 + 出齐全 5 ABI | `uv run python release/build.py --version 1.0.1 --all-abis` |
+| 全新机器首次出完整包 | `uv run python release/build.py --all-abis --auto-install-pythons` |
+| 矩阵任务挂掉一个 ABI，单独补打 | `uv run python release/build.py --abis cp310` |
+| 仅看会做什么，不动文件 | `uv run python release/build.py --all-abis --dry-run -v` |
+
+---
+
+## 产物路径
+
 ```
-
-需要本地或 CI 有 Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13 五套环境。
-推荐用 `pyenv-win`（Windows）或 `uv python install <版本>`（跨平台）准备。
-
-### 指定版本号发布
-
-```bash
-uv run python release/build.py --version 1.0.1
+release/build_cache/cpXX/maxagent/   ← 中间产物（每 ABI 一份；gitignore）
+release/dist/maxagent-X.Y.Z.mzp      ← 最终产物（gitignore）
 ```
-
-会同步修改 `version.py` 并按新版本号生成 mzp 文件名。
 
 ---
 
