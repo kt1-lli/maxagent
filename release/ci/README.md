@@ -8,10 +8,10 @@ MaxAgent 采用 **多 ABI 矩阵构建** 策略：每个 Python 版本（cp37/cp
 | 平台                 | 配置文件                              | 用途             | 强度  |
 |---------------------|--------------------------------------|------------------|-------|
 | **GitHub Actions**  | `.github/workflows/release.yml`      | **主流水线**     | 推荐  |
-| 工蜂蓝盾             | `release/ci/bk-pipelines.yml`        | 内网备份         | 备用  |
+| 工蜂蓝盾             | `release/ci/bk-pipelines.yml`        | 备用方案         | 备用  |
 
 > 默认走 GitHub Actions —— 配置标准、文档丰富、Windows runner 免费。
-> 工蜂蓝盾配置作为内部托管的镜像方案，仅在 GitHub Actions 不可用时启用。
+> 工蜂蓝盾配置作为备用 CI 方案，仅在 GitHub Actions 不可用时启用。
 
 ## 触发条件
 
@@ -101,7 +101,7 @@ python release/build.py --pack-only --abis cp311
 
 ```bash
 export GITEE_TOKEN='your_token_here'
-python release/ci/publish_gitee.py --version 0.4.0
+python release/ci/publish_gitee.py --version 1.0.0
 ```
 
 ## 发版流程
@@ -130,7 +130,7 @@ CI 会在 ~10 分钟内自动产出并发布 `maxagent-X.Y.Z.mzp`。
 
 ### Hotfix 流程
 
-仅打补丁号：`v0.4.0` → `v0.4.1`，按上述标准流程走即可。
+仅打补丁号：`v1.0.0` → `v1.0.1`，按上述标准流程走即可。
 
 ### 预发版（beta）
 

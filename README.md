@@ -24,7 +24,7 @@
 
 ### 1. 启动（推荐：免安装方式）⭐
 
-下载本仓库到任意目录，**直接把 `MAXAGENT_INSTALL.ms` 拖到 3ds Max 视口** —— 完成。
+下载本仓库到任意目录，**直接把 `install.ms` 拖到 3ds Max 视口** —— 完成。
 
 启动器会自动把仓库目录注入 `sys.path` 并显示面板，**无需事先 `pip install`、无需拷贝文件到 Max 启动目录**。
 重启 Max 后再次拖入即可，每次拖入都是幂等的，不会污染 `sys.path`。
@@ -123,7 +123,7 @@ maxagent-project/
 ├── install.py               # 持久安装脚本（可选）
 ├── setup.py                 # 可选 pip 安装
 ├── requirements.txt
-├── MAXAGENT_INSTALL.ms      # MaxScript 启动器（免安装入口，拖入 Max 视口即可）
+├── install.ms               # MaxScript 启动脚本（拖入 Max 视口即可）
 ├── README.md                # 本文档
 ├── docs/
 │   ├── architecture.md      # 架构 + 线程模型
@@ -241,4 +241,4 @@ MIT License. 请勿在生产环境的高安全场景中使用 `run_maxscript` / 
 
 ---
 
-**MaxAgent v0.1.0** — Made with ❤️ for 3ds Max users.
+**MaxAgent v1.0.0** — Made with ❤️ for 3ds Max users.

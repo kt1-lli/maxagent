@@ -1,7 +1,7 @@
-# 工蜂蓝盾流水线 — MaxAgent 多 ABI 矩阵构建（内部备份方案）
+# 工蜂蓝盾流水线 — MaxAgent 多 ABI 矩阵构建
 #
 # 主流水线: .github/workflows/release.yml (GitHub Actions)
-# 本文件:   工蜂蓝盾镜像配置（内网备份，不强制启用）
+# 本文件:   工蜂蓝盾备用配置
 #
 # 触发: master 分支推送 / git tag v*.*.* 推送 / 手动
 # 节点: 5 个 Windows runner 并行（每个跑一个 Python ABI）

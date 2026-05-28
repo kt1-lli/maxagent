@@ -1,32 +1,16 @@
 -- ----------------------------------------------------------------------
 -- MaxAgent mzp 安装钩子（dropScript）
 --
--- Autodesk mzp 协议（实测 + 官方文档）摘要：
---   * mzp.run 是**指令序列**（不是 INI；之前实现按 INI 解析，导致 Max
---     完全识别不了，整个 mzp 静默失败 —— "拖入没反应"）。
---   * 拖入时 Max 只执行 `drop` 指定的那 1 个 .ms；`run` 指令在拖入
---     上下文里被无条件忽略。所以本脚本必须当 dropScript 用，文件名
---     必须出现在 mzp.run 的 `drop "..."` 行里。
---
--- mzp.run 让 Max 解压 mzp 内容到 (getDir #temp)\<mzp 文件名>\，然后调用
--- 本脚本（drop 指令指定）。本脚本通过扫 (getDir #temp)\maxagent-*\ 找到
--- 真实解压根目录，再以此为基准定位 sibling 文件（runtime\cpXX\、macros\）。
--- 不再依赖 installerSource 或 getSourceFileName()——后者实测
--- 在 Max 2022 CHS 的 drop 上下文里返回空，是上一版"完全没反应"的根因。
---
--- 流程（一气呵成，不再拆 install/run 两阶段）：
+-- 拖入 mzp 后由 Max 调用本脚本，完成：
 --   1. 探测当前 Max 内嵌 Python 版本，从 runtime\cpXX\ 选择对应产物
 --   2. 拷贝到用户脚本目录 %LOCALAPPDATA%\Autodesk\3dsMax\<ver>\<lang>\scripts\maxagent\
---      （<lang> 由 getDir #userScripts 自动解析：中文版 zh-CN / 英文版 ENU）
 --   3. 注入 sys.path 并立即可用
 --   4. 拷贝 UTF-8 BOM .mcr 到 usermacros，fileIn 注册 macroScript
 --   5. 询问用户安装方式：菜单 / 仅宏 / 跳过
---   6. 最后 import maxagent 并 show_panel(force=True) —— 把面板拉起来
+--   6. import maxagent 并 show_panel(force=True)
 --
 -- 兼容范围: 3ds Max 2022 / 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
 --           Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13
---
--- 与 MAXAGENT_INSTALL.ms（开发态启动器）相互独立，互不冲突。
 -- ----------------------------------------------------------------------
 
 global g_maxagent_mzp_root
@@ -42,20 +26,13 @@ fn _maxagent_escape_path p = (
 
 -- 解析 mzp 解压目录
 --
--- mzp.run 里写了 `extract to "$temp\\maxagent_install"`，Max 会把整个
--- mzp 解压到 `(getDir #temp) + "\\maxagent_install\\"` 这个固定路径——
--- 这是**首选**，目录确定性最高，不依赖命名规律也不依赖文件时间戳。
---
--- 其他 fallback 只是保险（如 mzp.run 的 extract 指令在某些 Max 版本上
--- 不生效时兜底）：
---   2. 兜底：扫 `getDir #temp` 下所有一级子目录，找含 `runtime\` 的那个
---      （不依赖目录命名规律，只认结构 sentinel）。
---   3. installerSource 全局变量（mzp 协议可选注入，Max 2022 CHS 实测为空）
---   4. getSourceFileName()（开发态 fileIn 调试用；drop 上下文返回空）
+-- 主入口：mzp.run 里 `extract to "$temp\\maxagent_install"` 把内容
+-- 解压到固定目录 (getDir #temp)\maxagent_install\，本函数据此定位。
+-- 其他三个分支为兜底，覆盖 extract 指令未生效或非 drop 上下文场景。
 fn _maxagent_resolve_mzp_root = (
     local rootDir = undefined
 
-    -- 1) 首选：mzp.run extract to 指定的固定目录 #temp\maxagent_install
+    -- 1) 首选：固定解压目录
     try (
         local _temp = getDir #temp
         if _temp != undefined and _temp != "" do (
@@ -64,7 +41,7 @@ fn _maxagent_resolve_mzp_root = (
         )
     ) catch ()
 
-    -- 2) 兜底：遍历 #temp 下所有一级子目录，找含 runtime\ 的那个
+    -- 2) 兜底：扫 #temp 下含 runtime\ 的子目录
     if rootDir == undefined or rootDir == "" do (
         try (
             local _temp = getDir #temp
@@ -97,7 +74,7 @@ fn _maxagent_resolve_mzp_root = (
         ) catch ()
     )
 
-    -- 4) getSourceFileName() 末位兜底（开发态 fileIn 调试用）
+    -- 4) getSourceFileName() 兜底
     if rootDir == undefined or rootDir == "" do (
         try (
             local scriptPath = getSourceFileName()
@@ -113,10 +90,6 @@ fn _maxagent_resolve_mzp_root = (
 )
 
 -- 探测当前 Max 内嵌 Python 的小版本，返回如 "cp311" 的字符串
---
--- 实测在 Max 2022/2023 上 `Python.Import "sys"` 是唯一可靠的方法。
--- 用户验证版（保持极简，避免任何"多余守卫"——例如把 `as integer`
--- 转出来的值再和 undefined 比较，会反向触发 pyTag 不被赋值的诡异坑）：
 --
 --   _sys = Python.Import "sys"
 --   _vi  = _sys.version_info
@@ -231,9 +204,8 @@ fn _maxagent_register_macros mzpRoot = (
 -- 在主菜单栏末尾注册 MaxAgent 菜单
 -- 兼容策略：
 --   * Max 2022~2024：menuMan API 直接持久化到 MaxStartUI.cui
---   * Max 2025+：menuMan 仍可用（向后兼容），但新 CUI 系统会接管，
---     Autodesk 建议 2025+ 用 callbacks.notificationParam #cuiRegisterMenus，
---     这里继续用 menuMan 以减少分支，2025+ 实测可工作（Autodesk 保留兼容层）。
+--   * Max 2025+：menuMan 仍可用（向后兼容），新 CUI 系统接管菜单管理；
+--     此处统一用 menuMan 以减少分支
 fn _maxagent_register_menu = (
     try (
         local _mainMenu = menuMan.getMainMenuBar()
@@ -422,11 +394,6 @@ fn maxagent_mzp_install = (
     )
 
     -- 5) 拉起 AI 面板
-    --
-    -- 之前版本把 show_panel 放在独立的 mzp_run.ms 里，靠 mzp.run 的 [run]
-    -- 阶段触发——但 Autodesk mzp 协议**没有 [run] 段**，那是上一版按 INI
-    -- 格式臆想出来的（参见本文件头注释）。drop 上下文下 Max 只执行 1 个
-    -- dropScript，所以现在合并到这里一气呵成。
     --
     -- 用 try 包住 import + show_panel：万一面板代码出错，至少安装本身
     -- 是成功的，用户能看到下面的成功提示，而不是被 Python 异常打断。

@@ -38,7 +38,7 @@ class TestPublishGiteeArgs:
     def test_missing_token_returns_1(self, publish_gitee_mod, monkeypatch):
         """缺 GITEE_TOKEN 应早退 code 1。"""
         monkeypatch.delenv('GITEE_TOKEN', raising=False)
-        ret = publish_gitee_mod.main(['--version', '0.4.0'])
+        ret = publish_gitee_mod.main(['--version', '1.0.0'])
         assert ret == 1
 
     def test_missing_mzp_returns_3(self, publish_gitee_mod, monkeypatch, tmp_path):
@@ -46,7 +46,7 @@ class TestPublishGiteeArgs:
         monkeypatch.setenv('GITEE_TOKEN', 'fake_token')
         empty_glob = str(tmp_path / 'nothing-*.mzp')
         ret = publish_gitee_mod.main([
-            '--version', '0.4.0',
+            '--version', '1.0.0',
             '--mzp-glob', empty_glob,
         ])
         assert ret == 3
@@ -55,10 +55,10 @@ class TestPublishGiteeArgs:
         """notes 文件指定但不存在应返回 3。"""
         monkeypatch.setenv('GITEE_TOKEN', 'fake_token')
         # 造一个 mzp 占位文件
-        fake_mzp = tmp_path / 'maxagent-0.4.0.mzp'
+        fake_mzp = tmp_path / 'maxagent-1.0.0.mzp'
         fake_mzp.write_bytes(b'PK\x03\x04fake')
         ret = publish_gitee_mod.main([
-            '--version', '0.4.0',
+            '--version', '1.0.0',
             '--mzp-glob', str(fake_mzp),
             '--notes-file', str(tmp_path / 'nope.md'),
         ])
@@ -79,11 +79,11 @@ class TestPublishGiteeHelpers:
 
     def test_generate_default_notes_includes_files(self, publish_gitee_mod, tmp_path):
         """生成的 Release Notes 包含每个 mzp 的文件名与大小。"""
-        f1 = tmp_path / 'maxagent-0.4.0.mzp'
+        f1 = tmp_path / 'maxagent-1.0.0.mzp'
         f1.write_bytes(b'A' * 1024 * 100)  # 100 KB
-        notes = publish_gitee_mod._generate_default_notes('0.4.0', [f1])
-        assert 'MaxAgent v0.4.0' in notes
-        assert 'maxagent-0.4.0.mzp' in notes
+        notes = publish_gitee_mod._generate_default_notes('1.0.0', [f1])
+        assert 'MaxAgent v1.0.0' in notes
+        assert 'maxagent-1.0.0.mzp' in notes
         assert '3ds Max 2022 ~ 2027' in notes
         assert 'Python 3.7' in notes
 
@@ -119,7 +119,7 @@ class TestPublishGiteeFullFlow:
         monkeypatch.setenv('GITEE_REPO', 'max_agent')
 
         # 造一个真实的 mzp 占位文件
-        fake_mzp = tmp_path / 'maxagent-0.4.0.mzp'
+        fake_mzp = tmp_path / 'maxagent-1.0.0.mzp'
         fake_mzp.write_bytes(b'PK\x03\x04fake_mzp_content' * 100)
 
         # 拦截 _gitee_request 模拟成功
@@ -138,7 +138,7 @@ class TestPublishGiteeFullFlow:
                 return {
                     'id': 12345,
                     'tag_name': payload['tag_name'],
-                    'html_url': 'https://gitee.com/cmqll/max_agent/releases/v0.4.0',
+                    'html_url': 'https://gitee.com/cmqll/max_agent/releases/v1.0.0',
                 }
             # 附件上传 -> 返回成功
             if 'attach_files' in path:
@@ -148,7 +148,7 @@ class TestPublishGiteeFullFlow:
         monkeypatch.setattr(publish_gitee_mod, '_gitee_request', fake_request)
 
         ret = publish_gitee_mod.main([
-            '--version', '0.4.0',
+            '--version', '1.0.0',
             '--mzp-glob', str(fake_mzp),
         ])
         assert ret == 0

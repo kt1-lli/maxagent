@@ -157,7 +157,7 @@ def reload_maxagent(reshow=True):
     :raises ImportError: 重新 import 阶段失败时抛出，调用方据此提示用户
 
     使用前提：``maxagent`` 所在目录已经在 ``sys.path`` 中
-    （通过 ``MAXAGENT_INSTALL.ms`` 或手工 ``sys.path.insert`` 加进去）。
+    （通过 ``install.ms`` 或手工 ``sys.path.insert`` 加进去）。
     """
     logger.info('reload: 开始热重载')
     print('[MaxAgent] reload: 开始热重载...')

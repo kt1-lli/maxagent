@@ -1,39 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""MaxAgent 一键打包入口。
+"""MaxAgent 打包入口。
 
-工作流程
-========
-
-1. 解析参数 / 读取 ``release/version.py`` / 读取 ``cython_modules.txt``
-2. 对每个目标 ABI（cp39/cp310/cp311/cp313）：
-   a. 创建 ``build_cache/cpXX/`` 干净工作区
-   b. 把 ``maxagent/`` 整个包复制到 ``build_cache/cpXX/maxagent/`` 作临时副本
-      （**绝不修改源码目录**）
-   c. 对白名单文件运行 Cython → 产出 ``.pyd`` / ``.so``，删除原 .py
-   d. 对剩余 .py 运行 PyArmor RFT → 产出加密 .pyc，删除原 .py
-   e. 校验：必须保留 __init__.py / reload.py / qt_compat.py 明文
-3. 把 5 个 ``cpXX/`` 子目录、mzp_install.ms 一起打成
-   ``dist/maxagent-X.Y.Z.mzp``（实质 zip）
-4. 输出最终路径供分发
-
-设计取舍
-========
-- 只读取，**绝不修改 ``maxagent/`` 源码**：所有变换都在 ``build_cache/``。
-- ABI 缺失策略：``--quick`` 模式允许跳过；正式发布要求齐全。
-- 在 Linux 上能跑通完整流程（产出 ``.so`` 替代 ``.pyd``），便于 CI 与本地预演；
-  Windows .pyd 由跑 Windows 节点的 CI 步骤产出。
+读取版本号与白名单，对各 ABI 执行 Cython + PyArmor 处理，最终
+打包为 ``dist/maxagent-X.Y.Z.mzp``。源码目录只读不写。
 
 用法
 ====
 ::
 
-    python release/build.py                # 完整 5 ABI 构建（要求当前解释器能编全部）
-    python release/build.py --quick        # 仅当前 ABI（开发期）
-    python release/build.py --all-abis     # ⭐ 一键全 ABI：通过 uv 调度 4 个 Python 子进程并聚合
+    python release/build.py                # 完整 5 ABI 构建
+    python release/build.py --quick        # 仅当前 ABI
+    python release/build.py --all-abis     # 通过 uv 调度多 Python 子进程
     python release/build.py --version X.Y  # 同时更新 version.py
     python release/build.py --abis cp311   # 指定单 ABI
-    python release/build.py --skip-pyarmor # 调试期跳过 PyArmor
+    python release/build.py --skip-pyarmor # 跳过 PyArmor
     python release/build.py --dry-run      # 仅打印计划不执行
 """
 
@@ -161,7 +142,7 @@ def _copy_pkg_snapshot(dest_pkg_dir: Path) -> None:
 def _bump_version(new_version: str) -> None:
     """把 release/version.py 中的 __version__ 修改为 new_version。"""
     if not re.match(r'^\d+\.\d+\.\d+(?:[-+][0-9a-zA-Z\.\-]+)?$', new_version):
-        raise ValueError('版本号格式必须为 SemVer，如 0.4.0 或 0.4.0-rc1，得到: {}'.format(new_version))
+        raise ValueError('版本号格式必须为 SemVer，如 1.0.0 或 1.0.0-rc1，得到: {}'.format(new_version))
     version_py = RELEASE_DIR / 'version.py'
     text = version_py.read_text(encoding='utf-8')
     new_text, count = re.subn(

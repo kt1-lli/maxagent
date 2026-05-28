@@ -429,21 +429,12 @@ class TestBuildPipeline:
     def test_install_script_uses_installer_source_first(self, built_mzp):
         """mzp_install.ms 必须用四层 fallback 解析解压目录。
 
-        历史教训：
-          * v1 只用 getSourceFileName() —— Max 2022 CHS 拖入时返回空字符串，
-            装失败。
-          * v2 加了 installerSource 优先 —— 但实测某些 Max 版本根本不注入
-            该全局变量，仍可能失败。
-          * v3 用 ``extract to "maxagent_install"`` 相对路径——Max 在多个
-            版本上对相对路径语义不一致，目录根本不被创建。
-          * v4 改成扫 ``#temp\\maxagent-*\\`` 启发式——但用户重命名 mzp
-            后会失效。
-          * v5（当前）用 ``extract to "$temp\\maxagent_install"`` 绝对路径
-            前缀（``$temp`` 是 mzp 协议官方变量），把解压目录定死在
-            ``#temp\\maxagent_install\\``，mzp_install.ms 直接拼这个固定
-            路径作首选 fallback。再加一层"扫 #temp 下含 runtime\\ 的子目录"
-            作兜底，对极端情况也鲁棒。installerSource / getSourceFileName
-            作最末兜底。
+        四层依次为：
+          1. ``$temp\\maxagent_install`` 固定子目录（首选，由 mzp.run 的
+             ``extract to`` 指令定死）
+          2. 扫 ``#temp`` 下含 ``runtime\\`` 的子目录（结构兜底）
+          3. ``installerSource`` 全局变量
+          4. ``getSourceFileName()``
 
         本测试防止任何一层 fallback 被回退或简化。
         """
@@ -469,9 +460,9 @@ class TestBuildPipeline:
         assert 'installerSource' in text, (
             'mzp_install.ms 缺少 installerSource fallback'
         )
-        # 第 4 层（开发态 fileIn 调试用）
+        # 第 4 层
         assert 'getSourceFileName' in text, (
-            'mzp_install.ms 缺少 getSourceFileName 兜底（开发态调试需要）'
+            'mzp_install.ms 缺少 getSourceFileName 兜底'
         )
 
     def test_install_script_no_hardcoded_enu(self, built_mzp):
@@ -496,15 +487,11 @@ class TestBuildPipeline:
     def test_mzp_run_manifest_is_command_sequence(self, built_mzp):
         """mzp.run 必须是 Autodesk 标准的指令序列（不是 INI！）。
 
-        关键事实（field-tested + Autodesk 文档）：
+        要求：
           * mzp.run 是 ``copy / move / extract to / drop / run / clear temp``
-            等指令的序列，**不是** INI section 格式。
-          * 拖入时 Max **只**执行 ``drop`` 指定的脚本，``run`` 指令被无条件
-            忽略。所以入口必须是 ``drop "mzp_install.ms"``。
-          * 上一版误用 ``[install]`` / ``[run]`` 段名，被 Max 解析失败 →
-            退化到"找根目录唯一 .ms"启发式 → 当时根目录有 2 个 .ms（
-            mzp_install.ms 和 mzp_run.ms）→ 启发式也失败 → 整个 mzp
-            **拖入完全没反应**。这是回归保护测试。
+            指令序列，**不是** INI section 格式。
+          * 拖入时 Max **只**执行 ``drop`` 指定的脚本，入口必须是
+            ``drop "mzp_install.ms"``。
 
         参考: https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A
         """
@@ -526,7 +513,7 @@ class TestBuildPipeline:
         )
 
         text = raw.decode('utf-8', errors='replace')
-        # 2) **禁止**出现 INI 段（这是上一版的 bug，必须钉死）
+        # 2) 禁止出现 INI 段
         assert '[install]' not in text, (
             'mzp.run 出现非法 INI 段 [install]——Autodesk mzp 协议没有此语法'
         )
@@ -539,11 +526,10 @@ class TestBuildPipeline:
             'mzp.run 缺少 drop "mzp_install.ms" 指令——拖入时 Max 无入口可执行'
         )
 
-        # 4) 必须有 extract to "$temp\maxagent_install" —— 用 $temp 绝对路径
-        # 前缀把解压目录定死。早期实现要么没 extract to（Max 把 mzp 解压到
-        # 不可预测目录），要么用相对路径 ``extract to "maxagent_install"``
-        # （某些版本不解析），都导致 mzp_install.ms 无法找到 sibling 文件。
-        # `$temp` 是 mzp 协议官方支持的特殊变量，保证跨 Max 版本一致。
+        # 4) 必须有 extract to "$temp\maxagent_install"
+        # 用 $temp 绝对路径前缀把解压目录定死，确保 mzp_install.ms 能定位
+        # runtime\cpXXX\maxagent\ 等 sibling 文件。`$temp` 是 mzp 协议
+        # 官方支持的特殊变量，保证跨 Max 版本一致。
         assert 'extract to "$temp\\maxagent_install"' in text, (
             'mzp.run 必须包含 extract to "$temp\\maxagent_install"——'
             '用 $temp 绝对路径前缀确保解压目录确定性，是 mzp_install.ms '
@@ -551,13 +537,12 @@ class TestBuildPipeline:
         )
 
     def test_install_script_shows_panel_at_end(self, built_mzp):
-        """mzp_install.ms 末尾必须调 show_panel——drop 上下文只有这一个脚本会跑。
+        """mzp_install.ms 末尾必须调 show_panel。
 
         Autodesk mzp 协议在 drop 上下文下只执行 ``drop`` 指定的 1 个脚本，
-        不存在 [install]/[run] 两阶段（那是上一版的误解）。所以拉起面板的
-        逻辑必须合并在 mzp_install.ms 末尾。
+        所以拉起面板的逻辑必须合并在 mzp_install.ms 末尾。
 
-        本测试防止 show_panel 调用被误删或被错误地拆回独立 mzp_run.ms。
+        本测试防止 show_panel 调用被误删。
         """
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:

@@ -48,7 +48,7 @@ uv run python release/build.py
 ### 指定版本号发布
 
 ```bash
-uv run python release/build.py --version 0.4.1
+uv run python release/build.py --version 1.0.1
 ```
 
 会同步修改 `version.py` 并按新版本号生成 mzp 文件名。
