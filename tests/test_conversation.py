@@ -48,6 +48,35 @@ class TestConversationBasic:
         )
         assert c.messages[0].tool_calls[0]['id'] == 'call_1'
 
+    def test_assistant_reasoning_content_roundtrip(self):
+        """DeepSeek thinking 模式：reasoning_content 必须随 assistant
+        消息往返序列化、to_openai_dict 时回传，否则下一轮 HTTP 400。
+        """
+        c = Conversation()
+        c.add_assistant(
+            content='ok',
+            reasoning_content='thinking step 1\nthinking step 2',
+        )
+        m = c.messages[0]
+        # 字段保留
+        assert m.reasoning_content == 'thinking step 1\nthinking step 2'
+        # OpenAI 协议序列化时回传
+        d = m.to_openai_dict()
+        assert d.get('reasoning_content') == m.reasoning_content
+        # JSON 持久化往返
+        round_trip = Message.from_json(m.to_json())
+        assert round_trip.reasoning_content == m.reasoning_content
+
+    def test_non_assistant_message_skips_reasoning_content(self):
+        """user/tool 消息不应回传 reasoning_content（即使误传）。"""
+        m = Message(
+            role='user',
+            content='hi',
+            reasoning_content='should not leak',
+        )
+        d = m.to_openai_dict()
+        assert 'reasoning_content' not in d
+
     def test_add_tool_result(self):
         c = Conversation()
         c.add_tool_result(

@@ -331,6 +331,9 @@ class LLMClient(object):
         """SSE 流式读取，按需回调文本片段，最终聚合成统一返回结构。"""
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         content_chunks: List[str] = []
+        # DeepSeek thinking 模式：reasoning_content 也是分片到达，
+        # 必须按 chunk 累积成完整字符串供下一轮回传给 API
+        reasoning_chunks: List[str] = []
         # tool_calls 流式分片需要按 index 累积
         tool_buf: Dict[int, Dict[str, Any]] = {}
         finish_reason: Optional[str] = None
@@ -390,6 +393,13 @@ class LLMClient(object):
                             # 回调异常不能影响主流程
                             pass
 
+                # 1.5 推理过程增量（DeepSeek thinking 模式专属）
+                # reasoning_content 不投递给 on_delta（不显示给用户），
+                # 仅累积起来供下一轮回传 API
+                rtext = delta.get("reasoning_content")
+                if rtext:
+                    reasoning_chunks.append(rtext)
+
                 # 2. tool_calls 增量
                 for tc in delta.get("tool_calls") or []:
                     idx = tc.get("index", 0)
@@ -436,6 +446,7 @@ class LLMClient(object):
 
         return {
             "content": "".join(content_chunks),
+            "reasoning_content": "".join(reasoning_chunks),
             "tool_calls": tool_calls,
             "finish_reason": finish_reason or "stop",
             "usage": dict(usage_buf),
@@ -475,6 +486,7 @@ class LLMClient(object):
         if not choices:
             return {
                 "content": "",
+                "reasoning_content": "",
                 "tool_calls": [],
                 "finish_reason": "stop",
                 "usage": data.get("usage") or {},
@@ -496,6 +508,7 @@ class LLMClient(object):
             })
         return {
             "content": msg.get("content") or "",
+            "reasoning_content": msg.get("reasoning_content") or "",
             "tool_calls": tool_calls,
             "finish_reason": choices[0].get("finish_reason", "stop"),
             "usage": data.get("usage") or {},

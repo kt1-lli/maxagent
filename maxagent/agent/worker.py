@@ -620,10 +620,12 @@ class AgentWorker(QObject):
                 })
             finish_reason = resp.get('finish_reason') or ''
 
-            # 把 assistant 消息记入历史
+            # 把 assistant 消息记入历史（含 DeepSeek thinking 模式的
+            # reasoning_content；多轮对话必须把它原样回传给 API）
             self._conv.add_assistant(
                 content=content if content else None,
                 tool_calls=tool_calls if tool_calls else None,
+                reasoning_content=resp.get('reasoning_content') or None,
             )
 
             # 把整段文本通知 UI（即使是流式也再发一次完整版，方便 UI 收尾）

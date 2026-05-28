@@ -198,6 +198,7 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
         conv.add_assistant(
             content=content if content else None,
             tool_calls=tool_calls if tool_calls else None,
+            reasoning_content=resp.get('reasoning_content') or None,
         )
 
         if content:

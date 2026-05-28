@@ -186,8 +186,9 @@ class Message(object):
     """单条消息。"""
 
     def __init__(self, role, content=None, tool_calls=None,
-                 tool_call_id=None, name=None, ts=None, attachments=None):
-        # type: (str, Optional[str], Optional[List[Dict]], Optional[str], Optional[str], Optional[float], Optional[List]) -> None
+                 tool_call_id=None, name=None, ts=None, attachments=None,
+                 reasoning_content=None):
+        # type: (str, Optional[str], Optional[List[Dict]], Optional[str], Optional[str], Optional[float], Optional[List], Optional[str]) -> None
         self.role = role
         # OpenAI 协议允许 content 为 None（仅当 assistant 只发 tool_calls 时）
         self.content = content
@@ -195,6 +196,11 @@ class Message(object):
         self.tool_call_id = tool_call_id
         self.name = name
         self.ts = ts if ts is not None else time.time()
+        # DeepSeek thinking 模式专用：assistant 消息的推理过程文本。
+        # 协议要求多轮对话中必须把上一轮 assistant 的 reasoning_content
+        # 原样回传，否则 HTTP 400 invalid_request_error。仅在
+        # role=='assistant' 时有意义。
+        self.reasoning_content = reasoning_content
         # 多模态附件（仅 user 消息使用）。元素为 ``attachments.Attachment``
         # 实例，序列化时降级为 dict；OpenAI content 的 list 化在 worker
         # 层的 ``_compose_messages`` 完成，这里只保留元数据。
@@ -221,6 +227,12 @@ class Message(object):
             out['tool_call_id'] = self.tool_call_id
         if self.name:
             out['name'] = self.name
+        # DeepSeek thinking 模式：assistant 消息必须把上一轮的
+        # reasoning_content 原样回传，否则下一轮请求 HTTP 400。
+        # 对其他兼容服务（OpenAI/Ollama 等）这是个未识别字段，会被
+        # 服务端忽略，不影响主流程。
+        if self.role == 'assistant' and self.reasoning_content:
+            out['reasoning_content'] = self.reasoning_content
         return out
 
     def to_json(self):
@@ -260,6 +272,7 @@ class Message(object):
             name=data.get('name'),
             ts=data.get('ts'),
             attachments=atts,
+            reasoning_content=data.get('reasoning_content'),
         )
 
     def estimate_tokens(self):
@@ -291,12 +304,14 @@ class Conversation(object):
         self.messages.append(msg)
         return msg
 
-    def add_assistant(self, content=None, tool_calls=None):
-        # type: (Optional[str], Optional[List[Dict]]) -> Message
+    def add_assistant(self, content=None, tool_calls=None,
+                      reasoning_content=None):
+        # type: (Optional[str], Optional[List[Dict]], Optional[str]) -> Message
         msg = Message(
             role='assistant',
             content=content,
             tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
         )
         self.messages.append(msg)
         return msg
