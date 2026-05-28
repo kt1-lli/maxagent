@@ -241,13 +241,14 @@ def make_rule_approval_callback(parent_widget=None):
         ``parent_widget`` 仅作为兜底（在非 Max 环境运行测试时使用）。
     """
     def _cb(proposal):
+        from ..qt_compat import exec_compat
         from ..qt_compat import get_max_main_window
         parent = get_max_main_window() or parent_widget
         try:
             dlg = RuleApprovalDialog(proposal, parent=parent)
             # 提前取出 verdict 引用，避免 exec_ 阻塞期间被回收后再访问
             dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
-            dlg.exec_()
+            exec_compat(dlg)
             verdict = dlg.get_verdict()
             try:
                 dlg.deleteLater()
