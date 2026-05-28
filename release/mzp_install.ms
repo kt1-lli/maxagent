@@ -305,12 +305,16 @@ fn _maxagent_modern_menu_script = (
     s
 )
 
--- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 触发一次菜单系统重建
+-- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 触发一次菜单系统重建 + 写盘持久化
 -- 实现要点：
 --   * 回调内部用 callbacks.notificationParam() 拿 CuiMenuManager，再走新 API
---   * 当前会话立即可见菜单的关键：注册回调后调 maxOps.GetICuiMenuMgr().LoadConfiguration
+--   * 当前会话立即可见菜单的关键：注册回调后调 ICuiMenuMgr.LoadConfiguration
 --     强制 Max 重新加载菜单配置，触发 cuiRegisterMenus 回调
---   * 失败兜底：若新 API 调不通，记录日志后让上层提示用户去 Customize UI 找命令
+--   * 重启后菜单仍在主菜单栏（而不是退化成悬浮工具条）的关键：
+--     调 SaveConfiguration 把当前 menu schema（含 MaxAgent 节点的归属位置）
+--     落到当前活动 cui 配置文件，下次启动菜单系统直接从 schema 还原
+--   * 静默失败：写盘失败仅打 ListenerLog，不弹窗——回调本身已注册成功，
+--     下次启动至少还能出菜单（即便会以悬浮形态出现，功能可用不阻塞用户）
 fn _maxagent_register_menu_modern = (
     local _script = _maxagent_modern_menu_script()
 
@@ -320,17 +324,35 @@ fn _maxagent_register_menu_modern = (
 
     -- 2) 触发一次菜单重建，让本会话立即出菜单
     --    通过重新加载当前菜单配置来触发 cuiRegisterMenus 回调
-    local _ok = false
+    local _loadOk = false
+    local _curCfg = ""
     try (
         local _mgr = maxOps.GetICuiMenuMgr()
         if _mgr != undefined do (
-            local _cur = _mgr.GetCurrentConfiguration()
-            if _cur != undefined and _cur != "" do (
-                _mgr.LoadConfiguration _cur
-                _ok = true
+            _curCfg = _mgr.GetCurrentConfiguration()
+            if _curCfg != undefined and _curCfg != "" do (
+                _mgr.LoadConfiguration _curCfg
+                _loadOk = true
             )
         )
-    ) catch ()
+    ) catch (
+        format "[MaxAgent] LoadConfiguration 异常: %\n" (getCurrentException()) to:listener
+    )
+
+    -- 3) 写盘持久化：把当前内存态菜单（含 MaxAgent 子菜单挂在主菜单栏的位置）
+    --    序列化到当前活动 cui 配置文件。下次启动 Max 时菜单系统从该文件
+    --    还原 schema，MaxAgent 会作为正常子菜单出现在主菜单栏，而非悬浮工具条。
+    --    静默失败：失败仅打 ListenerLog，回调路径仍可作为兜底。
+    if _loadOk and _curCfg != "" do (
+        try (
+            local _mgr2 = maxOps.GetICuiMenuMgr()
+            if _mgr2 != undefined do (
+                _mgr2.SaveConfiguration _curCfg
+            )
+        ) catch (
+            format "[MaxAgent] SaveConfiguration 异常（菜单仍可用，仅持久化失败）: %\n" (getCurrentException()) to:listener
+        )
+    )
 
     -- 即便立即触发失败，回调已注册，下次启动 Max 仍能出菜单
     true

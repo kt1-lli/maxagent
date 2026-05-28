@@ -141,6 +141,23 @@ macroScript MaxAgent_Uninstall
                 )
             ) catch ()
 
+            -- 2b) Max 2025+ 还需把"MaxAgent 已从 schema 剔除"的状态写盘
+            --     否则即便回调被移除，schema 文件里仍残留 MaxAgent 节点定义，
+            --     重启后菜单系统仍会尝试还原它（变成空菜单或悬浮容器）。
+            --     调一次 LoadConfiguration（触发回调外的标准重建路径，此时
+            --     回调已被 removeScripts 移除，不会再 CreateSubMenu），
+            --     然后 SaveConfiguration 把"无 MaxAgent"的状态落盘。
+            try (
+                local _mgr = maxOps.GetICuiMenuMgr()
+                if _mgr != undefined do (
+                    local _curCfg = _mgr.GetCurrentConfiguration()
+                    if _curCfg != undefined and _curCfg != "" do (
+                        _mgr.LoadConfiguration _curCfg
+                        _mgr.SaveConfiguration _curCfg
+                    )
+                )
+            ) catch ()
+
             -- 3) 同步删除自身 .mcr 文件（避免 ActionTable 残留）
             --    Max 会在重启后忽略找不到的 ActionTable 项
             try (
