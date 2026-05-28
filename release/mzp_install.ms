@@ -201,65 +201,143 @@ fn _maxagent_register_macros mzpRoot = (
     true
 )
 
--- 在主菜单栏末尾注册 MaxAgent 菜单
--- 兼容策略：
---   * Max 2022~2024：menuMan API 直接持久化到 MaxStartUI.cui
---   * Max 2025+：menuMan 仍可用（向后兼容），新 CUI 系统接管菜单管理；
---     此处统一用 menuMan 以减少分支
+-- 取当前 Max 主版本号（如 2024 返回 26000，2025 返回 27000，2026 返回 28000）
+-- 2025 是菜单系统分水岭：>= 27000 走新 CUI Menu System（cuiRegisterMenus 回调）
+fn _maxagent_max_version = (
+    local _v = 0
+    try (_v = (maxVersion())[1] as integer) catch ()
+    _v
+)
+
+-- 旧版菜单注册（Max 2022~2024）：menuMan API 直接挂主菜单栏
+fn _maxagent_register_menu_legacy = (
+    local _mainMenu = menuMan.getMainMenuBar()
+    if _mainMenu == undefined do return false
+
+    -- 若已存在同名菜单，先移除（避免重复）
+    local _exist = -1
+    for i = 1 to _mainMenu.numItems() while _exist == -1 do (
+        local _it = _mainMenu.getItem i
+        if _it != undefined and _it.getTitle() == "MaxAgent" do _exist = i
+    )
+    if _exist > 0 do (
+        _mainMenu.removeItemByPosition _exist
+    )
+
+    local _menu = menuMan.createMenu "MaxAgent"
+
+    local _show = menuMan.createActionItem "MaxAgent_Show" "MaxAgent"
+    _show.setUseCustomTitle true
+    _show.setTitle "显示面板"
+    _menu.addItem _show -1
+
+    local _toggle = menuMan.createActionItem "MaxAgent_Toggle" "MaxAgent"
+    _toggle.setUseCustomTitle true
+    _toggle.setTitle "切换面板"
+    _menu.addItem _toggle -1
+
+    _menu.addItem (menuMan.createSeparatorItem()) -1
+
+    local _open = menuMan.createActionItem "MaxAgent_OpenInstallDir" "MaxAgent"
+    _open.setUseCustomTitle true
+    _open.setTitle "打开安装目录..."
+    _menu.addItem _open -1
+
+    _menu.addItem (menuMan.createSeparatorItem()) -1
+
+    local _uninst = menuMan.createActionItem "MaxAgent_Uninstall" "MaxAgent"
+    _uninst.setUseCustomTitle true
+    _uninst.setTitle "卸载 MaxAgent..."
+    _menu.addItem _uninst -1
+
+    local _sub = menuMan.createSubMenuItem "MaxAgent" _menu
+    _mainMenu.addItem _sub -1
+
+    -- 持久化：保存到当前 CUI 文件，重启 Max 自动恢复
+    menuMan.updateMenuBar()
+    try (menuMan.saveMenuFile (menuMan.getMenuFile())) catch ()
+    true
+)
+
+-- 新版菜单构建脚本（Max 2025+）：以字符串形式注入到 cuiRegisterMenus 回调
+-- Max 2025+ 用基于 Qt 的 CUI Menu System 取代旧 menuMan，菜单不再写 .cui
+-- 文件，必须通过 cuiRegisterMenus 回调在每次菜单系统加载时重建。
+-- 该脚本需要在两处执行：
+--   1) 安装当下立即执行一次，让本会话出菜单
+--   2) 注册到 cuiRegisterMenus 回调，让重启 Max 后自动重建
+fn _maxagent_modern_menu_script = (
+    local s = ""
+    s += "(\n"
+    s += "  try (\n"
+    s += "    local _mb = menuMan.getMainMenuBar()\n"
+    s += "    if _mb != undefined do (\n"
+    s += "      -- 移除可能存在的旧 MaxAgent 菜单，避免重复\n"
+    s += "      local _exist = -1\n"
+    s += "      for i = 1 to _mb.numItems() while _exist == -1 do (\n"
+    s += "        local _it = _mb.getItem i\n"
+    s += "        if _it != undefined and _it.getTitle() == \"MaxAgent\" do _exist = i\n"
+    s += "      )\n"
+    s += "      if _exist > 0 do _mb.removeItemByPosition _exist\n"
+    s += "\n"
+    s += "      local _menu = menuMan.createMenu \"MaxAgent\"\n"
+    s += "      local _show = menuMan.createActionItem \"MaxAgent_Show\" \"MaxAgent\"\n"
+    s += "      _show.setUseCustomTitle true; _show.setTitle \"显示面板\"\n"
+    s += "      _menu.addItem _show -1\n"
+    s += "      local _toggle = menuMan.createActionItem \"MaxAgent_Toggle\" \"MaxAgent\"\n"
+    s += "      _toggle.setUseCustomTitle true; _toggle.setTitle \"切换面板\"\n"
+    s += "      _menu.addItem _toggle -1\n"
+    s += "      _menu.addItem (menuMan.createSeparatorItem()) -1\n"
+    s += "      local _open = menuMan.createActionItem \"MaxAgent_OpenInstallDir\" \"MaxAgent\"\n"
+    s += "      _open.setUseCustomTitle true; _open.setTitle \"打开安装目录...\"\n"
+    s += "      _menu.addItem _open -1\n"
+    s += "      _menu.addItem (menuMan.createSeparatorItem()) -1\n"
+    s += "      local _uninst = menuMan.createActionItem \"MaxAgent_Uninstall\" \"MaxAgent\"\n"
+    s += "      _uninst.setUseCustomTitle true; _uninst.setTitle \"卸载 MaxAgent...\"\n"
+    s += "      _menu.addItem _uninst -1\n"
+    s += "      local _sub = menuMan.createSubMenuItem \"MaxAgent\" _menu\n"
+    s += "      _mb.addItem _sub -1\n"
+    s += "      menuMan.updateMenuBar()\n"
+    s += "    )\n"
+    s += "  ) catch ()\n"
+    s += ")\n"
+    s
+)
+
+-- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 立即调用一次
+-- 关键差异（与旧版）：
+--   * 2025+ 不再支持 menuMan.saveMenuFile 持久化菜单
+--   * 必须挂 cuiRegisterMenus 回调，Max 启动加载菜单时会重新触发
+--   * 立即执行一次脚本，让安装当下当前会话也能看到菜单
+fn _maxagent_register_menu_modern = (
+    local _script = _maxagent_modern_menu_script()
+
+    -- 1) 把脚本注册到 cuiRegisterMenus 回调（Max 启动重建菜单时触发）
+    --    用固定 id:#MaxAgentMenu 方便后续移除；先移除旧回调避免重复
+    try (callbacks.removeScripts id:#MaxAgentMenu) catch ()
+    callbacks.addScript #cuiRegisterMenus _script id:#MaxAgentMenu persistent:false
+
+    -- 2) 安装当下立即执行一次，让本会话立即出菜单
+    execute _script
+
+    true
+)
+
+-- 在主菜单栏末尾注册 MaxAgent 菜单（按 Max 版本分发）
 fn _maxagent_register_menu = (
     try (
-        local _mainMenu = menuMan.getMainMenuBar()
-        if _mainMenu == undefined do (
+        local _ver = _maxagent_max_version()
+        local _ok = false
+        if _ver >= 27000 then (
+            -- Max 2025+ 走新 CUI Menu System
+            _ok = _maxagent_register_menu_modern()
+        ) else (
+            -- Max 2022~2024 走旧 menuMan API
+            _ok = _maxagent_register_menu_legacy()
+        )
+        if not _ok do (
             messagebox "无法获取主菜单栏，菜单注册跳过" title:"MaxAgent"
             return false
         )
-
-        -- 若已存在同名菜单，先移除（避免重复）
-        local _exist = -1
-        for i = 1 to _mainMenu.numItems() while _exist == -1 do (
-            local _it = _mainMenu.getItem i
-            if _it != undefined and _it.getTitle() == "MaxAgent" do _exist = i
-        )
-        if _exist > 0 do (
-            _mainMenu.removeItemByPosition _exist
-        )
-
-        -- 创建 MaxAgent 菜单
-        local _menu = menuMan.createMenu "MaxAgent"
-
-        -- 添加菜单项（每个 macroScript 用 createActionItem 包装）
-        local _show = menuMan.createActionItem "MaxAgent_Show" "MaxAgent"
-        _show.setUseCustomTitle true
-        _show.setTitle "显示面板"
-        _menu.addItem _show -1
-
-        local _toggle = menuMan.createActionItem "MaxAgent_Toggle" "MaxAgent"
-        _toggle.setUseCustomTitle true
-        _toggle.setTitle "切换面板"
-        _menu.addItem _toggle -1
-
-        _menu.addItem (menuMan.createSeparatorItem()) -1
-
-        local _open = menuMan.createActionItem "MaxAgent_OpenInstallDir" "MaxAgent"
-        _open.setUseCustomTitle true
-        _open.setTitle "打开安装目录..."
-        _menu.addItem _open -1
-
-        _menu.addItem (menuMan.createSeparatorItem()) -1
-
-        local _uninst = menuMan.createActionItem "MaxAgent_Uninstall" "MaxAgent"
-        _uninst.setUseCustomTitle true
-        _uninst.setTitle "卸载 MaxAgent..."
-        _menu.addItem _uninst -1
-
-        -- 把菜单挂到主菜单栏的最末尾
-        local _sub = menuMan.createSubMenuItem "MaxAgent" _menu
-        _mainMenu.addItem _sub -1
-
-        -- 持久化：保存到当前 CUI 文件，重启 Max 自动恢复
-        menuMan.updateMenuBar()
-        try (menuMan.saveMenuFile (menuMan.getMenuFile())) catch ()
-
         true
     ) catch (
         local err = getCurrentException()

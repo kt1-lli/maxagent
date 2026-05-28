@@ -120,6 +120,12 @@ macroScript MaxAgent_Uninstall
             _py += "        except Exception: pass\n"
 
             -- 2) 同步移除 MaxAgent 主菜单
+            -- Max 2025+ 必须先移除 cuiRegisterMenus 回调，否则 Max 重启
+            -- 加载菜单系统时仍会重新注册出来。当前会话的菜单条目用
+            -- menuMan.removeItemByPosition 移除（这一步在所有版本都管用）。
+            try (
+                callbacks.removeScripts id:#MaxAgentMenu
+            ) catch ()
             try (
                 local _mainMenu = menuMan.getMainMenuBar()
                 if _mainMenu != undefined do (

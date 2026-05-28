@@ -372,10 +372,18 @@ class TestBuildPipeline:
         with zipfile.ZipFile(mzp_path) as zf:
             text = zf.read('mzp_install.ms').decode('utf-8', errors='replace')
 
-        # 必须有菜单注册逻辑（menuMan 主菜单栏挂载）
+        # 必须有菜单注册逻辑（旧 menuMan API + 新 CUI Menu System 双路径）
+        # 旧路径（Max 2022~2024）：menuMan 主菜单栏直接挂载
         assert 'menuMan.getMainMenuBar' in text, 'mzp_install.ms 未通过 menuMan 挂主菜单'
         assert 'menuMan.createMenu' in text, '未创建 MaxAgent 子菜单'
         assert 'menuMan.updateMenuBar' in text, '菜单更新调用缺失'
+        # 新路径（Max 2025+）：cuiRegisterMenus 回调 + 版本判断
+        assert 'cuiRegisterMenus' in text, (
+            'mzp_install.ms 缺少 cuiRegisterMenus 回调，Max 2025+ 菜单注册无效'
+        )
+        assert 'maxVersion' in text, (
+            'mzp_install.ms 缺少 maxVersion 版本判断，无法分发到新旧菜单路径'
+        )
 
         # 必须有安装方式三选一对话框（菜单 / 仅宏 / 取消）
         assert 'yesNoCancelBox' in text, '缺少安装方式选择对话框'
