@@ -136,6 +136,11 @@ class ToolDispatcher(object):
                 "✗ tool=%s timeout after %.0fms stages=%s: %s",
                 tool_name, elapsed, _fmt_stages(stages), exc,
             )
+            try:
+                from ..user_tools_loader import bump_tool_usage
+                bump_tool_usage(tool_name, ok=False)
+            except Exception:  # pylint: disable=broad-except
+                pass
             return _err(str(exc), "timeout")
         except Exception as exc:  # pylint: disable=broad-except
             elapsed = (time.time() - t0) * 1000
@@ -144,6 +149,11 @@ class ToolDispatcher(object):
                 "✗ tool=%s 执行异常 after %.0fms stages=%s:\n%s",
                 tool_name, elapsed, _fmt_stages(stages), tb,
             )
+            try:
+                from ..user_tools_loader import bump_tool_usage
+                bump_tool_usage(tool_name, ok=False)
+            except Exception:  # pylint: disable=broad-except
+                pass
             return _err(
                 "{}: {}".format(type(exc).__name__, exc),
                 "exec_error",
@@ -164,6 +174,14 @@ class ToolDispatcher(object):
                 out, self._result_max_bytes, tool_name=tool_name,
             )
         stages["truncate"] = (time.time() - t_trunc) * 1000
+
+        # 5. 学习工具的使用统计累加（user tools 才有 .meta.json）。
+        #    捕获所有异常：进化指标累加绝不能影响主路径返回。
+        try:
+            from ..user_tools_loader import bump_tool_usage
+            bump_tool_usage(tool_name, ok=True)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
         # DEBUG 埋点：出参摘要 + 总耗时 + 阶段分布
         # 超过 500ms 自动升到 INFO，便于线上抓到慢调用现场。

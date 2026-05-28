@@ -212,7 +212,7 @@ def propose_new_tool(name, description, code, rationale=''):
 
 @tool(
     name='list_learned_tools',
-    description='列出所有从用户互动中学到的自定义工具。',
+    description='列出所有从用户互动中学到的自定义工具，含使用统计。',
     category='learn',
     dangerous=False,
     wrap_undo=False,
@@ -228,9 +228,190 @@ def list_learned_tools():
             'name': it['name'],
             'description': meta.get('description', ''),
             'use_count': meta.get('use_count', 0),
+            'success_count': meta.get('success_count', 0),
+            'error_count': meta.get('error_count', 0),
+            'last_used_at': meta.get('last_used_at'),
+            'last_ok': meta.get('last_ok'),
             'created_at': meta.get('created_at'),
         })
     return {'count': len(out), 'tools': out}
+
+
+@tool(
+    name='patch_learned_tool',
+    description=(
+        '修补一个之前 propose 过的自定义工具的源码。'
+        '调用此工具会弹出审批对话框给用户查看新代码并决定是否覆盖。'
+        '何时调用：当某个 user tool 调用频繁失败（list_learned_tools '
+        '中 error_count 高），或用户明确说"修一下 X 工具"时。\n'
+        '严格限制：\n'
+        ' - 只能修改用户自己 propose 的工具，无法修改内置工具\n'
+        ' - rationale 必须如实说明本次修补针对的具体问题（给用户看）\n'
+        ' - 新代码必须保持相同的工具名（@tool 装饰器里的 name=...）'
+    ),
+    category='learn',
+    dangerous=True,
+    wrap_undo=False,
+    # 必须主线程：弹窗 + registry 操作
+    run_on_main_thread=True,
+)
+def patch_learned_tool(name, new_code, rationale):
+    # type: (str, str, str) -> dict
+    """提议修补一个已学习工具的源码，由用户审批后落盘 + 热加载。
+
+    :param name: 要修补的工具名（必须已存在于 user_tools/ 目录）
+    :param new_code: 完整的新版 Python 源码（不是 diff）
+    :param rationale: 本次修补针对的具体问题，例如
+        "之前未处理空场景 → 修正为先 isValidNode 判断再 delete"
+    """
+    # 早期校验：必须是已存在的 user tool
+    try:
+        validate_name(name)
+    except ValueError as exc:
+        return {
+            'approved': False,
+            'error': str(exc),
+            'stage': 'validate_name',
+        }
+
+    items = list_user_tools(include_meta=False)
+    existing = next((it for it in items if it['name'] == name), None)
+    if existing is None:
+        logger.warning('patch_learned_tool 拒绝：工具不存在 name=%s', name)
+        return {
+            'approved': False,
+            'error': (
+                'patch_learned_tool 只能修改 user_tools/ 下的已学习工具。'
+                '工具 {!r} 不存在或是内置工具——内置工具不可修改。'
+            ).format(name),
+            'stage': 'not_user_tool',
+        }
+
+    if not (rationale or '').strip():
+        return {
+            'approved': False,
+            'error': 'rationale 不能为空，必须说明本次修补的具体原因',
+            'stage': 'validate_rationale',
+        }
+
+    try:
+        validate_code(new_code)
+    except ValueError as exc:
+        logger.warning('patch_learned_tool 校验失败 name=%s: %s', name, exc)
+        return {
+            'approved': False,
+            'error': str(exc),
+            'stage': 'validate_code',
+        }
+
+    # 读出旧源码用于审批弹窗对照展示
+    old_code = ''
+    py_path = existing.get('py_path')
+    if py_path:
+        try:
+            with open(py_path, 'r', encoding='utf-8') as fh:
+                old_code = fh.read()
+        except OSError:
+            old_code = ''
+
+    # 旧 description 沿用（patch 不改 description；要改请走 propose 同名覆盖）
+    old_meta = {}
+    meta_path_guess = py_path + '.meta.json' if py_path else None
+    # write_tool 的实际 meta 路径与 py_path 同目录同名 + .meta.json
+    if meta_path_guess:
+        # 实际路径见 user_tools_loader._tool_meta_path：os.path.join(base, name + META_SUFFIX)
+        # 而 py_path = base + '/' + name + '.py'，所以替换后缀即可
+        meta_path = py_path[:-3] + '.meta.json' if py_path.endswith('.py') \
+            else None
+        if meta_path:
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as fh:
+                    old_meta = json.load(fh) or {}
+            except (OSError, ValueError):
+                old_meta = {}
+
+    proposal = {
+        'name': name,
+        'description': old_meta.get('description', ''),
+        'code': new_code,
+        'rationale': '【修补已有工具】{}\n\n旧代码摘要（前 200 字）：\n{}'.format(
+            rationale, (old_code[:200] + '...') if len(old_code) > 200 else old_code,
+        ),
+    }
+
+    logger.info('patch_learned_tool 触发审批: name=%s', name)
+    cb = _APPROVAL_CB or _default_approval
+    try:
+        verdict = cb(proposal) or {}
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception('patch_learned_tool 审批回调异常: name=%s', name)
+        return {
+            'approved': False,
+            'error': '审批回调异常: {}'.format(exc),
+            'stage': 'callback',
+        }
+
+    if not verdict.get('approved'):
+        logger.info(
+            'patch_learned_tool 用户拒绝: name=%s, reason=%s',
+            name, verdict.get('reason', ''),
+        )
+        return {
+            'approved': False,
+            'reason': verdict.get('reason', '用户已拒绝'),
+            'stage': 'rejected',
+        }
+
+    final_code = verdict.get('edited_code') or new_code
+    try:
+        validate_code(final_code)
+    except ValueError as exc:
+        return {
+            'approved': False,
+            'error': '用户编辑后代码校验失败: {}'.format(exc),
+            'stage': 'post_edit_validate',
+        }
+
+    # 复用原 meta 关键字段（保留 created_at / use_count 历史，
+    # 仅刷新 patched_at 标识本次修补）。
+    new_meta = dict(old_meta)
+    new_meta['name'] = name
+    new_meta['approved_by_user'] = True
+    new_meta['patched_at'] = time.time()
+    new_meta['patch_rationale'] = rationale
+
+    try:
+        new_py_path = write_tool(name, final_code, new_meta)
+    except (OSError, ValueError) as exc:
+        logger.exception('patch_learned_tool 落盘失败: name=%s', name)
+        return {
+            'approved': False,
+            'error': '落盘失败: {}'.format(exc),
+            'stage': 'write',
+        }
+
+    try:
+        reload_user_tool(name)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception('patch_learned_tool 热加载失败: name=%s', name)
+        return {
+            'approved': True,
+            'saved': True,
+            'loaded': False,
+            'load_error': '{}: {}'.format(type(exc).__name__, exc),
+            'py_path': new_py_path,
+            'message': '工具已修补但热加载失败，下次启动会重试',
+        }
+
+    logger.info('patch_learned_tool 完成: name=%s', name)
+    return {
+        'approved': True,
+        'saved': True,
+        'loaded': True,
+        'name': name,
+        'py_path': new_py_path,
+        'message': '工具 {} 已修补并立即可用'.format(name),
+    }
 
 
 @tool(
@@ -253,6 +434,7 @@ def delete_learned_tool(name):
 
 __all__ = [
     'propose_new_tool',
+    'patch_learned_tool',
     'list_learned_tools',
     'delete_learned_tool',
     'set_approval_callback',

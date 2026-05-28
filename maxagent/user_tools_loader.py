@@ -223,6 +223,51 @@ def list_user_tools(include_meta=True):
     return out
 
 
+def bump_tool_usage(name, ok=True):
+    # type: (str, bool) -> bool
+    """累加学习工具的使用统计到 .meta.json。
+
+    内置工具（无 meta 文件）会被静默跳过——这是设计：进化指标只覆盖
+    用户自己 propose 出来的工具，与内置工具的稳定基线分开。
+
+    :param name: 工具名
+    :param ok: 本次调用是否成功（dispatcher 视角的 ok）
+    :returns: 是否实际更新到文件（False 表示该工具不是 user tool）
+    """
+    base = get_user_tools_dir()
+    meta_path = _tool_meta_path(name, base)
+    if not os.path.exists(meta_path):
+        return False
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as fh:
+            meta = json.load(fh) or {}
+    except (OSError, ValueError) as exc:
+        logger.warning('bump_tool_usage 读取 meta 失败 name=%s: %s', name, exc)
+        return False
+
+    meta['use_count'] = int(meta.get('use_count') or 0) + 1
+    if ok:
+        meta['success_count'] = int(meta.get('success_count') or 0) + 1
+    else:
+        meta['error_count'] = int(meta.get('error_count') or 0) + 1
+    meta['last_used_at'] = time.time()
+    meta['last_ok'] = bool(ok)
+
+    tmp = meta_path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, meta_path)
+    except OSError as exc:
+        logger.warning('bump_tool_usage 写入 meta 失败 name=%s: %s', name, exc)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def delete_user_tool(name):
     # type: (str) -> bool
     """删除指定的学习工具（源码 + 元数据 + 注册表条目）。"""
@@ -310,6 +355,7 @@ __all__ = [
     'load_user_tools',
     'reload_user_tool',
     'write_tool',
+    'bump_tool_usage',
     'validate_name',
     'validate_code',
     'set_user_tools_dir_override',

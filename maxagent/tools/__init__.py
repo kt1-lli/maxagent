@@ -45,6 +45,7 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     from . import skills_tools # noqa: F401
     from . import learn_tools  # noqa: F401
     from . import learn_rules  # noqa: F401
+    from . import reflection_tools  # noqa: F401
     from . import web_tools    # noqa: F401
 
     if include_escape_hatch:

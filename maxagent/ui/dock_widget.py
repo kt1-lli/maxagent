@@ -1479,6 +1479,15 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 parts.append(rule_part)
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning('user_rules addon 异常: %s', exc)
+        try:
+            from ..reflections_loader import (
+                build_system_prompt_addon as _rba,
+            )
+            reflection_part = _rba()
+            if reflection_part:
+                parts.append(reflection_part)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('reflections addon 异常: %s', exc)
         return '\n\n'.join(parts)
 
     def _on_example_picked(self, text):
