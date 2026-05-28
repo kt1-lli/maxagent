@@ -576,8 +576,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.context_label = QtWidgets.QLabel('上下文: -')
         self.context_label.setToolTip(
             '当前对话历史占用的估算 token 数 / 上限。\n'
-            '超过上限时会自动裁剪最早的消息（保护 tool_call 配对与最近 4 条）。\n'
-            '上限可在「设置」中按 Profile 调整。',
+            '上限会根据当前 Profile 的模型自动推断（如 GPT-4o 128K、'
+            'DeepSeek 128K、Claude Sonnet 4 1M、Gemini 1.5 Pro 2M）。\n'
+            '本地 Ollama 端点按 8K 兜底（实际受 num_ctx 参数限制）。\n'
+            '识别失败时回退到「设置」中手填的预算值。\n'
+            '超过上限时会自动裁剪最早的消息（保护 tool_call 配对与最近 4 条）。',
         )
         self.context_label.setStyleSheet('color:#aaa;')
         ctx_row.addWidget(self.context_label)
@@ -899,9 +902,36 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _get_active_max_history_tokens(self):
         # type: () -> int
-        """从当前 profile 读取历史 token 预算；缺省/异常时回退到 32000。"""
+        """获取当前 profile 的历史 token 预算（覆盖策略 A1）。
+
+        优先级：
+        1. 模型能力库根据 ``profile.model`` + ``base_url`` 推断（覆盖手填值）
+        2. 用户在设置里手填的 ``max_history_tokens``（兜底）
+        3. 最终回退 32000
+
+        Ollama 端点会被特殊处理（按 8K 兜底，避免 num_ctx 默认 2048 撑爆）。
+        """
         try:
             prof = self._config.get_active_profile()
+        except Exception:  # pylint: disable=broad-except
+            return 32000
+        # 优先：模型库推断
+        try:
+            from maxagent.model_capabilities import (
+                infer_context_window,
+                recommend_history_budget,
+            )
+            model_id = getattr(prof, 'model', '') or ''
+            base_url = getattr(prof, 'base_url', '') or ''
+            ctx_win = infer_context_window(model_id, base_url)
+            if ctx_win > 0:
+                budget = recommend_history_budget(ctx_win)
+                if budget > 0:
+                    return budget
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # 兜底：用户手填
+        try:
             v = int(getattr(prof, 'max_history_tokens', 0) or 0)
             if v > 0:
                 return v
@@ -909,11 +939,22 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             pass
         return 32000
 
+    def _get_active_model_label(self):
+        # type: () -> str
+        """获取当前 profile 的模型标签（用于 UI 提示），失败时返回空串。"""
+        try:
+            prof = self._config.get_active_profile()
+            return (getattr(prof, 'model', '') or '').strip()
+        except Exception:  # pylint: disable=broad-except
+            return ''
+
     def _refresh_context_label(self):
         """刷新顶部 token 状态条。
 
-        显示格式：上下文: 2.5K/32K (8 条)
+        显示格式：上下文: 2.5K / 96K (8 条) · gpt-4o
         颜色根据占比变化：<60% 灰、<85% 橙、>=85% 红
+        模型标签来自当前 Profile 的 ``model`` 字段，让用户直观看到
+        budget 是基于哪个模型自动推断的。
         """
         try:
             cur = self._conv.estimate_total_tokens()
@@ -921,8 +962,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             cur = 0
         budget = self._get_active_max_history_tokens()
         msgs = len(self._conv) if self._conv else 0
+        model_label = self._get_active_model_label()
 
         def _fmt(n):
+            if n >= 1000000:
+                return '{:.1f}M'.format(n / 1000000.0)
             if n >= 1000:
                 return '{:.1f}K'.format(n / 1000.0)
             return str(n)
@@ -937,6 +981,12 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         text = '上下文: {} / {}  ({} 条)'.format(
             _fmt(cur), _fmt(budget), msgs,
         )
+        if model_label:
+            # 模型名过长时截短显示，避免把状态条挤变形
+            short = model_label if len(model_label) <= 24 else (
+                model_label[:21] + '...'
+            )
+            text = text + '  · ' + short
         self.context_label.setText(text)
         self.context_label.setStyleSheet('color:{};'.format(color))
 
