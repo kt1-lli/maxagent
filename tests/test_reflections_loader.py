@@ -127,8 +127,14 @@ class TestWriteAndList:
 
 
 class TestPromptAddon:
-    def test_empty_returns_empty_string(self, reflections_base):
-        assert rfl.build_system_prompt_addon() == ''
+    def test_empty_returns_only_guidance(self, reflections_base):
+        # 无反思时也应至少返回主动反思指引（让 LLM 知道工具存在）
+        addon = rfl.build_system_prompt_addon()
+        assert addon != ''
+        assert 'reflect_on_outcome' in addon
+        assert '主动反思' in addon
+        # 不应该出现"历史反思列表段头"
+        assert '## 你最近的反思' not in addon
 
     def test_addon_includes_lessons(self, reflections_base):
         rfl.write_reflection({
@@ -160,9 +166,12 @@ class TestPromptAddon:
                 'task_summary': 'task_{}'.format(i),
                 'lessons': 'l' * 100,
             })
-        # 极小字节限制，应只能塞下少量
-        addon = rfl.build_system_prompt_addon(max_total_bytes=200)
-        assert len(addon.encode('utf-8')) <= 1000
+        # 反思条目部分应该被字节预算限制——验证最多只能塞下 2 条
+        # （guidance 头部固定 ~1500 字节是不计入预算的）
+        addon_small = rfl.build_system_prompt_addon(max_total_bytes=200)
+        addon_full = rfl.build_system_prompt_addon(max_total_bytes=10000)
+        # 小预算时反思条目应该明显少于无限预算
+        assert addon_full.count('task_') > addon_small.count('task_')
 
     def test_addon_skips_old_reflections(self, reflections_base):
         rfl.get_reflections_dir()

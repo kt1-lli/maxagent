@@ -71,7 +71,8 @@ _ID_RE = re.compile(r'^rfl_[a-z0-9_]{1,60}$')
 # 单条反思 JSON 最大字节数（防止 LLM 长篇大论）
 MAX_REFLECTION_BYTES = 2 * 1024
 
-# 全部已注入反思的硬上限（远小于 user_rules，避免抢 prompt 预算）
+# 全部已注入反思的硬上限。注意：本上限只针对"反思条目正文"的累加，
+# 不包括开头的"主动反思指引"段（指引固定 ~800 字节，无论如何都注入）。
 MAX_TOTAL_BYTES = 2 * 1024
 
 # 注入数量上限（即使没超字节限也只取最新 N 条）
@@ -262,22 +263,57 @@ def build_system_prompt_addon(max_total_bytes=None, max_count=None):
     # type: (Optional[int], Optional[int]) -> str
     """生成可拼接到 system prompt 的反思段。
 
+    无论是否已有历史反思，都至少返回一段"何时反思"的主动触发指引，
+    避免 LLM 看不到 ``reflect_on_outcome`` 工具的存在感（仅靠工具
+    description 描述触发率不够）。
+
     :param max_total_bytes: 总字节上限，None 表示用 ``MAX_TOTAL_BYTES``
     :param max_count: 注入条数上限，None 表示用 ``MAX_INJECT_COUNT``
-    :returns: 多行文本，无可注入反思时返回空字符串
+    :returns: 多行文本（即使无反思也至少返回触发指引）
     """
     limit_bytes = MAX_TOTAL_BYTES if max_total_bytes is None else max_total_bytes
     limit_count = MAX_INJECT_COUNT if max_count is None else max_count
+
+    # === 主动反思指引（始终注入，无视有没有历史反思） ===
+    # 这一段是关键：靠工具 description 触发率太低，必须在 system prompt
+    # 里告诉 LLM "什么时候必须主动调 reflect_on_outcome"。
+    guidance = (
+        '## 主动反思机制\n'
+        '你有一个 `reflect_on_outcome` 工具，用于把"任务过程中获得的'
+        '可复用经验"沉淀为短期记忆，下次遇到类似任务时会自动注入到'
+        'system prompt 帮你避免重蹈覆辙。\n'
+        '\n'
+        '### 必须主动调用 reflect_on_outcome 的场景\n'
+        ' 1. **任务被用户连续纠正 ≥2 次**（说明你第一反应有偏差，'
+        '需要记下"下次正确路径"）\n'
+        ' 2. **某个工具调用失败后你换了路径才成功**（记录"为什么 A '
+        '不行 + B 才行"，避免下次又先走 A）\n'
+        ' 3. **用户说"差不多了"/"将就吧"/"还有些问题"** 等不完全'
+        '满意的反馈（哪怕任务收尾，也值得反思）\n'
+        ' 4. **你发现自己之前的某个判断/做法是错的**（即使用户没明说）\n'
+        ' 5. **用户明确说"记下教训"/"以后注意"等**（这是显式信号）\n'
+        '\n'
+        '### 不要反思的场景\n'
+        ' - 一次性顺利完成的小任务（无反思价值）\n'
+        ' - 用户明确说"这是规则"→ 应该用 `suggest_rule_addition`\n'
+        ' - 仅仅是"任务做完了"→ 不是所有完成都需要反思\n'
+        '\n'
+        '### 调用时机\n'
+        '在你给用户的最终回复之前（或之后立即），独立调用一次本工具。'
+        'lessons 字段是关键——必须写"下次怎么改进"，不能只是描述发生了什么。\n'
+        '调用前可先 `list_reflections` 看是否已有同类反思，避免重复登记。'
+    )
+
     if limit_count <= 0 or limit_bytes <= 0:
-        return ''
+        return guidance
 
     rfls = list_reflections(only_recent=True)
+    rfls = rfls[:limit_count] if rfls else []
+
     if not rfls:
-        return ''
-    rfls = rfls[:limit_count]
+        return guidance
 
     header = (
-        '\n'
         '## 你最近的反思（短期记忆）\n'
         '（这些是你在以往任务中的自我复盘，用于规避同类失误。'
         '与官方规则冲突时以官方规则为准；老于 30 天的反思已自动淡出。）'
@@ -293,7 +329,8 @@ def build_system_prompt_addon(max_total_bytes=None, max_count=None):
         parts.append(chunk)
         used += chunk_bytes
 
-    return '\n'.join([p.lstrip('\n') for p in parts]).rstrip()
+    history_part = '\n'.join([p.lstrip('\n') for p in parts]).rstrip()
+    return guidance + '\n\n' + history_part
 
 
 __all__ = [

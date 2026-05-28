@@ -25,27 +25,69 @@ from .emoji_compat import ee as _ee
 
 _DIALOG_STYLE = """
 QDialog#RuleApprovalDialog { background-color:#1e1e1e; }
-QDialog#RuleApprovalDialog QLabel { color:#d4d4d4; }
+QDialog#RuleApprovalDialog QLabel { color:#d4d4d4; background:transparent; }
 QDialog#RuleApprovalDialog QLineEdit,
 QDialog#RuleApprovalDialog QPlainTextEdit,
 QDialog#RuleApprovalDialog QTextEdit {
-    background-color:#252525; color:#d4d4d4;
+    background-color:#252525;
+    color:#d4d4d4;
+    border:1px solid #3a3a3a;
+    selection-background-color:#264f78;
 }
+/* 通用按钮：必须把 background-image 一同清掉，否则 Max 全局样式表里的
+   QPushButton 渐变 / 图片 会把我们的 background-color 盖住，造成"白底白字"。 */
 QDialog#RuleApprovalDialog QPushButton {
-    background-color:#4a4a4a; color:#fff;
+    background-color:#4a4a4a;
+    background-image:none;
+    color:#ffffff;
+    border:1px solid #5a5a5a;
+    padding:6px 14px;
+    min-width:90px;
+    border-radius:3px;
 }
-QDialog#RuleApprovalDialog QPushButton:hover { background-color:#5a5a5a; }
+QDialog#RuleApprovalDialog QPushButton:hover {
+    background-color:#5a5a5a;
+    background-image:none;
+    border:1px solid #6a6a6a;
+}
+QDialog#RuleApprovalDialog QPushButton:pressed {
+    background-color:#3a3a3a;
+    background-image:none;
+}
+QDialog#RuleApprovalDialog QPushButton:disabled {
+    background-color:#333;
+    color:#888;
+    border:1px solid #444;
+}
 QDialog#RuleApprovalDialog QPushButton#approveBtn {
     background-color:#2d7d46;
+    background-image:none;
+    color:#ffffff;
+    border:1px solid #3a9c5a;
 }
 QDialog#RuleApprovalDialog QPushButton#approveBtn:hover {
     background-color:#3a9c5a;
+    background-image:none;
+    border:1px solid #4ab06a;
+}
+QDialog#RuleApprovalDialog QPushButton#approveBtn:pressed {
+    background-color:#246138;
+    background-image:none;
 }
 QDialog#RuleApprovalDialog QPushButton#rejectBtn {
     background-color:#a93232;
+    background-image:none;
+    color:#ffffff;
+    border:1px solid #c44040;
 }
 QDialog#RuleApprovalDialog QPushButton#rejectBtn:hover {
     background-color:#c44040;
+    background-image:none;
+    border:1px solid #d65454;
+}
+QDialog#RuleApprovalDialog QPushButton#rejectBtn:pressed {
+    background-color:#8a2828;
+    background-image:none;
 }
 """
 
