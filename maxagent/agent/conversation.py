@@ -27,6 +27,7 @@ from typing import List
 from typing import Optional
 
 from .coding_rules import get_coding_rules
+from .max_knowledge import get_basic_knowledge
 
 
 # 默认对外身份名（员工名缺省时的回退值）
@@ -132,6 +133,14 @@ def build_default_system_prompt(employee_name=None):
         '注明单位（Max system unit）。\n'
         '7. 不确定就明确说"不确定"或先用工具探测，绝不输出'
         '"看起来像是这样"的伪代码。\n'
+        '   - 优先级 ①：上方"3ds Max 世界观速查"已覆盖的内容直接用，'
+        '不要重复查询；\n'
+        '   - 优先级 ②：速查未覆盖但属于 Max 领域知识（如某个修改器'
+        '的具体参数、第三方渲染器材质字段），调 list_max_knowledge_topics'
+        ' / lookup_max_knowledge 查 L2 知识库；\n'
+        '   - 优先级 ③：知识库也没有时，再用 isProperty / classOf / '
+        'getPropNames 在 Max 里跑探测脚本验证；\n'
+        '   - 永远不要凭"印象"直接写 API。\n'
         '\n【🎯 字面理解铁律 - 防止过度联想】\n'
         '8. **严格按用户字面要求行事，不主动扩展、不补全、不联想'
         '"完整场景"**：\n'
@@ -187,7 +196,7 @@ def build_default_system_prompt(employee_name=None):
         '不要为了"显得周到"而主动追加摆放——这两套规则不冲突，由'
         '用户措辞决定走哪条路径。\n'
     )
-    return body + '\n' + get_coding_rules()
+    return body + '\n' + get_basic_knowledge() + '\n' + get_coding_rules()
 
 
 # 默认系统提示词（保留向后兼容的模块级常量）。
