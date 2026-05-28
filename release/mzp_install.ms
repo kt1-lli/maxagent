@@ -259,66 +259,80 @@ fn _maxagent_register_menu_legacy = (
     true
 )
 
--- 新版菜单构建脚本（Max 2025+）：以字符串形式注入到 cuiRegisterMenus 回调
--- Max 2025+ 用基于 Qt 的 CUI Menu System 取代旧 menuMan，菜单不再写 .cui
--- 文件，必须通过 cuiRegisterMenus 回调在每次菜单系统加载时重建。
--- 该脚本需要在两处执行：
---   1) 安装当下立即执行一次，让本会话出菜单
---   2) 注册到 cuiRegisterMenus 回调，让重启 Max 后自动重建
+-- 新版菜单回调脚本（Max 2025+）
+-- 关键差异（与旧 menuMan API 对照）：
+--   * 通过 callbacks.notificationParam() 拿 CuiMenuManager（不能再用 menuMan.getMainMenuBar）
+--   * mainMenuBar.CreateSubMenu <GUID> <title>
+--   * subMenu.CreateAction <GUID> <actionTableId> "<macroName>`<category>"
+--     actionTableId 固定 647394 = 用户 macroScript 默认 ActionTable
+--   * subMenu.CreateSeparator <GUID>
+--   * 回调返回后系统自动重建菜单，不要再调 menuMan.updateMenuBar / saveMenuFile
+--
+-- 5 个固定 GUID：菜单本身 + 4 个菜单项 + 2 个分隔符（共 7 个）
+-- 硬编码而非 genGUID()，保证菜单系统跨会话能正确去重
 fn _maxagent_modern_menu_script = (
     local s = ""
-    s += "(\n"
+    s += "fn _maxagent_cui_menu_cb = (\n"
     s += "  try (\n"
-    s += "    local _mb = menuMan.getMainMenuBar()\n"
-    s += "    if _mb != undefined do (\n"
-    s += "      -- 移除可能存在的旧 MaxAgent 菜单，避免重复\n"
-    s += "      local _exist = -1\n"
-    s += "      for i = 1 to _mb.numItems() while _exist == -1 do (\n"
-    s += "        local _it = _mb.getItem i\n"
-    s += "        if _it != undefined and _it.getTitle() == \"MaxAgent\" do _exist = i\n"
-    s += "      )\n"
-    s += "      if _exist > 0 do _mb.removeItemByPosition _exist\n"
+    s += "    local _mgr = callbacks.notificationParam()\n"
+    s += "    if _mgr == undefined do return false\n"
+    s += "    local _bar = _mgr.mainMenuBar\n"
+    s += "    if _bar == undefined do return false\n"
+    s += "    -- 用户 macroScript 默认注册的 ActionTable ID\n"
+    s += "    local _tableId = 647394\n"
+    s += "    -- 菜单及子项的稳定 GUID（任意 16 字节，保证唯一即可）\n"
+    s += "    local _gMenu  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E11\"\n"
+    s += "    local _gShow  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E12\"\n"
+    s += "    local _gTog   = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E13\"\n"
+    s += "    local _gSep1  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E14\"\n"
+    s += "    local _gOpen  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E15\"\n"
+    s += "    local _gSep2  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E16\"\n"
+    s += "    local _gUnin  = \"6F2A1E4D-7C3B-4A91-B5E2-1D8F5A0C9E17\"\n"
     s += "\n"
-    s += "      local _menu = menuMan.createMenu \"MaxAgent\"\n"
-    s += "      local _show = menuMan.createActionItem \"MaxAgent_Show\" \"MaxAgent\"\n"
-    s += "      _show.setUseCustomTitle true; _show.setTitle \"显示面板\"\n"
-    s += "      _menu.addItem _show -1\n"
-    s += "      local _toggle = menuMan.createActionItem \"MaxAgent_Toggle\" \"MaxAgent\"\n"
-    s += "      _toggle.setUseCustomTitle true; _toggle.setTitle \"切换面板\"\n"
-    s += "      _menu.addItem _toggle -1\n"
-    s += "      _menu.addItem (menuMan.createSeparatorItem()) -1\n"
-    s += "      local _open = menuMan.createActionItem \"MaxAgent_OpenInstallDir\" \"MaxAgent\"\n"
-    s += "      _open.setUseCustomTitle true; _open.setTitle \"打开安装目录...\"\n"
-    s += "      _menu.addItem _open -1\n"
-    s += "      _menu.addItem (menuMan.createSeparatorItem()) -1\n"
-    s += "      local _uninst = menuMan.createActionItem \"MaxAgent_Uninstall\" \"MaxAgent\"\n"
-    s += "      _uninst.setUseCustomTitle true; _uninst.setTitle \"卸载 MaxAgent...\"\n"
-    s += "      _menu.addItem _uninst -1\n"
-    s += "      local _sub = menuMan.createSubMenuItem \"MaxAgent\" _menu\n"
-    s += "      _mb.addItem _sub -1\n"
-    s += "      menuMan.updateMenuBar()\n"
-    s += "    )\n"
-    s += "  ) catch ()\n"
+    s += "    local _menu = _bar.CreateSubMenu _gMenu \"MaxAgent\"\n"
+    s += "    if _menu == undefined do return false\n"
+    s += "    _menu.CreateAction _gShow _tableId \"MaxAgent_Show`MaxAgent\" title:\"显示面板\"\n"
+    s += "    _menu.CreateAction _gTog  _tableId \"MaxAgent_Toggle`MaxAgent\" title:\"切换面板\"\n"
+    s += "    _menu.CreateSeparator _gSep1\n"
+    s += "    _menu.CreateAction _gOpen _tableId \"MaxAgent_OpenInstallDir`MaxAgent\" title:\"打开安装目录...\"\n"
+    s += "    _menu.CreateSeparator _gSep2\n"
+    s += "    _menu.CreateAction _gUnin _tableId \"MaxAgent_Uninstall`MaxAgent\" title:\"卸载 MaxAgent...\"\n"
+    s += "    true\n"
+    s += "  ) catch (false)\n"
     s += ")\n"
+    s += "callbacks.removeScripts id:#MaxAgentMenu\n"
+    s += "callbacks.addScript #cuiRegisterMenus \"_maxagent_cui_menu_cb()\" id:#MaxAgentMenu\n"
     s
 )
 
--- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 立即调用一次
--- 关键差异（与旧版）：
---   * 2025+ 不再支持 menuMan.saveMenuFile 持久化菜单
---   * 必须挂 cuiRegisterMenus 回调，Max 启动加载菜单时会重新触发
---   * 立即执行一次脚本，让安装当下当前会话也能看到菜单
+-- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 触发一次菜单系统重建
+-- 实现要点：
+--   * 回调内部用 callbacks.notificationParam() 拿 CuiMenuManager，再走新 API
+--   * 当前会话立即可见菜单的关键：注册回调后调 maxOps.GetICuiMenuMgr().LoadConfiguration
+--     强制 Max 重新加载菜单配置，触发 cuiRegisterMenus 回调
+--   * 失败兜底：若新 API 调不通，记录日志后让上层提示用户去 Customize UI 找命令
 fn _maxagent_register_menu_modern = (
     local _script = _maxagent_modern_menu_script()
 
-    -- 1) 把脚本注册到 cuiRegisterMenus 回调（Max 启动重建菜单时触发）
-    --    用固定 id:#MaxAgentMenu 方便后续移除；先移除旧回调避免重复
-    try (callbacks.removeScripts id:#MaxAgentMenu) catch ()
-    callbacks.addScript #cuiRegisterMenus _script id:#MaxAgentMenu persistent:false
-
-    -- 2) 安装当下立即执行一次，让本会话立即出菜单
+    -- 1) 注册回调（每次菜单系统加载时触发，重启 Max 自动重建）
+    --    脚本内部已包含 removeScripts，避免回调重复注册
     execute _script
 
+    -- 2) 触发一次菜单重建，让本会话立即出菜单
+    --    通过重新加载当前菜单配置来触发 cuiRegisterMenus 回调
+    local _ok = false
+    try (
+        local _mgr = maxOps.GetICuiMenuMgr()
+        if _mgr != undefined do (
+            local _cur = _mgr.GetCurrentConfiguration()
+            if _cur != undefined and _cur != "" do (
+                _mgr.LoadConfiguration _cur
+                _ok = true
+            )
+        )
+    ) catch ()
+
+    -- 即便立即触发失败，回调已注册，下次启动 Max 仍能出菜单
     true
 )
 

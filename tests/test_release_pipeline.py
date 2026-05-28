@@ -377,12 +377,24 @@ class TestBuildPipeline:
         assert 'menuMan.getMainMenuBar' in text, 'mzp_install.ms 未通过 menuMan 挂主菜单'
         assert 'menuMan.createMenu' in text, '未创建 MaxAgent 子菜单'
         assert 'menuMan.updateMenuBar' in text, '菜单更新调用缺失'
-        # 新路径（Max 2025+）：cuiRegisterMenus 回调 + 版本判断
+        # 新路径（Max 2025+）：CuiMenuManager + cuiRegisterMenus 回调
         assert 'cuiRegisterMenus' in text, (
             'mzp_install.ms 缺少 cuiRegisterMenus 回调，Max 2025+ 菜单注册无效'
         )
         assert 'maxVersion' in text, (
             'mzp_install.ms 缺少 maxVersion 版本判断，无法分发到新旧菜单路径'
+        )
+        # 新路径必须用 CreateSubMenu / CreateAction（CuiMenuManager 接口）
+        # 而不是 menuMan.createActionItem（后者在 2025+ 上无效）
+        assert 'CreateSubMenu' in text, (
+            'mzp_install.ms 缺少 CuiMenuManager.CreateSubMenu 调用，Max 2025+ 菜单创建无效'
+        )
+        assert 'CreateAction' in text, (
+            'mzp_install.ms 缺少 CuiMenu.CreateAction 调用，Max 2025+ 菜单项创建无效'
+        )
+        # 新路径必须从回调参数取 manager
+        assert 'callbacks.notificationParam' in text, (
+            'mzp_install.ms 未通过 callbacks.notificationParam() 取 CuiMenuManager'
         )
 
         # 必须有安装方式三选一对话框（菜单 / 仅宏 / 取消）
