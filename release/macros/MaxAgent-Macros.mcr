@@ -57,18 +57,6 @@ macroScript MaxAgent_OpenInstallDir
     )
 )
 
-macroScript MaxAgent_About
-    category:"MaxAgent"
-    tooltip:"关于 MaxAgent"
-    buttontext:"关于"
-(
-    local _ver = "?"
-    try (
-        _ver = python.execute "import maxagent; maxagent.__version__"
-    ) catch ()
-    messagebox ("MaxAgent " + (_ver as string) + "\n\n3ds Max AI 助手插件\nFunction Calling 驱动 · 零外部依赖\n\nhttps://gitee.com/cmqll/max_agent") title:"关于 MaxAgent"
-)
-
 macroScript MaxAgent_Uninstall
     category:"MaxAgent"
     tooltip:"卸载 MaxAgent"

@@ -273,11 +273,6 @@ fn _maxagent_register_menu = (
         _open.setTitle "打开安装目录..."
         _menu.addItem _open -1
 
-        local _about = menuMan.createActionItem "MaxAgent_About" "MaxAgent"
-        _about.setUseCustomTitle true
-        _about.setTitle "关于 MaxAgent..."
-        _menu.addItem _about -1
-
         _menu.addItem (menuMan.createSeparatorItem()) -1
 
         local _uninst = menuMan.createActionItem "MaxAgent_Uninstall" "MaxAgent"

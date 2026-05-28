@@ -419,13 +419,12 @@ class TestBuildPipeline:
             'MaxAgent-Macros.mcr 缺少 UTF-8 BOM（EF BB BF），中英文版 Max 无法跨语言通用'
         )
 
-        # 解码并校验 5 个 macroScript 全在
+        # 解码并校验 4 个 macroScript 全在
         text = raw[3:].decode('utf-8')
         for macro in (
             'MaxAgent_Show',
             'MaxAgent_Toggle',
             'MaxAgent_OpenInstallDir',
-            'MaxAgent_About',
             'MaxAgent_Uninstall',
         ):
             assert 'macroScript ' + macro in text, (
