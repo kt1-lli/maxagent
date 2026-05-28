@@ -9,7 +9,7 @@
 # Tier-1（最高保护价值，~1700 行）：含系统 prompt / LLM key 处理 / 对话编排
 agent/conversation.py
 agent/coding_rules.py
-agent/worker.py
+# agent/worker.py  # 已从白名单移除，详见下方"已知问题"
 llm_client.py
 sessions.py
 
@@ -19,8 +19,6 @@ config.py
 # tools/registry.py  # 已从白名单移除，详见下方"已知问题"
 
 # 注意事项：
-# - agent/worker.py 含 14 处 PySide Signal/Slot，build.py 会自动启用
-#   `binding=True` 以保证 Qt MetaObject 反射正常。
 # - 列表中的文件不能是 __init__.py（包入口必须保留 .py 明文）。
 #
 # 已知问题（2026-05-25）：
@@ -35,3 +33,15 @@ config.py
 #   触发，疑似 cyfunction frame 与 CPython frame 跨边界访问的环境
 #   敏感问题。registry.py 是纯框架代码（装饰器 + JSON Schema 推导），
 #   不含敏感逻辑或密钥，明文 .pyc 兜底无安全损失。
+#
+# 已知问题（2026-05-28）：
+# - agent/worker.py **不能** 走 Cython。现象：mzp 包安装到 Max 后，
+#   UI 能正常显示，但点击发送按钮后业务链路无任何反应（ui_send 日志
+#   能打出，后续 worker / LLM / chunk 全部无日志），UI 主线程不卡，
+#   只是消息送出后无回应。源码直接 fileIn 运行完全正常。
+#   根因：worker.py 含 14 处 PySide Signal/Slot 与 QThread 跨线程调用，
+#   Cython 编译产物在 Max 嵌入解释器里 emit 信号时疑似命中与 registry.py
+#   类似的 cyfunction frame 跨边界异常，被 Qt 异常分发层吞掉无法拦截。
+#   worker.py 是纯调度逻辑（无 API key / 无 system prompt 字面量，
+#   核心 prompt 在 agent/conversation.py 中维护），改走 PyArmor L2
+#   保护无安全损失。
