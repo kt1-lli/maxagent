@@ -16,6 +16,13 @@
 --   getDir #userMacros  （由 Max 解析为当前语言的 usermacros 目录）
 --
 -- 注：.mcr 内的 macroScript 块由 Max 启动时自动 fileIn，无需手动注册。
+--
+-- sys.path 兜底：
+--   mzp_install.ms 仅在安装那一刻向 sys.path 注入安装目录，
+--   Max 重启后该注入丢失，宏内 `import maxagent` 会 ModuleNotFoundError。
+--   因此 Show / Toggle 两个入口宏在 import 之前都先重新注入一次。
+--   注入逻辑直接 inline 到 macroScript 块内，避免依赖 .mcr 块外
+--   fn 定义的跨会话可见性。
 -- ----------------------------------------------------------------------
 
 macroScript MaxAgent_Show
@@ -24,6 +31,16 @@ macroScript MaxAgent_Show
     buttontext:"MaxAgent"
 (
     try (
+        -- 兜底注入 sys.path（幂等，重启后必跑）
+        local _userScripts = getDir #userScripts
+        _userScripts = trimRight _userScripts "\\"
+        local _pyInit = ""
+        _pyInit += "import sys\n"
+        _pyInit += "_root = r'" + _userScripts + "'\n"
+        _pyInit += "if _root not in sys.path:\n"
+        _pyInit += "    sys.path.insert(0, _root)\n"
+        python.execute _pyInit
+
         python.execute "import maxagent.startup as _s; _s.show_panel(force=True)"
     ) catch (
         messagebox ("启动失败: " + getCurrentException()) title:"MaxAgent"
@@ -36,6 +53,16 @@ macroScript MaxAgent_Toggle
     buttontext:"切换面板"
 (
     try (
+        -- 兜底注入 sys.path（幂等，重启后必跑）
+        local _userScripts = getDir #userScripts
+        _userScripts = trimRight _userScripts "\\"
+        local _pyInit = ""
+        _pyInit += "import sys\n"
+        _pyInit += "_root = r'" + _userScripts + "'\n"
+        _pyInit += "if _root not in sys.path:\n"
+        _pyInit += "    sys.path.insert(0, _root)\n"
+        python.execute _pyInit
+
         python.execute "import maxagent; maxagent.toggle()"
     ) catch (
         messagebox ("切换失败: " + getCurrentException()) title:"MaxAgent"
