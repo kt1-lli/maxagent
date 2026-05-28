@@ -16,7 +16,6 @@ release/
 ├── pyarmor_config.toml      ← PyArmor 加密配置
 ├── mzp_install.ms           ← mzp 内的 MaxScript 启动钩子
 ├── build.py                 ← 一键打包入口（多 ABI 矩阵）
-├── shared/                  ← 不加密的资源（README/CHANGELOG/LICENSE）
 ├── ci/
 │   └── bk-pipelines.yml     ← 工蜂蓝盾 CI 配置
 ├── build_cache/             ← 中间产物（已 gitignore）
@@ -52,7 +51,7 @@ uv run python release/build.py
 uv run python release/build.py --version 0.4.1
 ```
 
-会同步修改 `version.py` 并更新 mzp 元数据。
+会同步修改 `version.py` 并按新版本号生成 mzp 文件名。
 
 ---
 

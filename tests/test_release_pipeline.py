@@ -7,8 +7,7 @@
 - PyArmor ``--exclude`` 参数确实传给子进程
 - 明文白名单（``__init__.py`` / ``reload.py`` / ``qt_compat.py``）保留为 .py
 - mzp 内 5 个子包 ``__init__.py`` 都到位（防过滤逻辑误伤）
-- mzp 顶层结构正确：``maxagent_release.json`` / ``mzp_install.ms``
-  / ``runtime/cpXX/maxagent/`` / ``shared/``
+- mzp 顶层结构正确：``mzp_install.ms`` / ``runtime/cpXX/maxagent/``
 - Cython 产物（.so）数量等于白名单数量
 - PyArmor trial 受限时自动走 py_compile 软退化
 - mzp 整体内能完整 import 关键 API（绕开 GUI 副作用模块）
@@ -30,7 +29,6 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-import json
 import os
 import shutil
 import subprocess
@@ -207,19 +205,11 @@ class TestBuildPipeline:
         )
 
     def test_mzp_top_level_metadata(self, built_mzp):
-        """mzp 顶层包含 maxagent_release.json 和 mzp_install.ms。"""
+        """mzp 顶层包含 mzp_install.ms。"""
         mzp_path, _ = built_mzp
         with zipfile.ZipFile(mzp_path) as zf:
             names = set(zf.namelist())
-            assert 'maxagent_release.json' in names
             assert 'mzp_install.ms' in names
-
-            meta_raw = zf.read('maxagent_release.json').decode('utf-8')
-            meta = json.loads(meta_raw)
-            assert meta['name'] == 'maxagent'
-            assert 'version' in meta
-            assert isinstance(meta['abis'], list) and len(meta['abis']) >= 1
-            assert _CURRENT_ABI in meta['abis']
 
     def test_plaintext_whitelist_preserved_in_cache(self, built_mzp):
         """build_cache 内明文白名单保留为 .py，不被加密。"""

@@ -13,7 +13,7 @@
    c. 对白名单文件运行 Cython → 产出 ``.pyd`` / ``.so``，删除原 .py
    d. 对剩余 .py 运行 PyArmor RFT → 产出加密 .pyc，删除原 .py
    e. 校验：必须保留 __init__.py / reload.py / qt_compat.py 明文
-3. 把 5 个 ``cpXX/`` 子目录、shared/、mzp_install.ms 一起打成
+3. 把 5 个 ``cpXX/`` 子目录、mzp_install.ms 一起打成
    ``dist/maxagent-X.Y.Z.mzp``（实质 zip）
 4. 输出最终路径供分发
 
@@ -41,7 +41,6 @@ from __future__ import absolute_import
 
 import argparse
 import importlib.util
-import json
 import logging
 import os
 import re
@@ -49,7 +48,6 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-import time
 import zipfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -64,7 +62,6 @@ SOURCE_PKG_DIR = REPO_ROOT / 'maxagent'
 # 中间产物 / 最终产物
 BUILD_CACHE_DIR = RELEASE_DIR / 'build_cache'
 DIST_DIR = RELEASE_DIR / 'dist'
-SHARED_DIR = RELEASE_DIR / 'shared'
 
 # 必须保留 .py 明文的文件（相对 maxagent/ 包根）
 KEEP_PLAINTEXT_FILES = (
@@ -525,7 +522,7 @@ def _make_mzp(
     available_abis: Sequence[str],
     dry_run: bool,
 ) -> Path:
-    """将 build_cache/cpXX/ × N + shared/ + mzp_install.ms 打成 mzp。"""
+    """将 build_cache/cpXX/ × N + mzp_install.ms 打成 mzp。"""
     _ensure_dir(DIST_DIR)
     out_path = DIST_DIR / 'maxagent-{}.mzp'.format(version)
 
@@ -538,18 +535,6 @@ def _make_mzp(
 
     LOG.info('打包 mzp: %s', out_path.name)
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        # 写入元数据
-        meta = {
-            'name': 'maxagent',
-            'version': version,
-            'abis': list(available_abis),
-            'built_at': time.strftime('%Y-%m-%d %H:%M:%S %z'),
-        }
-        zf.writestr(
-            'maxagent_release.json',
-            json.dumps(meta, ensure_ascii=False, indent=2),
-        )
-
         # 安装钩子（按 Autodesk mzp 协议组织）
         #
         #   * mzp.run        : 拖入清单文件（指令序列，非 INI），告诉 Max
@@ -615,13 +600,6 @@ def _make_mzp(
                     continue
                 arc = Path('runtime') / abi / f.relative_to(abi_root)
                 zf.write(f, arcname=str(arc).replace('\\', '/'))
-
-        # 共享资源
-        if SHARED_DIR.exists():
-            for f in SHARED_DIR.rglob('*'):
-                if f.is_file():
-                    arc = Path('shared') / f.relative_to(SHARED_DIR)
-                    zf.write(f, arcname=str(arc).replace('\\', '/'))
 
     size_mb = out_path.stat().st_size / 1024 / 1024
     LOG.info('mzp 完成: %s (%.1f MB)', out_path, size_mb)

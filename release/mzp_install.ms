@@ -10,8 +10,8 @@
 --
 -- mzp.run 让 Max 解压 mzp 内容到 (getDir #temp)\<mzp 文件名>\，然后调用
 -- 本脚本（drop 指令指定）。本脚本通过扫 (getDir #temp)\maxagent-*\ 找到
--- 真实解压根目录，再以此为基准定位 sibling 文件（runtime\cpXX\、macros\
--- 、shared\）。不再依赖 installerSource 或 getSourceFileName()——后者实测
+-- 真实解压根目录，再以此为基准定位 sibling 文件（runtime\cpXX\、macros\）。
+-- 不再依赖 installerSource 或 getSourceFileName()——后者实测
 -- 在 Max 2022 CHS 的 drop 上下文里返回空，是上一版"完全没反应"的根因。
 --
 -- 流程（一气呵成，不再拆 install/run 两阶段）：
