@@ -282,6 +282,10 @@ class Message(object):
             n += estimate_tokens(
                 json.dumps(self.tool_calls, ensure_ascii=False),
             )
+        # DeepSeek thinking 模式：reasoning_content 必须随消息回传，
+        # 必须计入预算，否则裁剪后的 messages 实际请求体仍会超 token
+        if self.reasoning_content:
+            n += estimate_tokens(self.reasoning_content)
         # 协议固定字段（role/name/id 等）的固定开销
         n += 4
         return n
