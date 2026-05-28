@@ -233,11 +233,39 @@ def make_rule_approval_callback(parent_widget=None):
 
     返回的回调签名 ``cb(proposal) -> verdict_dict``，
     内部弹出 RuleApprovalDialog 并阻塞等待。
+
+    parent 选取策略：
+        优先使用 Max 主窗口（进程级永生），dock widget 在 Max 中
+        可能被销毁/重建，作为 parent 会导致弹窗 C++ 实例被一并回收，
+        触发 ``RuntimeError: Internal C++ object already deleted``。
+        ``parent_widget`` 仅作为兜底（在非 Max 环境运行测试时使用）。
     """
     def _cb(proposal):
-        dlg = RuleApprovalDialog(proposal, parent=parent_widget)
-        dlg.exec_()
-        return dlg.get_verdict()
+        from ..qt_compat import get_max_main_window
+        parent = get_max_main_window() or parent_widget
+        try:
+            dlg = RuleApprovalDialog(proposal, parent=parent)
+            # 提前取出 verdict 引用，避免 exec_ 阻塞期间被回收后再访问
+            dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
+            dlg.exec_()
+            verdict = dlg.get_verdict()
+            try:
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
+            return verdict
+        except RuntimeError as exc:
+            # PySide 'Internal C++ object already deleted' 防御兜底：
+            # 弹窗在 exec_ 期间因 parent 被销毁连带回收，返回拒绝结果，
+            # 让上游工具收到清晰的"未通过"，不抛异常打断对话流。
+            return {
+                'approved': False,
+                'edited_title': proposal.get('title', '') or '',
+                'edited_content': proposal.get('content', '') or '',
+                'edited_good_example': proposal.get('good_example', '') or '',
+                'edited_bad_example': proposal.get('bad_example', '') or '',
+                'reason': '审批弹窗被中途销毁: {}'.format(exc),
+            }
     return _cb
 
 
