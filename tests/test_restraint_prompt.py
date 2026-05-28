@@ -77,6 +77,83 @@ class TestRestraintPrompt(unittest.TestCase):
         self.assertIn('尼娜', prompt)
 
 
+class TestSpatialCompletionPrinciple(unittest.TestCase):
+    """空间完成原则（规则 11/12/13/14）回归测试。
+
+    确保新规则真正进入 prompt，不会因后续重构被悄悄删掉。
+    """
+
+    def test_rule_11_lists_spatial_verbs(self):
+        """规则 11 必须列举常见的"空间动词/介词"作为触发词。"""
+        prompt = build_default_system_prompt()
+        # 至少覆盖一组方位词和一组对齐动词
+        self.assertIn('上面', prompt)
+        self.assertIn('对齐', prompt)
+        self.assertIn('放到', prompt)
+
+    def test_rule_11_forbids_origin_drop(self):
+        """规则 11 必须显式禁止"创建后留在世界原点"。"""
+        prompt = build_default_system_prompt()
+        # 必须出现"原点"或类似的措辞，让 LLM 知道这是错的
+        self.assertTrue(
+            '原点' in prompt or '(0,0,0)' in prompt or '0,0,0' in prompt,
+            'prompt 应明确禁止把对象留在世界原点 (0,0,0)',
+        )
+
+    def test_rule_11_describes_complete_workflow(self):
+        """规则 11 必须给出完整工作流（查询→创建→对齐→复核）。"""
+        prompt = build_default_system_prompt()
+        # 必须强调先查询再创建（避免凭空摆放）
+        self.assertTrue(
+            'list_scene_objects' in prompt or 'get_object_info' in prompt,
+            'prompt 应引导 LLM 先用查询工具获取参考对象信息',
+        )
+
+    def test_rule_12_handles_ambiguous_reference(self):
+        """规则 12 必须处理"参考对象多候选"消歧。"""
+        prompt = build_default_system_prompt()
+        # 必须提到"多个候选"和"询问"
+        self.assertIn('候选', prompt)
+        self.assertTrue(
+            '询问' in prompt or '是哪一个' in prompt or '是哪个' in prompt,
+            'prompt 应在多候选时引导 LLM 主动询问而非乱猜',
+        )
+
+    def test_rule_13_requires_self_verification(self):
+        """规则 13 必须要求最后一步用查询工具复核。"""
+        prompt = build_default_system_prompt()
+        self.assertIn('复核', prompt)
+        # 应明确禁止只回"已完成"
+        self.assertTrue(
+            '已完成' in prompt or '关键数值' in prompt,
+            'prompt 应要求最终回复包含具体数值，禁止空泛的"已完成"',
+        )
+
+    def test_rule_14_clarifies_boundary_with_rule_8(self):
+        """规则 14 必须澄清空间规则与"字面理解"规则的边界。"""
+        prompt = build_default_system_prompt()
+        # 必须显式说明只有命中空间词才走新流程
+        self.assertTrue(
+            '空间动词' in prompt or '位置词' in prompt,
+            'prompt 应明确只有命中空间动词时才触发摆放工作流',
+        )
+
+    def test_spatial_rules_coexist_with_literal_rules(self):
+        """新旧规则共存：第 8/9/10 条仍在，第 11~14 条也在。"""
+        prompt = build_default_system_prompt()
+        # 旧规则
+        self.assertIn('完成即停', prompt)
+        self.assertIn('最小化', prompt)
+        # 新规则
+        self.assertIn('空间完成原则', prompt)
+        # 二者必须有先后顺序：字面理解在前，空间完成在后
+        idx_literal = prompt.find('字面理解铁律')
+        idx_spatial = prompt.find('空间完成原则')
+        self.assertGreater(idx_literal, 0)
+        self.assertGreater(idx_spatial, idx_literal,
+                           '空间完成原则应排在字面理解铁律之后')
+
+
 class TestHelpDocumentation(unittest.TestCase):
     """帮助页面覆盖新增功能（splitter 锚点 + 字面理解铁律）。"""
 
