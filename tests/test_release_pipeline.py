@@ -397,6 +397,38 @@ class TestBuildPipeline:
             'mzp_install.ms 未通过 callbacks.notificationParam() 取 CuiMenuManager'
         )
 
+        # Max 2025+ 持久化策略：把 cuiRegisterMenus 回调注册脚本物理落盘到
+        # userStartupScripts 目录，让 Max 每次启动自动 fileIn 重新注册回调。
+        # 这是替代之前 SaveConfiguration 方案（会写孤儿 schema 节点）的正确做法。
+        assert '#userStartupScripts' in text, (
+            'mzp_install.ms 缺少 getDir #userStartupScripts——Max 2025+ '
+            '菜单回调脚本必须落盘到 startup 目录才能跨重启持久化'
+        )
+        assert 'MaxAgent_Menu.ms' in text, (
+            'mzp_install.ms 未把回调注册脚本写到 MaxAgent_Menu.ms，'
+            '重启 Max 后菜单不会被重新注册'
+        )
+        # 必须用 utf-8-sig（UTF-8 BOM）编码写 startup 脚本，跟 .mcr 策略一致，
+        # 否则中文菜单标题在英文版 Max 上会乱码
+        assert 'utf-8-sig' in text, (
+            'mzp_install.ms 未用 utf-8-sig 编码写 startup 脚本——'
+            '中英文版 Max 跨语言会乱码'
+        )
+
+        # 反向断言：安装路径不应再调 SaveConfiguration——它会把回调创建的
+        # 动态菜单写成 schema 节点，下次启动还原 schema 时变成悬浮工具条。
+        # 这是上一版"重启后变工具条"的根因，必须由测试锁定不复发。
+        # 卸载路径也不再调 SaveConfiguration（依赖删 startup 脚本来阻止重启复活）
+        # 仅检查非注释行（MaxScript 行注释以 -- 开头），避免误报文档说明
+        non_comment_install = '\n'.join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith('--')
+        )
+        assert 'SaveConfiguration' not in non_comment_install, (
+            'mzp_install.ms 调用了 SaveConfiguration——会把回调动态菜单写成孤儿 '
+            'schema 节点，重启后退化为悬浮工具条。请改走 startup 脚本持久化路径。'
+        )
+
         # 必须有安装方式三选一对话框（菜单 / 仅宏 / 取消）
         assert 'yesNoCancelBox' in text, '缺少安装方式选择对话框'
 
@@ -445,6 +477,31 @@ class TestBuildPipeline:
         assert 'removeItemByPosition' in text, '.mcr 卸载宏未清理主菜单'
         # .mcr 自删除逻辑（避免 ActionTable 残留）
         assert 'deleteFile' in text, '.mcr 卸载宏未删除自身文件'
+
+        # Max 2025+ 卸载必须同步删除 startup 目录的 MaxAgent_Menu.ms，
+        # 否则下次启动 Max 仍会 fileIn 它，重新注册 cuiRegisterMenus 回调，
+        # 导致"卸载后菜单复活"的幽灵菜单 bug。
+        assert '#userStartupScripts' in text, (
+            '.mcr 卸载宏未引用 getDir #userStartupScripts——'
+            '无法清理 startup 目录的回调注册脚本'
+        )
+        assert 'MaxAgent_Menu.ms' in text, (
+            '.mcr 卸载宏未删除 MaxAgent_Menu.ms，下次启动会复活菜单回调'
+        )
+        # 卸载也不应调 SaveConfiguration（不主动改用户的 cui 配置）
+        # 仅检查非注释行（MaxScript 行注释以 -- 开头）
+        non_comment_mcr = '\n'.join(
+            line for line in text.splitlines()
+            if not line.lstrip().startswith('--')
+        )
+        assert 'SaveConfiguration' not in non_comment_mcr, (
+            '.mcr 卸载宏调用了 SaveConfiguration——卸载流程不应改写用户 cui 配置，'
+            '依赖删除 startup 脚本来阻止下次启动复活回调即可'
+        )
+        # 必须移除 cuiRegisterMenus 回调（本会话立即生效）
+        assert 'callbacks.removeScripts' in text, (
+            '.mcr 卸载宏未移除 cuiRegisterMenus 回调，本会话菜单仍会重建'
+        )
 
     def test_install_script_uses_installer_source_first(self, built_mzp):
         """mzp_install.ms 必须用四层 fallback 解析解压目录。

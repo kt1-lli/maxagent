@@ -120,12 +120,23 @@ macroScript MaxAgent_Uninstall
             _py += "        except Exception: pass\n"
 
             -- 2) 同步移除 MaxAgent 主菜单
-            -- Max 2025+ 必须先移除 cuiRegisterMenus 回调，否则 Max 重启
-            -- 加载菜单系统时仍会重新注册出来。当前会话的菜单条目用
-            -- menuMan.removeItemByPosition 移除（这一步在所有版本都管用）。
+            -- Max 2025+ 必须做三件事，缺一不可：
+            --   a) 移除 cuiRegisterMenus 回调（本会话不再重建菜单）
+            --   b) 删除 startup 目录下的 MaxAgent_Menu.ms（下次启动不再注册回调）
+            --   c) 移除当前主菜单条上的 MaxAgent 子菜单（界面立即生效）
+            -- 三步缺任意一步都会留下"幽灵菜单"或"重启复活"。
             try (
                 callbacks.removeScripts id:#MaxAgentMenu
             ) catch ()
+
+            -- 2a) 删除 startup 注册脚本（关键：阻止 Max 下次启动重新注册回调）
+            try (
+                local _startup = getDir #userStartupScripts
+                _startup = trimRight _startup "\\"
+                local _msPath = _startup + "\\MaxAgent_Menu.ms"
+                if doesFileExist _msPath do deleteFile _msPath
+            ) catch ()
+
             try (
                 local _mainMenu = menuMan.getMainMenuBar()
                 if _mainMenu != undefined do (
@@ -141,19 +152,18 @@ macroScript MaxAgent_Uninstall
                 )
             ) catch ()
 
-            -- 2b) Max 2025+ 还需把"MaxAgent 已从 schema 剔除"的状态写盘
-            --     否则即便回调被移除，schema 文件里仍残留 MaxAgent 节点定义，
-            --     重启后菜单系统仍会尝试还原它（变成空菜单或悬浮容器）。
-            --     调一次 LoadConfiguration（触发回调外的标准重建路径，此时
-            --     回调已被 removeScripts 移除，不会再 CreateSubMenu），
-            --     然后 SaveConfiguration 把"无 MaxAgent"的状态落盘。
+            -- 2b) Max 2025+ 触发一次菜单重建，让本会话立即看到 MaxAgent 消失
+            --     注意：不调 SaveConfiguration——回调创建的菜单是动态菜单，
+            --     不属于 schema 层；用户的 cui 配置文件本就不该被卸载流程改动。
+            --     真正的持久化"消失"由步骤 2a 删除 startup 脚本来保证：下次启动
+            --     时 Max 不再 fileIn MaxAgent_Menu.ms，cuiRegisterMenus 回调
+            --     不被注册，MaxAgent 子菜单自然不会出现。
             try (
                 local _mgr = maxOps.GetICuiMenuMgr()
                 if _mgr != undefined do (
                     local _curCfg = _mgr.GetCurrentConfiguration()
                     if _curCfg != undefined and _curCfg != "" do (
                         _mgr.LoadConfiguration _curCfg
-                        _mgr.SaveConfiguration _curCfg
                     )
                 )
             ) catch ()

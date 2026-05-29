@@ -305,56 +305,100 @@ fn _maxagent_modern_menu_script = (
     s
 )
 
--- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 触发一次菜单系统重建 + 写盘持久化
+-- 新版菜单注册（Max 2025+）：注册 cuiRegisterMenus 回调 + 持久化到 startup 脚本
 -- 实现要点：
 --   * 回调内部用 callbacks.notificationParam() 拿 CuiMenuManager，再走新 API
---   * 当前会话立即可见菜单的关键：注册回调后调 ICuiMenuMgr.LoadConfiguration
---     强制 Max 重新加载菜单配置，触发 cuiRegisterMenus 回调
+--   * 当前会话立即可见菜单：执行回调注册脚本 + LoadConfiguration 触发回调
 --   * 重启后菜单仍在主菜单栏（而不是退化成悬浮工具条）的关键：
---     调 SaveConfiguration 把当前 menu schema（含 MaxAgent 节点的归属位置）
---     落到当前活动 cui 配置文件，下次启动菜单系统直接从 schema 还原
---   * 静默失败：写盘失败仅打 ListenerLog，不弹窗——回调本身已注册成功，
---     下次启动至少还能出菜单（即便会以悬浮形态出现，功能可用不阻塞用户）
+--     把回调注册脚本物理落盘到 getDir #userStartupScripts\MaxAgent_Menu.ms
+--     Max 每次启动都会自动 fileIn 该目录下所有 .ms 文件，从而重新注册
+--     cuiRegisterMenus 回调；菜单系统初始化时回调被触发，CreateSubMenu
+--     把 MaxAgent 子菜单挂到主菜单栏。
+--   * 不调 SaveConfiguration：cuiRegisterMenus 回调创建的菜单是"动态菜单"，
+--     SaveConfiguration 反而会把它写成 schema 节点 → 下次启动菜单系统按
+--     schema 还原时找不到回调对应的容器路径，节点退化为悬浮工具条。
+--     这正是上一版方案"重启后变工具条"的根因。
 fn _maxagent_register_menu_modern = (
     local _script = _maxagent_modern_menu_script()
 
-    -- 1) 注册回调（每次菜单系统加载时触发，重启 Max 自动重建）
+    -- 1) 当前会话立即注册回调，让本会话立即出菜单
     --    脚本内部已包含 removeScripts，避免回调重复注册
+    --    （如果上一版残留过 #MaxAgentMenu 回调，这里的 removeScripts 会清掉）
     execute _script
 
-    -- 2) 触发一次菜单重建，让本会话立即出菜单
+    -- 2) 物理落盘：把回调注册脚本写到 startup 目录，重启 Max 自动 fileIn
+    --    getDir #userStartupScripts 解析为 %LOCALAPPDATA%\...\<lang>\scripts\Startup\
+    --    Max 启动时会按字典序自动 fileIn 该目录下所有 .ms / .mcr，
+    --    从而每次启动都重新注册 cuiRegisterMenus 回调，菜单永久可用。
+    --
+    --    编码：必须 UTF-8 BOM（与 .mcr 编码策略一致），原因是 _script 内含
+    --    中文菜单标题（"显示面板"等）。MaxScript 内置 createFile 用系统
+    --    codepage（中文版 GBK / 英文版 1252），跨语言会乱码。改用 Python
+    --    open('w', encoding='utf-8-sig') 字节级落盘，Max fileIn 时按 BOM
+    --    自动识别 UTF-8，所有语言版本都能正确读取中文字面量。
+    --
+    --    传值策略：先 createFile 写一个临时源文件（系统 codepage），再用
+    --    Python 以 mbcs 解码、UTF-8 BOM 重新写入目标 startup 文件。这样
+    --    既绕过 MaxScript→Python 大字符串变量传递的转义难题，又能保证
+    --    最终 startup 脚本是纯净的 UTF-8 BOM 编码。
+    local _persistOk = false
+    try (
+        local _startup = getDir #userStartupScripts
+        _startup = trimRight _startup "\\"
+        local _msPath = _startup + "\\MaxAgent_Menu.ms"
+
+        -- 2a) 先写一个临时 .ms（系统 codepage 编码，本地可读即可）
+        local _tmpPath = _startup + "\\MaxAgent_Menu.ms.tmp"
+        local _f = createFile _tmpPath
+        if _f == undefined then
+            throw "createFile 失败"
+        format "-- MaxAgent 菜单回调注册（由 mzp 安装时自动生成，卸载时自动删除）\n" to:_f
+        format "-- Max 启动时自动 fileIn，重新注册 cuiRegisterMenus 回调\n" to:_f
+        format "-- 不要手动编辑：内容与 mzp_install.ms::_maxagent_modern_menu_script() 同步\n\n" to:_f
+        format "%" _script to:_f
+        close _f
+
+        -- 2b) 用 Python 把临时文件按 mbcs 解码、UTF-8 BOM 重新落盘
+        local _py = ""
+        _py += "import os\n"
+        _py += "_tmp = r'" + _tmpPath + "'\n"
+        _py += "_dst = r'" + _msPath + "'\n"
+        _py += "with open(_tmp, 'rb') as _fh:\n"
+        _py += "    _raw = _fh.read()\n"
+        _py += "try:\n"
+        _py += "    _txt = _raw.decode('mbcs')\n"
+        _py += "except Exception:\n"
+        _py += "    _txt = _raw.decode('utf-8', errors='replace')\n"
+        _py += "with open(_dst, 'w', encoding='utf-8-sig', newline='\\n') as _fh:\n"
+        _py += "    _fh.write(_txt)\n"
+        _py += "try: os.remove(_tmp)\n"
+        _py += "except Exception: pass\n"
+        python.execute _py
+
+        if doesFileExist _msPath do _persistOk = true
+    ) catch (
+        format "[MaxAgent] 写入 startup 脚本失败: %\n" (getCurrentException()) to:listener
+    )
+
+    -- 3) 触发一次菜单重建，让本会话立即出菜单
     --    通过重新加载当前菜单配置来触发 cuiRegisterMenus 回调
-    local _loadOk = false
-    local _curCfg = ""
     try (
         local _mgr = maxOps.GetICuiMenuMgr()
         if _mgr != undefined do (
-            _curCfg = _mgr.GetCurrentConfiguration()
+            local _curCfg = _mgr.GetCurrentConfiguration()
             if _curCfg != undefined and _curCfg != "" do (
                 _mgr.LoadConfiguration _curCfg
-                _loadOk = true
             )
         )
     ) catch (
         format "[MaxAgent] LoadConfiguration 异常: %\n" (getCurrentException()) to:listener
     )
 
-    -- 3) 写盘持久化：把当前内存态菜单（含 MaxAgent 子菜单挂在主菜单栏的位置）
-    --    序列化到当前活动 cui 配置文件。下次启动 Max 时菜单系统从该文件
-    --    还原 schema，MaxAgent 会作为正常子菜单出现在主菜单栏，而非悬浮工具条。
-    --    静默失败：失败仅打 ListenerLog，回调路径仍可作为兜底。
-    if _loadOk and _curCfg != "" do (
-        try (
-            local _mgr2 = maxOps.GetICuiMenuMgr()
-            if _mgr2 != undefined do (
-                _mgr2.SaveConfiguration _curCfg
-            )
-        ) catch (
-            format "[MaxAgent] SaveConfiguration 异常（菜单仍可用，仅持久化失败）: %\n" (getCurrentException()) to:listener
-        )
+    -- 写 startup 失败时打日志提醒，但不弹窗——本会话仍可用，下次启动菜单丢失
+    if not _persistOk do (
+        format "[MaxAgent] ⚠️ 持久化失败，重启 Max 后菜单不会自动恢复\n" to:listener
     )
 
-    -- 即便立即触发失败，回调已注册，下次启动 Max 仍能出菜单
     true
 )
 
