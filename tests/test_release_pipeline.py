@@ -415,6 +415,36 @@ class TestBuildPipeline:
             '中英文版 Max 跨语言会乱码'
         )
 
+        # 关键：startup 脚本必须在 addScript 之后主动调一次 LoadConfiguration
+        # 重发 #cuiRegisterMenus 信号，否则重启后菜单会变成"悬浮工具条"。
+        # 根因：Max 启动时 #cuiRegisterMenus 在 CUI 初始化阶段（早）就发完了，
+        # 而 startup 脚本是在主菜单渲染完成后（晚）才被 fileIn——错过了那一波
+        # 信号，仅注册回调而不重发，子菜单要么不出现，要么被偶发事件触发后
+        # 渲染为悬浮容器（即用户看到的工具条形态）。
+        # 检查 _maxagent_modern_menu_script 生成的脚本片段中包含
+        # GetICuiMenuMgr + LoadConfiguration 调用即可——这两个标识同时
+        # 出现在 _script 字符串拼接里就证明 startup 脚本里有重发信号逻辑。
+        # 取脚本生成段（在 _maxagent_modern_menu_script 函数内部）做检查
+        modern_script_block_start = text.find('fn _maxagent_modern_menu_script')
+        modern_script_block_end = text.find('fn _maxagent_register_menu_modern')
+        assert modern_script_block_start != -1, (
+            '未找到 _maxagent_modern_menu_script 函数定义'
+        )
+        assert modern_script_block_end > modern_script_block_start, (
+            '_maxagent_register_menu_modern 必须位于 modern_menu_script 之后'
+        )
+        modern_script_block = text[modern_script_block_start:modern_script_block_end]
+        assert 'GetICuiMenuMgr' in modern_script_block, (
+            '_maxagent_modern_menu_script 未在生成的 startup 脚本中调用 '
+            'GetICuiMenuMgr——重启后无法主动重发 #cuiRegisterMenus 信号，'
+            '菜单会退化成悬浮工具条'
+        )
+        assert 'LoadConfiguration' in modern_script_block, (
+            '_maxagent_modern_menu_script 未在生成的 startup 脚本中调用 '
+            'LoadConfiguration——重启后 addScript 注册的回调错过启动时序，'
+            '不会重新发出 #cuiRegisterMenus，菜单变成悬浮工具条'
+        )
+
         # 反向断言：安装路径不应再调 SaveConfiguration——它会把回调创建的
         # 动态菜单写成 schema 节点，下次启动还原 schema 时变成悬浮工具条。
         # 这是上一版"重启后变工具条"的根因，必须由测试锁定不复发。

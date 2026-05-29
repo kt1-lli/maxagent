@@ -302,6 +302,31 @@ fn _maxagent_modern_menu_script = (
     s += ")\n"
     s += "callbacks.removeScripts id:#MaxAgentMenu\n"
     s += "callbacks.addScript #cuiRegisterMenus \"_maxagent_cui_menu_cb()\" id:#MaxAgentMenu\n"
+    -- 关键：主动触发一次 LoadConfiguration，让 #cuiRegisterMenus 信号重发
+    --
+    -- 为什么必需：
+    --   Max 启动时序：CUI 初始化 → #cuiRegisterMenus 触发（T2）→ 主菜单渲染 →
+    --   startup 脚本 fileIn（T4）→ 用户可交互。
+    --   本脚本是在 T4 才被 fileIn 的，此刻才 addScript 已经错过了 T2 那一波
+    --   #cuiRegisterMenus 信号，导致菜单不会自动注册到主菜单栏。后续其他
+    --   触发（如停靠改变）虽然会重新触发回调，但菜单系统会把这种"菜单已渲染
+    --   完成后才创建"的子菜单渲染为悬浮容器——这就是用户看到的"悬浮工具条"
+    --   的真正根因。
+    --
+    -- 修复策略：
+    --   addScript 之后立即调 LoadConfiguration，重新加载当前 cui 配置，
+    --   菜单系统会重发一次 #cuiRegisterMenus，此时回调已注册，CreateSubMenu
+    --   挂到主菜单栏，渲染正确。
+    --
+    -- 用 try/catch 包起来：cui 初始化未完成时调用会异常，下一次菜单系统
+    -- 自然事件仍会兜底（虽然渲染位置可能偏，但不至于崩溃）。
+    s += "try (\n"
+    s += "  local _cuiMgr = maxOps.GetICuiMenuMgr()\n"
+    s += "  if _cuiMgr != undefined do (\n"
+    s += "    local _curCfg = _cuiMgr.GetCurrentConfiguration()\n"
+    s += "    if _curCfg != undefined and _curCfg != \"\" do _cuiMgr.LoadConfiguration _curCfg\n"
+    s += "  )\n"
+    s += ") catch ()\n"
     s
 )
 
@@ -310,14 +335,17 @@ fn _maxagent_modern_menu_script = (
 --   * 回调内部用 callbacks.notificationParam() 拿 CuiMenuManager，再走新 API
 --   * 当前会话立即可见菜单：执行回调注册脚本 + LoadConfiguration 触发回调
 --   * 重启后菜单仍在主菜单栏（而不是退化成悬浮工具条）的关键：
---     把回调注册脚本物理落盘到 getDir #userStartupScripts\MaxAgent_Menu.ms
---     Max 每次启动都会自动 fileIn 该目录下所有 .ms 文件，从而重新注册
---     cuiRegisterMenus 回调；菜单系统初始化时回调被触发，CreateSubMenu
---     把 MaxAgent 子菜单挂到主菜单栏。
+--     1) 把回调注册脚本物理落盘到 getDir #userStartupScripts\MaxAgent_Menu.ms
+--     2) 该 startup 脚本内部除了 addScript 外，必须**主动调一次 LoadConfiguration**
+--        重新发出 #cuiRegisterMenus 信号；这是修复"悬浮工具条"的关键。
+--     3) 仅靠 addScript 不够：Max 启动时 #cuiRegisterMenus 信号在 CUI 子系统
+--        初始化阶段（T2）就发完了，而 startup 脚本是在主菜单渲染完成后（T4）
+--        才被 fileIn 的——错过了 T2，仅注册回调而不重发信号，子菜单要么不出现，
+--        要么被后续偶发事件触发后渲染为"悬浮容器"——这就是用户看到的工具条。
 --   * 不调 SaveConfiguration：cuiRegisterMenus 回调创建的菜单是"动态菜单"，
 --     SaveConfiguration 反而会把它写成 schema 节点 → 下次启动菜单系统按
 --     schema 还原时找不到回调对应的容器路径，节点退化为悬浮工具条。
---     这正是上一版方案"重启后变工具条"的根因。
+--     这是更早一版方案的根因（与上面 T2/T4 时序根因不同，是另一种坑）。
 fn _maxagent_register_menu_modern = (
     local _script = _maxagent_modern_menu_script()
 
@@ -381,7 +409,9 @@ fn _maxagent_register_menu_modern = (
     )
 
     -- 3) 触发一次菜单重建，让本会话立即出菜单
-    --    通过重新加载当前菜单配置来触发 cuiRegisterMenus 回调
+    --    脚本内已包含同样的 LoadConfiguration 调用（在 addScript 之后），
+    --    这里再调一次纯属保险冗余——确保即使 execute _script 时机异常，
+    --    本会话也能立即看到菜单。两次调用幂等（GUID 固定，菜单系统按 GUID 去重）。
     try (
         local _mgr = maxOps.GetICuiMenuMgr()
         if _mgr != undefined do (
