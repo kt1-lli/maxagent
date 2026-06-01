@@ -10,6 +10,7 @@
 """
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -26,8 +27,89 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 
+# 网络瞬断重试策略（仅针对"连接尚未建立"或"连接刚建立就被切断"
+# 的可重试场景；流式响应进入正文阶段后断开不重试，避免重复输出）。
+# 退避序列 1s/3s，总额外耗时上限 4s，够覆盖大多数本地软件抖动
+# （VPN/防火墙短暂切包、代理重连等）。
+_NETWORK_RETRY_BACKOFF_SEC = (1.0, 3.0)
+
+
+# Windows 网络错误码 → 用户友好提示映射。
+# 这些都是用户系统层面引发的 socket 中断，不是 LLM 服务端问题。
+# winerror 在 ConnectionAbortedError / ConnectionResetError / OSError 上
+# 都可访问（Python 在 Windows 把这些 errno 一起暴露成 winerror 属性）。
+_WINERR_HINTS = {
+    10053: '本地软件中止了连接（VPN/防火墙/杀毒可能拦截）',
+    10054: '远端强制关闭连接（服务端异常或中转代理断流）',
+    10060: '连接超时（网络不通或服务端响应慢）',
+    10061: '目标主机拒绝连接（端口未监听或服务未启动）',
+    11001: '主机名解析失败（base_url 拼写错误或 DNS 异常）',
+}
+
+
 class LLMError(Exception):
     """LLM 调用相关异常。"""
+
+
+def _winerror_of(exc: BaseException) -> Optional[int]:
+    """从底层 socket / OSError 链路里提取 winerror（仅 Windows 有意义）。
+
+    URLError 把真实 socket 异常包在 ``.reason`` 里；OSError 自身就有
+    ``winerror`` 属性。其他平台返回 None 即可。
+    """
+    # URLError → 解开真实 reason
+    inner = getattr(exc, 'reason', None)
+    if inner is not None and isinstance(inner, BaseException):
+        we = getattr(inner, 'winerror', None)
+        if we:
+            return int(we)
+    we = getattr(exc, 'winerror', None)
+    return int(we) if we else None
+
+
+def _is_retryable_network_error(exc: BaseException) -> bool:
+    """判断网络异常是否值得重试（仅"连接未建立或刚建立就断"的场景）。
+
+    不能盲目重试所有 OSError——例如 ECONNREFUSED（10061）服务端没开，
+    重试也是徒劳；DNS 解析失败也不该重试。这里只覆盖**瞬断**类错误。
+    """
+    we = _winerror_of(exc)
+    # 10053 本地软件中止 / 10054 远端 reset / 10060 connect timeout
+    # 这三类大概率是网络瞬时抖动，重试可能恢复
+    if we in (10053, 10054, 10060):
+        return True
+    # 跨平台兜底：常见的"连接被对端关闭"类异常（Linux/macOS 也算）
+    if isinstance(
+        exc, (ConnectionAbortedError, ConnectionResetError),
+    ):
+        return True
+    # 真实 reason 是 socket.timeout 也算可重试
+    inner = getattr(exc, 'reason', None)
+    if isinstance(inner, socket.timeout):
+        return True
+    if isinstance(exc, socket.timeout):
+        return True
+    return False
+
+
+def _humanize_network_error(exc: BaseException) -> str:
+    """把底层网络异常翻译成用户可读的中文提示。
+
+    返回示例:
+        "网络中断 [WinError 10053]：本地软件中止了连接（VPN/防火墙/
+        杀毒可能拦截）。建议：检查 VPN/代理；或切换其他模型 Profile 重试"
+    """
+    we = _winerror_of(exc)
+    if we and we in _WINERR_HINTS:
+        return (
+            '网络中断 [WinError {code}]：{hint}。'
+            '建议：① 检查 VPN/代理/防火墙是否拦截了 LLM 端口；'
+            '② 切换其他模型 Profile 重试；'
+            '③ 若 base_url 是公司网关，确认网关是否限流'
+        ).format(code=we, hint=_WINERR_HINTS[we])
+    # 非 Windows 或未知错误码，回退到原始 reason 字符串
+    inner = getattr(exc, 'reason', exc)
+    return '网络错误: {}'.format(inner)
 
 
 def _format_http_error(exc: "urllib.error.HTTPError", url: str) -> str:
@@ -282,23 +364,50 @@ class LLMClient(object):
         headers: Dict[str, str],
         body: bytes,
     ) -> Dict[str, Any]:
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        t0 = time.time()
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                raw = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            logger.warning(
-                'HTTP %s blocking failed in %.2fs: %s',
-                self._model, time.time() - t0, exc.code,
+        # 重试策略：仅对"连接尚未拿到响应体"的瞬断错误重试。
+        # 一旦 urlopen 返回（即开始读 raw），网络抖动会被 read() 抛出，
+        # 那时已经无法重试（不知道服务端是否已扣额度），交给上层处理。
+        attempts = (None,) + _NETWORK_RETRY_BACKOFF_SEC  # (首次, 1s, 3s)
+        last_exc: Optional[BaseException] = None
+        for attempt_idx, backoff in enumerate(attempts):
+            if backoff is not None:
+                logger.info(
+                    'HTTP blocking retry attempt %d after %.1fs backoff '
+                    '(prev error: %s)',
+                    attempt_idx, backoff, last_exc,
+                )
+                time.sleep(backoff)
+            req = urllib.request.Request(
+                url, data=body, headers=headers, method="POST",
             )
-            raise LLMError(_format_http_error(exc, url))
-        except urllib.error.URLError as exc:
-            logger.warning(
-                'Network error blocking in %.2fs: %s',
-                time.time() - t0, exc.reason,
-            )
-            raise LLMError("网络错误: {}".format(exc.reason))
+            t0 = time.time()
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=self._timeout,
+                ) as resp:
+                    raw = resp.read().decode("utf-8")
+                break  # 成功则跳出重试循环
+            except urllib.error.HTTPError as exc:
+                # HTTP 4xx/5xx 不重试（这是服务端业务错误，不是网络抖动）
+                logger.warning(
+                    'HTTP %s blocking failed in %.2fs: %s',
+                    self._model, time.time() - t0, exc.code,
+                )
+                raise LLMError(_format_http_error(exc, url))
+            except urllib.error.URLError as exc:
+                last_exc = exc
+                logger.warning(
+                    'Network error blocking in %.2fs: %s',
+                    time.time() - t0, exc.reason,
+                )
+                # 末次仍失败 → 抛友好错误
+                if attempt_idx == len(attempts) - 1:
+                    raise LLMError(_humanize_network_error(exc))
+                # 非可重试错误也直接抛
+                if not _is_retryable_network_error(exc):
+                    raise LLMError(_humanize_network_error(exc))
+                # 可重试 → 进入下一轮 backoff
+                continue
         if logger.isEnabledFor(10):
             logger.debug(
                 'HTTP blocking ok in %.2fs body=%dB',
@@ -329,7 +438,8 @@ class LLMClient(object):
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """SSE 流式读取，按需回调文本片段，最终聚合成统一返回结构。"""
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        # 注：req 在 urlopen 重试循环里按需重建（urllib Request 对象不允许
+        # 复用已发出的实例），所以不在这里预先构造。
         content_chunks: List[str] = []
         # DeepSeek thinking 模式：reasoning_content 也是分片到达，
         # 必须按 chunk 累积成完整字符串供下一轮回传给 API
@@ -340,16 +450,47 @@ class LLMClient(object):
         usage_buf: Dict[str, int] = {}
 
         try:
-            resp = urllib.request.urlopen(req, timeout=self._timeout)
-        except urllib.error.HTTPError as exc:
-            raise LLMError(_format_http_error(exc, url))
-        except urllib.error.URLError as exc:
-            raise LLMError("网络错误: {}".format(exc.reason))
+            attempts = (None,) + _NETWORK_RETRY_BACKOFF_SEC
+            last_exc: Optional[BaseException] = None
+            resp = None
+            for attempt_idx, backoff in enumerate(attempts):
+                if backoff is not None:
+                    logger.info(
+                        'HTTP stream retry attempt %d after %.1fs backoff '
+                        '(prev error: %s)',
+                        attempt_idx, backoff, last_exc,
+                    )
+                    time.sleep(backoff)
+                # 每次重试都重建 Request（urllib 不允许复用已发送过的对象）
+                req_attempt = urllib.request.Request(
+                    url, data=body, headers=headers, method="POST",
+                )
+                try:
+                    resp = urllib.request.urlopen(
+                        req_attempt, timeout=self._timeout,
+                    )
+                    break
+                except urllib.error.HTTPError as exc:
+                    raise LLMError(_format_http_error(exc, url))
+                except urllib.error.URLError as exc:
+                    last_exc = exc
+                    if attempt_idx == len(attempts) - 1:
+                        raise LLMError(_humanize_network_error(exc))
+                    if not _is_retryable_network_error(exc):
+                        raise LLMError(_humanize_network_error(exc))
+                    continue
+        except LLMError:
+            raise
+        # 兜底（理论上不会触达——上面循环要么 break 要么 raise）
+        if resp is None:
+            raise LLMError('网络错误: 未能建立连接')
 
         if logger.isEnabledFor(10):
             logger.debug('HTTP stream connected to %s', url)
 
         cancelled = False
+        # 标志：流式正文阶段是否被网络异常中断（用于错误信息和上层处理）
+        stream_aborted: Optional[BaseException] = None
         try:
             for line in self._iter_sse_lines(resp, cancel_check):
                 # 每行检查一次取消
@@ -418,6 +559,26 @@ class LLMClient(object):
                 fr = choices[0].get("finish_reason")
                 if fr:
                     finish_reason = fr
+        except (
+            ConnectionAbortedError,
+            ConnectionResetError,
+            socket.timeout,
+            urllib.error.URLError,
+            OSError,
+        ) as exc:
+            # 流式正文阶段被网络中断：不重试（重试会让 LLM 重复输出已发的部分，
+            # 而且服务端可能已扣额度）。把已收到的 content/reasoning/tool_calls
+            # 当作"被截断的回复"返回，让 worker 拿到部分结果继续。
+            # 内容若已有产出则按 length 截断处理，让上层把它视为正常的
+            # 短回复结束（不再二次报错）；内容为空才抛错让用户感知问题。
+            stream_aborted = exc
+            logger.warning(
+                'HTTP stream aborted mid-body: %s; '
+                'collected content=%d chars reasoning=%d chars tool_buf=%d',
+                exc, sum(len(c) for c in content_chunks),
+                sum(len(c) for c in reasoning_chunks),
+                len(tool_buf),
+            )
         finally:
             try:
                 resp.close()
@@ -426,6 +587,13 @@ class LLMClient(object):
 
         if cancelled:
             raise LLMError("用户取消")
+
+        # 流被中断且未收到任何字节：抛友好错误（让用户知道 LLM 完全没回复）
+        if (stream_aborted is not None
+                and not content_chunks
+                and not reasoning_chunks
+                and not tool_buf):
+            raise LLMError(_humanize_network_error(stream_aborted))
 
         # 把累积的 tool_calls.arguments 解析成 dict
         tool_calls: List[Dict[str, Any]] = []
@@ -448,7 +616,12 @@ class LLMClient(object):
             "content": "".join(content_chunks),
             "reasoning_content": "".join(reasoning_chunks),
             "tool_calls": tool_calls,
-            "finish_reason": finish_reason or "stop",
+            # 被网络中断截断的回复明确标记 length（业务上等同于"被截短"），
+            # 上层 worker 可以正常处理已收文本，无需特殊路径。
+            "finish_reason": (
+                finish_reason
+                or ('length' if stream_aborted is not None else 'stop')
+            ),
             "usage": dict(usage_buf),
             "raw": None,
         }

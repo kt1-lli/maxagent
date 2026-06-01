@@ -14,7 +14,10 @@ from maxagent.llm_client import (
     LLMClient,
     LLMError,
     _format_http_error,
+    _humanize_network_error,
+    _is_retryable_network_error,
     _sanitize_base_url,
+    _winerror_of,
     diagnose_base_url,
 )
 
@@ -144,3 +147,71 @@ class TestLLMClientInit:
     def test_get_last_usage_initial_empty(self):
         c = LLMClient(base_url='http://x', api_key='', model='m')
         assert c.get_last_usage() == {}
+
+
+class TestNetworkErrorClassification:
+    """锁定 WinError 10053 等瞬断网络错误的分类与友好提示。
+
+    背景：Max 内 LLM 调用偶发 'WinError 10053 你的主机中的软件中止了
+    一个已建立的连接'，根因多为 VPN/防火墙/代理切包。修复策略是：
+    1. 把这类 socket 异常识别为可重试错误（_is_retryable_network_error）
+    2. 把 winerror 编号翻译成中文可读提示（_humanize_network_error）
+    3. 安装在 _chat_blocking / _chat_stream 的 urlopen 重试循环中
+    本套测试锁定上述函数的语义，防止后续重构误删。
+    """
+
+    def _fake_oserror_with_winerror(self, code):
+        """构造一个真实的 OSError 并设置 winerror 属性（跨平台兼容）。"""
+        exc = OSError(code, 'fake msg')
+        # winerror 在非 Windows 上不会自动赋值；测试里手动塞入
+        try:
+            exc.winerror = code
+        except AttributeError:
+            # Python 3.x 下 OSError.winerror 在某些平台是只读 slot；
+            # 这种环境下退而求其次：跳过该断言（测试在 Windows 上会有效）
+            pytest.skip('winerror is not writable on this platform')
+        return exc
+
+    def test_winerror_of_extracts_from_oserror(self):
+        exc = self._fake_oserror_with_winerror(10053)
+        assert _winerror_of(exc) == 10053
+
+    def test_winerror_of_returns_none_for_plain_value_error(self):
+        assert _winerror_of(ValueError('x')) is None
+
+    def test_is_retryable_for_winerror_10053(self):
+        exc = self._fake_oserror_with_winerror(10053)
+        assert _is_retryable_network_error(exc) is True
+
+    def test_is_retryable_for_winerror_10054(self):
+        exc = self._fake_oserror_with_winerror(10054)
+        assert _is_retryable_network_error(exc) is True
+
+    def test_is_retryable_false_for_dns_failure(self):
+        # 11001 / 11004 是 DNS 解析失败，重试也是徒劳，不应重试
+        exc = self._fake_oserror_with_winerror(11001)
+        assert _is_retryable_network_error(exc) is False
+
+    def test_is_retryable_for_pure_connection_aborted(self):
+        # 不带 winerror 的 ConnectionAbortedError（Linux/macOS）也算可重试
+        assert _is_retryable_network_error(
+            ConnectionAbortedError('reset by peer'),
+        ) is True
+        assert _is_retryable_network_error(
+            ConnectionResetError('reset'),
+        ) is True
+
+    def test_humanize_winerror_10053(self):
+        exc = self._fake_oserror_with_winerror(10053)
+        msg = _humanize_network_error(exc)
+        # 用户能从提示里看出 winerror 编号 + 中文说明 + 排查建议
+        assert 'WinError 10053' in msg
+        assert 'VPN' in msg or '防火墙' in msg
+        assert '建议' in msg
+
+    def test_humanize_unknown_error_falls_back_to_reason(self):
+        # 没有 winerror 的普通错误：不能崩，至少把 reason/原文带出来
+        exc = ValueError('some random reason')
+        msg = _humanize_network_error(exc)
+        assert '网络错误' in msg
+        assert 'random reason' in msg
