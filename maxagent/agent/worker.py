@@ -41,6 +41,13 @@ from ..tools import build_openai_tools_schema
 from ..tools import ToolDispatcher
 from ..tools import ToolExecutionError
 from .conversation import Conversation
+from .scene_snapshot import build_scene_snapshot
+from .scene_snapshot import snapshot_to_prompt_text
+from .task_context import get_task_prompt
+from .task_context import TaskContextManager
+from ..macro_recorder import MacroRecorder
+from ..session_memory import get_session_memory_mgr
+from ..summarization_checkpoint import ContextCompressor
 
 
 QObject = QtCore.QObject
@@ -130,6 +137,26 @@ class AgentWorker(QObject):
         self._sys_addon_provider = None  # type: Optional[Any]
         # 当前轮的用户输入（供 sys_addon_provider 用于触发词匹配）
         self._current_user_input = ''
+        # 任务情景记忆：跨轮次持久化用户核心意图，防止 LLM 在工具调用
+        # 间隙丢失上下文或偏离主线。纯内存，会话结束自动清空。
+        self._task_ctx = TaskContextManager()  # type: TaskContextManager
+
+        # ---------- 会话级操作回放 (Macro Recorder) ----------
+        self._macro_recorder = MacroRecorder()  # type: MacroRecorder
+
+        # ---------- 智能上下文压缩 (Summarization Checkpoint) ----------
+        self._context_compressor = ContextCompressor(
+            llm_client=self._llm,
+        )  # type: ContextCompressor
+        # 标记本轮是否已触发过自动压缩（每轮对话仅一次）
+        self._compress_triggered = False
+
+        # ---------- 跨会话持久化学习 (Session Memory) ----------
+        self._session_memory_mgr = get_session_memory_mgr()
+        # 将 session memory 作为 system prompt 附加提供者
+        # 与外部 provider 合并：本类原有的 _sys_addon_provider 保持不变，
+        # 只是在需要时把 memory addon 也拼接进去。
+        self._external_sys_addon_provider = None  # type: Optional[Any]
 
         # 工具过滤回调：签名 (tool_name: str) -> bool；返回 False 时该工具
         # 不会被纳入本轮 LLM 的 tools schema，相当于"本轮临时屏蔽"。
@@ -180,11 +207,36 @@ class AgentWorker(QObject):
     def set_system_prompt_addon_provider(self, provider):
         """注入额外 system prompt 提供者。
 
+        内部会将外部 provider 与 SessionMemory 自动合并——
+        每轮调用时先取 session_memory 的 addon，再追加外部 provider
+        的 addon（如果有），因此外部调用方无需感知 memory 注入逻辑。
+
         :param provider: 可调用对象，签名 ``provider(user_input: str) -> str``
             在每轮 LLM 调用前被调用，返回拼到 system 消息末尾的额外文本。
             返回空字符串则不附加。
         """
-        self._sys_addon_provider = provider
+        self._external_sys_addon_provider = provider
+
+        def _merged_provider(user_input):
+            parts = []
+            # 1) session memory addon（跨会话持久化学习）
+            try:
+                mem_addon = self._session_memory_mgr.get_system_prompt_addon()
+            except Exception:  # pylint: disable=broad-except
+                mem_addon = ''
+            if mem_addon:
+                parts.append(mem_addon)
+            # 2) 外部自定义 addon
+            if self._external_sys_addon_provider is not None:
+                try:
+                    ext_addon = self._external_sys_addon_provider(user_input)
+                except Exception:  # pylint: disable=broad-except
+                    ext_addon = ''
+                if ext_addon:
+                    parts.append(ext_addon)
+            return '\n'.join(parts)
+
+        self._sys_addon_provider = _merged_provider
 
     def set_tools_filter(self, filter_func):
         """注入工具过滤回调。
@@ -383,6 +435,10 @@ class AgentWorker(QObject):
         if not skip_add_user:
             self._conv.add_user(user_input)
 
+        # 任务解析：基于用户输入自动创建 MissionCard，帮助 LLM 在
+        # 多轮工具调用中保持主线不偏离。
+        self._parse_and_set_mission_card(user_input or '')
+
         thread = QThread()
         # 1. worker 移到子线程：之后 worker 的 @Slot 在 QueuedConnection 下
         #    会被 thread 的事件循环调度执行
@@ -403,6 +459,105 @@ class AgentWorker(QObject):
         # 4. thread 启动后才能 emit；emit 时 worker 的 affinity 已是子线程，
         #    Qt 会把这次调用排到子线程事件循环
         self._start_requested.emit()
+
+    # ------------------------------------------------------------------ #
+    # 任务解析与任务卡管理
+    # ------------------------------------------------------------------ #
+    def _parse_and_set_mission_card(self, user_input):
+        # type: (str) -> None
+        """基于用户输入解析任务意图，自动创建/更新 MissionCard。
+
+        解析规则（覆盖常见场景）：
+        - 创建 + 空间定位 → mission="create_and_place"
+        - 仅创建（无位置词）→ mission="create"
+        - 修改属性 → mission="modify"
+        - 查询信息 → mission="query"
+        - 布局/排列 → mission="layout"
+        """
+        text = (user_input or '').strip()
+        if not text:
+            return
+
+        import re
+
+        # 空间关系词表
+        spatial_keywords = [
+            '上', '上面', '顶上', '下', '下面', '底下',
+            '里', '里面', '内部', '外', '外面', '旁边',
+            '周围', '中间', '中央', '放到', '放在', '摆到',
+            '贴到', '嵌入', '对齐', '居中', '吸附',
+        ]
+        # 创建动词
+        create_keywords = ['创建', '新建', '建立一个', '做一个', '生成',
+                           '添加', '放', '摆']
+        # 修改动词
+        modify_keywords = ['改', '修改', '调整', '设置', '变', '换']
+        # 查询动词
+        query_keywords = ['查', '看看', '有什么', '在哪里', '多少',
+                          '列出', '显示']
+        # 布局动词
+        layout_keywords = ['排成', '排列', '阵列', '围绕', '环绕',
+                           '等距', '分布']
+
+        has_spatial = any(kw in text for kw in spatial_keywords)
+        has_create = any(kw in text for kw in create_keywords)
+        has_modify = any(kw in text for kw in modify_keywords)
+        has_query = any(kw in text for kw in query_keywords)
+        has_layout = any(kw in text for kw in layout_keywords)
+
+        # 提取参考对象名：常见模式 "{对象}上" / "在 {对象}"
+        ref_obj = ''
+        ref_patterns = [
+            r'在\s*([A-Za-z0-9_\u4e00-\u9fa5]+(?:\s*\d+)*)\s*(?:上|上面|里|里面)',
+            r'([A-Za-z0-9_\u4e00-\u9fa5]+(?:\s*\d+)*)\s*(?:上|上面|里|里面)',
+            r'(?:放到|放在|摆到|对齐)\s*([A-Za-z0-9_\u4e00-\u9fa5]+(?:\s*\d+)*)',
+        ]
+        for pat in ref_patterns:
+            m = re.search(pat, text)
+            if m:
+                ref_obj = m.group(1).strip()
+                break
+
+        # 确定任务类型
+        if has_layout:
+            mission = 'layout'
+            total_steps = 3
+        elif has_create and has_spatial:
+            mission = 'create_and_place'
+            total_steps = 4
+        elif has_create:
+            mission = 'create'
+            total_steps = 1
+        elif has_modify:
+            mission = 'modify'
+            total_steps = 2
+        elif has_query:
+            mission = 'query'
+            total_steps = 1
+        else:
+            # 无法识别，清空旧任务卡（避免残留误导）
+            self._task_ctx.clear()
+            return
+
+        # 提取目标对象（简单启发式：创建类取对象类型，修改类取名称）
+        target_obj = ''
+        if has_create:
+            obj_types = ['球', '盒子', '立方体', '茶壶', '圆柱',
+                         '圆锥', '平面', '圆环', '管状体',
+                         'sphere', 'box', 'teapot', 'cylinder',
+                         'cone', 'plane', 'torus', 'tube']
+            for ot in obj_types:
+                if ot in text.lower():
+                    target_obj = ot
+                    break
+
+        self._task_ctx.create(
+            mission=mission,
+            target_object=target_obj,
+            reference_object=ref_obj,
+            spatial_relation='on_top' if '上' in text or '顶' in text else '',
+            total_steps=total_steps,
+        )
 
     # ------------------------------------------------------------------ #
     # 子线程：核心 LLM + 工具循环
@@ -476,6 +631,20 @@ class AgentWorker(QObject):
                     ),
                 )
 
+            # 场景快照注入（B4）：每 3 轮采集一次场景真实状态，
+            # 作为 "锚点" 校正 LLM 的空间推理，减少因记忆漂移导致的
+            # 位置/对象状态幻觉。跳过第 1 轮（场景尚未改变）
+            if loop_idx > 0 and loop_idx % 3 == 0:
+                snap = build_scene_snapshot(self._sync_tool_runner)
+                snap_text = snapshot_to_prompt_text(snap)
+                if snap_text:
+                    self._conv.add_system_note(snap_text)
+                    if logger.isEnabledFor(10):
+                        logger.debug(
+                            'Scene snapshot injected at loop=%d',
+                            loop_idx + 1,
+                        )
+
             messages = self._conv.to_openai_messages()
             # 每轮 LLM 调用前按 token 预算裁剪历史
             # 通用策略：保护 system + 最近 4 条 + tool_call 配对
@@ -494,10 +663,49 @@ class AgentWorker(QObject):
                         )
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.warning('trim_to_token_budget 异常: %s', exc)
+
+            # 自动上下文压缩检查
+            if not self._compress_triggered and self._context_compressor is not None:
+                try:
+                    all_msgs = self._conv.to_openai_messages()
+                    from ..summarization_checkpoint import recommend_auto_compress
+                    should_compress, cur_tks, threshold = recommend_auto_compress(
+                        all_msgs,
+                        model_id=getattr(self._llm, '_model', '') or '',
+                        base_url=getattr(self._llm, '_base_url', '') or '',
+                    )
+                    if should_compress:
+                        self._compress_triggered = True
+                        checkpoint, removed = self._context_compressor.compress(
+                            all_msgs, keep_recent=4,
+                        )
+                        if removed > 0:
+                            self._conv.insert_summary_checkpoint(checkpoint)
+                            messages = self._conv.to_openai_messages()
+                            logger.info(
+                                '自动压缩历史: removed=%d threshold=%d',
+                                removed, threshold,
+                            )
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning('自动压缩检查异常: %s', exc)
+
             # 多模态附件合并：把 user 消息的图片附件按视觉协议拼进
             # content（不支持视觉时降级为纯文本提示）。必须在 token
             # 裁剪之后做——裁剪走的是文本估算，图片 base64 不参与。
             messages = self._apply_attachments(messages)
+            # 注入任务情景记忆：若有未完成任务，将任务卡追加到
+            # 最后一条 user message 中作为上下文锚点。
+            task_prompt = get_task_prompt(self._task_ctx)
+            if task_prompt and messages:
+                # 找到最后一条 user message，在前面追加任务卡
+                for idx in range(len(messages) - 1, -1, -1):
+                    if messages[idx].get('role') == 'user':
+                        orig = messages[idx].get('content') or ''
+                        messages[idx] = {
+                            'role': 'user',
+                            'content': task_prompt + '\n\n---\n\n' + orig,
+                        }
+                        break
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
                 try:
@@ -517,6 +725,25 @@ class AgentWorker(QObject):
                     messages.insert(
                         0, {'role': 'system', 'content': addon},
                     )
+            # reasoning_mode 预计算：供下方 DeepSeek 引导和 LLM 调用共用
+            reasoning_mode = tools_schema is not None and len(tools_schema) > 0
+            # DeepSeek thinking 引导：对支持 reasoning 的 DeepSeek 模型，
+            # 在 system prompt 末尾追加 "请充分思考" 的轻量提示，促使模型
+            # 在工具规划轮次生成更完整的 reasoning_content，减少空间任务
+            # 中的位置计算错误。
+            model_name = getattr(self._llm, '_model', '') or ''
+            if 'deepseek' in model_name.lower() and reasoning_mode:
+                think_guide = (
+                    '\n【💡 提示：当前支持深度思考模式，请在规划工具调用时'
+                    '充分利用 reasoning 能力，详细分析空间位置和参数关系，'
+                    '确保工具参数准确无误后再执行。】'
+                )
+                if messages and messages[0].get('role') == 'system':
+                    base = messages[0].get('content') or ''
+                    messages[0] = {
+                        'role': 'system',
+                        'content': base + think_guide,
+                    }
             try:
                 self.status_changed.emit(
                     '正在请求 LLM 推理…（流式输出，首字可能需几秒）',
@@ -536,12 +763,15 @@ class AgentWorker(QObject):
                         len(messages),
                         len(tools_schema or []),
                     )
+                # reasoning_mode=True：工具调用/规划轮次锁定低温度 0.1，
+                # 减少参数幻觉和过度联想；最终回复轮次（无 tools）保持原温度
                 resp = self._llm.chat(
                     messages=messages,
                     tools=tools_schema,
                     stream=True,
                     on_delta=self._on_text_chunk,
                     cancel_check=self._cancel_event.is_set,
+                    reasoning_mode=reasoning_mode,
                 )
                 # DEBUG 埋点：本轮流式收尾统计
                 if self._llm_call_started_ts > 0:
@@ -634,6 +864,12 @@ class AgentWorker(QObject):
 
             # 没有工具调用 → 整轮结束
             if not tool_calls:
+                try:
+                    self._session_memory_mgr.learn_from_session(
+                        self._conv, session_id=getattr(self, '_session_id', '') or '',
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning('Session memory 学习异常: %s', exc)
                 self.finished.emit()
                 return
 
@@ -643,6 +879,13 @@ class AgentWorker(QObject):
                     self.failed.emit('用户取消')
                     return
                 self._exec_one_tool_call(tc)
+
+            # 任务卡推进：每完成一批工具调用，推进任务步骤
+            if self._task_ctx.is_active():
+                self._task_ctx.advance_step()
+                # 若任务已完成，清空任务卡避免残留
+                if not self._task_ctx.is_active():
+                    self._task_ctx.complete()
 
             # 第一批工具执行完成后注入"完成即停"软提示（每轮对话仅一次）：
             # 防止 LLM 看到工具成功结果后产生"既然能创建球，那再顺便
@@ -689,6 +932,12 @@ class AgentWorker(QObject):
                 continue
 
         # 超过最大轮数仍未结束：发 failed 但保留对话，让用户能看到已完成的部分
+        try:
+            self._session_memory_mgr.learn_from_session(
+                self._conv, session_id=getattr(self, '_session_id', '') or '',
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('Session memory 学习异常: %s', exc)
         self.failed.emit(
             '⚠️ 工具调用已达到最大轮数 {} 轮，已暂停。\n\n'
             '当前轮内已执行的工具结果已经保留在对话历史里，'
@@ -751,6 +1000,13 @@ class AgentWorker(QObject):
                 'tool': name,
             }
 
+        # 自动状态复核（D1）：对修改类工具，把复核信息直接融入 result，
+        # 让 LLM 在下一轮能立刻看到"预期 vs 实际"对比。
+        if ok and self._sync_tool_runner is not None:
+            verify_info = self._auto_verify_tool_result(name, args, result)
+            if verify_info:
+                result_dict['__verification__'] = verify_info
+
         # 把结果序列化成字符串塞回 conversation（OpenAI 协议要求 content 是字符串）
         content_str = self._safe_json_dumps(result_dict)
         self._conv.add_tool_result(
@@ -759,6 +1015,94 @@ class AgentWorker(QObject):
             content=content_str,
         )
         self.tool_finished.emit(name, ok, content_str, call_id)
+        self._macro_recorder.record(name, args, ok)
+
+    # ------------------------------------------------------------------ #
+    # 自动状态复核
+    # ------------------------------------------------------------------ #
+    def _auto_verify_tool_result(self, tool_name, args, result):
+        # type: (str, Dict[str, Any], Any) -> Optional[Dict[str, Any]]
+        """对修改类工具执行后查询真实状态进行对比。
+
+        :param tool_name: 工具名
+        :param args: 工具参数
+        :param result: 工具返回结果
+        :returns: 复核信息 dict 或 None（不需要复核时）
+        """
+        # 仅对影响场景状态的工具执行复核
+        stateful_prefixes = (
+            'create_',
+            'modify_',
+            'set_',
+            'move_',
+            'delete_',
+            'apply_',
+        )
+        if not tool_name.startswith(stateful_prefixes):
+            return None
+
+        # 提取对象名：优先从 tools_schema 的参数映射，或者从 result 中推断
+        target_name = ''  # type: str
+        if isinstance(args, dict):
+            # 常见参数名映射
+            for key in ('name', 'object_name', 'target', 'node_name'):
+                val = args.get(key)
+                if val and isinstance(val, str):
+                    target_name = val
+                    break
+        if not target_name and isinstance(result, dict):
+            # result 中可能返回了创建的对象名
+            target_name = result.get('name') or ''
+
+        if not target_name:
+            # 无法确定对象名，无法进行复核
+            return None
+
+        try:
+            # 通过主线程执行器查询对象真实状态
+            verify_result = self._sync_tool_runner(
+                'get_object_info',
+                {'name': target_name},
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            return {
+                'target': target_name,
+                'status': 'query_failed',
+                'error': str(exc),
+            }
+
+        # 处理结果
+        if isinstance(verify_result, dict) and verify_result.get('ok'):
+            info = verify_result.get('result', {})
+            if info.get('found'):
+                return {
+                    'target': target_name,
+                    'status': 'verified',
+                    'current_position': info.get('position'),
+                    'current_rotation': info.get('rotation'),
+                    'current_scale': info.get('scale'),
+                    'current_material': info.get('material'),
+                    'note': (
+                        '以上为此对象执行 {} 后的真实状态。'
+                        '请对比你的预期值，若有偏差请修正。'.format(
+                            tool_name,
+                        )
+                    ),
+                }
+            else:
+                return {
+                    'target': target_name,
+                    'status': 'not_found',
+                    'note': (
+                        '复核时未找到对象 {}，可能已被删除或重命名。'
+                        .format(target_name)
+                    ),
+                }
+        return {
+            'target': target_name,
+            'status': 'query_error',
+            'raw': verify_result,
+        }
 
     # ------------------------------------------------------------------ #
     # 工具/辅助

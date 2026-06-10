@@ -162,7 +162,14 @@ class ToolDispatcher(object):
 
         # 3. 序列化兜底：保证返回值可被 json.dumps
         t_ser = time.time()
+
+        # D3：工具返回结果增强——对 create_ 类工具，自动附加新对象的
+        # 简要摘要（位置、包围盒中心），让 LLM 无需额外查询就能确认
+        # 空间状态，减少 "创建后位置未知" 的幻觉。
         safe = _safe_serialize(result)
+        if tool_name.startswith('create_') and isinstance(safe, dict):
+            safe = _enrich_create_result(safe)
+
         out = {"ok": True, "result": safe}
         stages["serialize"] = (time.time() - t_ser) * 1000
 
@@ -467,3 +474,61 @@ def _summarize_result(out, max_chars=300):
             return "str[{}]: {}...".format(len(res), res[:max_chars])
         return "str: {}".format(res)
     return "{}={}".format(type(res).__name__, str(res)[:max_chars])
+
+
+def _enrich_create_result(result):
+    # type: (Dict[str, Any]) -> Dict[str, Any]
+    """对 create_* 工具的返回结果附加对象摘要。
+
+    利用 pymxs 在主线程中已经执行完毕的优势，直接查询刚创建对象的
+    关键属性（位置、包围盒），减少 LLM 下一轮 "get_object_info"
+    的额外调用。
+
+    :param result: 原始工具返回 dict（含 "name" 键）
+    :returns: 增强后的 dict（附加 "position" / "bounding_box" 等）
+    """
+    name = result.get('name', '')
+    if not name:
+        return result
+
+    try:
+        from pymxs import runtime as rt  # type: ignore[import]
+        obj = rt.getNodeByName(name, exact=True, all=False)
+        if obj is None:
+            return result
+
+        # 位置（世界坐标）
+        pos = obj.pos
+        result['position'] = [float(pos.x), float(pos.y), float(pos.z)]
+
+        # 包围盒最小/最大点（世界坐标）
+        try:
+            bb_min = rt.point3()
+            bb_max = rt.point3()
+            rt.worldBoundingBox(obj, bb_min, bb_max)
+            result['bounding_box'] = {
+                'min': [float(bb_min.x), float(bb_min.y), float(bb_min.z)],
+                'max': [float(bb_max.x), float(bb_max.y), float(bb_max.z)],
+            }
+            # 中心点 = (min + max) / 2
+            result['center'] = [
+                (float(bb_min.x) + float(bb_max.x)) / 2.0,
+                (float(bb_min.y) + float(bb_max.y)) / 2.0,
+                (float(bb_min.z) + float(bb_max.z)) / 2.0,
+            ]
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        # 材质名（如有）
+        try:
+            mat = obj.material
+            if mat is not None:
+                result['material'] = str(mat.name)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    except Exception:  # pylint: disable=broad-except
+        # 任何异常都不应阻塞主路径
+        pass
+
+    return result

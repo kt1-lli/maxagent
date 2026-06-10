@@ -82,6 +82,35 @@ MAX_BASIC_KNOWLEDGE = """\
    4. `select obj` 会清旧选择；保留旧选择用 `selectMore obj`
    5. `rotate eulerAngles X Y Z` 中 X/Y/Z 是**度**不是弧度
    6. animate / at time 必须用 with 包裹（pymxs.animate(True)）
+
+🧩 子对象层级（Sub-Object Level）：
+   - Editable_Mesh / Poly / Spline / Patch 都有子对象模式：
+     1=Vertex, 2=Edge, 3=Border(仅Poly), 4=Face/Polygon, 5=Element
+   - 进入子对象模式：`subObjectLevel = 4`；退出：`subObjectLevel = 0`
+   - 子对象操作只影响选中的顶点/边/面，其余部分保持不动。
+   - 面操作常用：extrude / inset / bridge / connect / chamfer / weld
+
+🎬 动画基础：
+   - 时间单位是帧（frame），`animationRange` 定义起止帧。
+   - `sliderTime` 当前帧；`at time f` 在指定帧执行操作。
+   - 关键帧：`addNewKey obj.pos.controller f` 在 f 帧打位置关键帧。
+   - 控制器类型：Position_XYZ / Euler_XYZ / Bezier_Float 等。
+   - `with animate(True)` 包裹的代码会**自动打关键帧**。
+
+🎯 Selection 与子物体操作：
+   - `selection` 当前选中的节点数组；`$` 选中的第一个节点。
+   - `selection as array` 转数组遍历；`selectMore` 追加选择。
+   - 子物体选择（进入子对象模式后）：`obj.selectedVertices` 等。
+   - 按名称选：`select (getNodeByName "Box01")`。
+   - 按类过滤：`for o in objects where classOf o == Box do selectMore o`。
+
+🌐 全局层级操作：
+   - `objects` 场景中所有节点；`geometry` 几何体；`lights` 灯光；
+     `cameras` 相机；`helpers` 辅助对象。
+   - `hide obj` / `unhide obj`；`freeze obj` / `unfreeze obj`。
+   - 层（Layer）：`LayerManager.getLayer(0)` 默认层；
+     `newLayer = LayerManager.newLayerFromName("myLayer")`。
+   - 组（Group）：`group objects name:"MyGroup"`；解组 `ungroup objs`。
 ==============================================================
 """
 

@@ -282,15 +282,19 @@ class LLMClient(object):
         stream: bool = False,
         on_delta: Optional[Callable[[str], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        reasoning_mode: bool = False,
     ) -> Dict[str, Any]:
         """发起一次 chat completion 调用。
 
         :param messages: OpenAI 格式的消息列表
         :param tools:    OpenAI tools 列表（function calling）；为 None 表示不开 tools
+        :param temperature: 基础温度；当 reasoning_mode=True 时自动降至 0.1
         :param stream:   是否流式
         :param on_delta: 流式模式下每收到一个文本片段时的回调
         :param cancel_check: 流式期间的取消检查回调，返回 True 时立刻关闭
             连接并抛 ``LLMError('用户取消')``，让 worker 能快速跟手停下来。
+        :param reasoning_mode: 是否为"思考/规划"轮次（工具调用前）。
+            True 时 temperature 锁定 0.1，提升工具参数确定性。
         :returns: 一个标准化的 dict：
                   {
                       "content": "文本内容（可能为空）",
@@ -303,10 +307,13 @@ class LLMClient(object):
                       "raw": <原始响应>,
                   }
         """
+        # Temperature 分层：reasoning / 工具调用轮次用更低温度
+        # 减少参数幻觉和过度联想；最终回复轮次保持用户设定温度
+        effective_temp = 0.1 if reasoning_mode else temperature
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": effective_temp,
             "stream": stream,
         }
         # max_tokens <= 0 表示「由模型决定」（UI 设置中的特殊值），
@@ -319,6 +326,12 @@ class LLMClient(object):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        # DeepSeek 增强：本客户端已在 _chat_stream / _chat_blocking 中
+        # 完整支持 reasoning_content 的收集与回传（见 reasoning_chunks
+        # 处理逻辑）。对于支持 thinking 的模型（如 deepseek-reasoner），
+        # 服务端会自动返回 <think>...</think>  reasoning_content；
+        # 我们将其保留在 assistant message 中传给下一轮，确保思考链
+        # 连续性。无需额外参数控制——模型名本身决定 thinking 行为。
         # 流式模式下额外要 usage 字段（DeepSeek/OpenAI 都支持这个 option，
         # 不支持的后端会忽略）
         if stream:
