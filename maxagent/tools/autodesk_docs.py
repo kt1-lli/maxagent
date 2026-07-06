@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Autodesk 官方 Knowledge MCP 工具（限定 3ds Max 作用域）。
+
+注册一个 LLM 可调用的工具：
+
+- ``autodesk_max_docs``：把用户的问题转发给 Autodesk 官方 Knowledge MCP
+  （``https://developer.api.autodesk.com/knowledge/public/v1/mcp``），只查
+  3ds Max 相关文档并返回结果文本。
+
+为什么单独暴露给 LLM 而不是内联到 web_search？
+==============================================
+- Autodesk Knowledge 是权威一手来源，回答 "3ds Max 里 xxx 参数怎么用 /
+  某接口/宏怎么写" 这类问题时应优先调用；
+- 通用联网搜索经常返回论坛、二手翻译，噪声大且未必是最新版本；
+- 独立工具让 LLM 在 tool 选择阶段就能看到"这是 Autodesk 官方"，
+  从而在需要准确答案时优先命中它。
+
+运行线程
+========
+纯 HTTP 请求，不涉及 pymxs，因此 ``run_on_main_thread=False`` 放子线程执行。
+"""
+
+from __future__ import absolute_import
+from __future__ import print_function
+
+from ..autodesk_mcp import search_max_knowledge
+from ..logger import get_logger
+from .registry import tool
+
+
+logger = get_logger(__name__)
+
+
+@tool(
+    name='autodesk_max_docs',
+    description=(
+        'Autodesk 官方 3ds Max 知识库检索：当你需要 3ds Max 的权威、最新、'
+        '一手文档（MAXScript / pymxs / 参数说明 / SDK / 版本行为差异等）时'
+        '优先调用此工具，而不是通用联网搜索。'
+        '\n\n'
+        '本工具连接 Autodesk 官方 Knowledge MCP 端点，作用域已强制限定为 3ds Max，'
+        '不会返回 Maya / Revit 等其它产品线的内容。'
+        '\n\n'
+        '调用时把用户的问题浓缩为 1~2 句关键词组合（英文命中率更高，中文也可）。'
+        '不要把整段无关背景塞进 query。'
+    ),
+    category='web',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def autodesk_max_docs(query, timeout=15.0):
+    """检索 Autodesk 官方 3ds Max 文档。
+
+    :param query: 检索关键词（自然语言，会被自动加上 "3ds Max:" 前缀）
+    :param timeout: HTTP 超时秒数（默认 15）
+    """
+    q = (query or '').strip()
+    if not q:
+        return {'ok': False, 'error': 'query 不能为空', 'text': ''}
+    try:
+        t = float(timeout) if timeout is not None else 15.0
+    except (TypeError, ValueError):
+        t = 15.0
+    t = max(3.0, min(60.0, t))
+    result = search_max_knowledge(q, timeout=t)
+    if not result.get('ok'):
+        logger.debug('autodesk_max_docs 调用失败: %s', result.get('error'))
+    return result
+
+
+__all__ = ['autodesk_max_docs']

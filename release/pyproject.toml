@@ -1,27 +1,20 @@
 # pyproject.toml —— 发布流水线的构建依赖与工具配置
 #
-# 仅服务于 release/build.py 的打包流程，
-# 不影响 maxagent/ 包在运行时的依赖（运行时零外部依赖）。
+# 开源版打包流水线只需要标准库（zipfile / shutil），不再依赖
+# Cython / PyArmor 等三方构建工具。此文件保留是为了：
+#   1. 让 release/ 目录在 uv / pip 等工具眼里是一个"合法的、什么都不装"的项目
+#      （避免 flat-layout 自动发现把 build_cache/ 当成包）
+#   2. 记录一份"发布流水线的元数据"（版本号来源、mzp 安装钩子路径等），
+#      便于 CI/构建脚本读取。
 
 [build-system]
-requires = [
-    "setuptools>=68",
-    "wheel",
-    "cython>=3.0.11",
-]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# 注意：本 pyproject.toml 仅用于声明"打包流水线"自身的构建依赖
-# （Cython / PyArmor / wheel / setuptools），release 目录本身**不作为可安装包**分发。
-# 真实版本号定义在 release/version.py，由 build.py 读取注入到 mzp 产物。
-#
-# 下方 [tool.setuptools] 显式 packages=[] / py-modules=[] 是为了告诉 setuptools
-# “请不要自动发现 release/ 下的 build_cache/ 等子目录作为顶层包”。
-# 否则 uv add / uv run 会在 editable install 阶段触发 flat-layout 多包冲突。
 [project]
 name = "maxagent-release"
 version = "0.0.0"
-description = "MaxAgent release pipeline (Cython + PyArmor + mzp)"
+description = "MaxAgent 开源版打包流水线（源码直出 mzp）"
 readme = "README.md"
 requires-python = ">=3.7"
 license = "MIT"
@@ -36,34 +29,12 @@ py-modules = []
 [tool.maxagent-release]
 # 单一版本号源
 version_file = "version.py"
-# Cython 白名单
-cython_listfile = "cython_modules.txt"
-# PyArmor 配置
-pyarmor_config = "pyarmor_config.toml"
 # 安装钩子
 mzp_install_script = "mzp_install.ms"
 # 中间产物 / 最终产物
 build_cache_dir = "build_cache"
 dist_dir = "dist"
 
-# Cython 编译指令（默认应用于所有白名单文件）
-[tool.maxagent-release.cython_directives]
-language_level = 3
-binding = true
-embedsignature = true
-boundscheck = false
-wraparound = false
-cdivision = true
-# 关闭文档字符串嵌入以减小 .pyd 体积（同时减少 prompt 文本泄漏面）
-docstrings = false
-# 开发期可改 true 方便调试，正式发布必须 false
-linetrace = false
-
-# 哪些 ABI 必须构建
+# 哪些 ABI 需要打进 mzp（供 mzp_install.ms 按 Max 的 Python 版本挑选）
 [tool.maxagent-release.abi_matrix]
 required = ["cp37", "cp39", "cp310", "cp311", "cp313"]
-# 当本地无对应 Python 时是否跳过（CI 必须 false，本地开发可 true）
-allow_skip_missing = true
-
-# 开发期辅助：build.py --quick 时只构建一个 ABI 加快迭代
-quick_abi = "cp311"
