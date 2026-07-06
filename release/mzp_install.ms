@@ -11,11 +11,12 @@
 --
 -- 兼容范围: 3ds Max 2022 / 2023 / 2024 / 2025 / 2025.1 / 2026 / 2027
 --           Python 3.7 / 3.9 / 3.10 / 3.11 / 3.13
+--
+-- 开源版：单份纯 Python 源码放在 runtime\maxagent\，不再按 ABI 分目录。
 -- ----------------------------------------------------------------------
 
 global g_maxagent_mzp_root
 global g_maxagent_install_dir
-global g_maxagent_supported_abis = #("cp37", "cp39", "cp310", "cp311", "cp313")
 global g_maxagent_menu_name = "MaxAgent"
 global g_maxagent_macro_category = "MaxAgent"
 
@@ -87,27 +88,6 @@ fn _maxagent_resolve_mzp_root = (
     if rootDir == undefined or rootDir == "" do return undefined
     rootDir = trimRight rootDir "\\"
     rootDir
-)
-
--- 探测当前 Max 内嵌 Python 的小版本，返回如 "cp311" 的字符串
---
---   _sys = Python.Import "sys"
---   _vi  = _sys.version_info
---   pyTag = "cp" + (_vi.major as integer as string) + (_vi.minor as integer as string)
---
--- 失败时返回 undefined，调用方负责给出诊断弹窗。
-fn _maxagent_detect_python_abi = (
-    local pyTag = undefined
-    try (
-        local _sys = Python.Import "sys"
-        local _vi = _sys.version_info
-        local _major = _vi.major as integer
-        local _minor = _vi.minor as integer
-        pyTag = "cp" + (_major as string) + (_minor as string)
-    ) catch (
-        pyTag = undefined
-    )
-    pyTag
 )
 
 -- 计算用户级安装目录: %LOCALAPPDATA%\Autodesk\3dsMax\<MaxVer>\<lang>\scripts\maxagent
@@ -513,32 +493,13 @@ fn maxagent_mzp_install = (
         return false
     )
 
-    local abi = _maxagent_detect_python_abi()
-    if abi == undefined then (
-        local msg = "❌ 无法探测 Python 版本（Python.Import \"sys\" 调用失败）\n\n"
-        msg += "请把以下信息反馈给开发者：\n"
-        msg += "  • 3ds Max 版本: " + (maxVersion())[1] as string + "\n"
-        msg += "  • 系统语言目录: " + getDir #userScripts
-        messagebox msg title:"MaxAgent 安装失败"
-        return false
-    )
-    if findItem g_maxagent_supported_abis abi == 0 then (
-        local msg = "❌ 不支持的 Python 版本: " + abi + "\n\n"
-        msg += "MaxAgent 0.4 系列支持: 3ds Max 2022~2027\n"
-        msg += "对应 Python: 3.7 / 3.9 / 3.10 / 3.11 / 3.13"
-        messagebox msg title:"MaxAgent 安装失败"
-        return false
-    )
-
-    local srcPkg = (g_maxagent_mzp_root + "\\runtime\\" + abi + "\\maxagent")
+    local srcPkg = (g_maxagent_mzp_root + "\\runtime\\maxagent")
     -- 用 MaxScript 原生 doesDirectoryExist 判存在性。
-    -- 注意：之前用 getDirectories(srcPkg + "\\") 是错的——getDirectories 的
-    -- 参数是 **glob 模式**，传叶子目录路径会因为目录内"没有子目录"而返回
-    -- 空数组，触发"缺少产物"误报。实际 runtime\cpXX\maxagent\ 里只有
-    -- .py/.pyc/.pyd 文件，没有子目录，必然命中这个坑。
+    -- 注意：runtime\maxagent\ 里只有 .py 文件，getDirectories 返回空数组
+    -- 会误报缺失，所以这里直接用 doesDirectoryExist + doesFileExist 兜底。
     local _pkgInit = srcPkg + "\\__init__.py"
     if not (doesDirectoryExist srcPkg) or not (doesFileExist _pkgInit) then (
-        local _msg = "❌ mzp 内缺少 " + abi + " 产物，请下载完整版本\n\n"
+        local _msg = "❌ mzp 内缺少 runtime\\maxagent\\ 产物，请重新下载完整包\n\n"
         _msg += "查找路径:\n" + srcPkg + "\n\n"
         _msg += "存在性检查:\n"
         _msg += "  • 目录: " + ((doesDirectoryExist srcPkg) as string) + "\n"
@@ -600,12 +561,12 @@ fn maxagent_mzp_install = (
     -- 6) 显示最终结果
     local _final = ""
     if _panelOk then (
-        _final = "✅ MaxAgent 安装成功 (" + abi + ")\n\n"
+        _final = "✅ MaxAgent 安装成功\n\n"
         _final += "安装目录:\n" + installDir + "\n\n"
         _final += _entryDesc + "\n\n"
         _final += "💡 面板已弹出。下次启动 Max 时，菜单/宏会自动加载。"
     ) else (
-        _final = "⚠️ MaxAgent 已安装，但面板自动弹出失败 (" + abi + ")\n\n"
+        _final = "⚠️ MaxAgent 已安装，但面板自动弹出失败\n\n"
         _final += "安装目录:\n" + installDir + "\n\n"
         _final += _entryDesc + "\n\n"
         _final += "异常信息:\n" + _panelErr + "\n\n"
