@@ -247,7 +247,7 @@ class _ChatRenderer(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # 底部追加（在 stretch 之前）
     # ------------------------------------------------------------------ #
-    def _append(self, widget):
+    def _append(self, widget, force_scroll=False):
         # 去掉末尾 stretch -> 加 widget -> 重新加 stretch
         # 直接 insertWidget 到倒数第二（stretch 是最后一个 item）
         idx = self._layout.count() - 1
@@ -265,8 +265,16 @@ class _ChatRenderer(QtCore.QObject):
                     apply(vw)
                 except Exception:  # pylint: disable=broad-except
                     pass
-        if was_at_bottom:
+        if force_scroll or was_at_bottom:
+            # 强制场景（如用户主动发送）需要多帧兜底：
+            # 立刻一次 + 下一帧一次 + 30ms 后一次，确保
+            # markdown 渲染 / 图片附件加载 / 布局伸展完成后
+            # 仍能停在底部。
+            self._scroll_to_bottom()
             QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+            if force_scroll:
+                QtCore.QTimer.singleShot(30, self._scroll_to_bottom)
+                QtCore.QTimer.singleShot(120, self._scroll_to_bottom)
 
     def _is_at_bottom(self):
         bar = self._scroll.verticalScrollBar()
@@ -320,14 +328,16 @@ class _ChatRenderer(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def add_user(self, text, attachments=None):
         self._close_streaming_if_any()
-        self._append(_UserBubble(text, attachments=attachments))
+        # 用户主动发送 = 显式意图，无条件滚到底部（即使此前在翻历史）
+        self._append(_UserBubble(text, attachments=attachments), force_scroll=True)
 
     def add_assistant_start(self):
         """开始一段助手回复气泡，后续 chunk 会增量追加。"""
         self._close_streaming_if_any()
         bubble = _StreamingAssistantBubble(employee=self._current_employee())
         self._streaming = bubble
-        self._append(bubble)
+        # 助手气泡紧跟在用户消息之后，同样强制贴底
+        self._append(bubble, force_scroll=True)
 
     def add_assistant_chunk(self, chunk):
         if self._streaming is None:
