@@ -1,39 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""MaxAgent 打包入口（开源版：源码直接打包）。
+"""MaxAgent 打包入口（开源版：源码直出 mzp）。
 
-去掉了 Cython / PyArmor / py_compile 保护，直接把 ``maxagent/``
-以纯源码形式复制到 ``release/build_cache/`` 下，最终打包成
-``release/dist/maxagent-X.Y.Z.mzp``。
-
-用法
-====
-::
-
-    python release/build.py                     # 完整流程（复制源码 + 打包）
-    python release/build.py --version 1.2.3     # 同时更新 version.py
-    python release/build.py --pack-only         # 仅重新打包（复用已有 build_cache）
-    python release/build.py --dry-run           # 只打印计划
-    python release/build.py --verbose           # 详细日志
-
-产物结构
-========
-::
+不做 Cython / PyArmor / py_compile，也不再按 ABI 分目录。产物结构::
 
     dist/maxagent-X.Y.Z.mzp
       ├── mzp.run
       ├── mzp_install.ms
       ├── macros/MaxAgent-Macros.mcr
-      └── runtime/
-          ├── cp37/maxagent/...    # 各 ABI 目录内容完全一致（纯 .py）
-          ├── cp39/maxagent/...
-          ├── cp310/maxagent/...
-          ├── cp311/maxagent/...
-          └── cp313/maxagent/...
+      └── runtime/maxagent/...        # 单份纯 .py 源码
 
-之所以仍然按 ABI 分目录，是为了兼容 ``mzp_install.ms`` 的既有查找路径
-``runtime\\cpXX\\maxagent\\``；纯源码分发场景下多份副本几乎不占空间
-（zip 压缩后重复内容会被高效压缩）。
+用法::
+
+    python release/build.py                     # 完整流程（复制源码 + 打包）
+    python release/build.py --version 1.2.3     # 同时更新 version.py
+    python release/build.py --pack-only         # 仅重新打包（复用 build_cache/）
+    python release/build.py --dry-run           # 只打印计划
+    python release/build.py --verbose
 """
 
 from __future__ import absolute_import
@@ -46,7 +29,7 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 
 # 本脚本所在目录 = release/
@@ -57,6 +40,7 @@ REPO_ROOT = RELEASE_DIR.parent
 SOURCE_PKG_DIR = REPO_ROOT / 'maxagent'
 # 中间产物 / 最终产物
 BUILD_CACHE_DIR = RELEASE_DIR / 'build_cache'
+STAGE_PKG_DIR = BUILD_CACHE_DIR / 'maxagent'
 DIST_DIR = RELEASE_DIR / 'dist'
 
 
@@ -86,14 +70,6 @@ def _load_version_module():
 
 def _ensure_dir(path: Path) -> Path:
     """确保目录存在并返回它。"""
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _clean_dir(path: Path) -> Path:
-    """如果存在先删除再创建（保证全新目录）。"""
-    if path.exists():
-        shutil.rmtree(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -143,6 +119,8 @@ def _bump_version(new_version: str) -> None:
 def _sync_pkg_init_version(snapshot_pkg_dir: Path, version: str) -> None:
     """同步 maxagent 副本的 __init__.py 中的 __version__（不动源码）。"""
     init_py = snapshot_pkg_dir / '__init__.py'
+    if not init_py.exists():
+        return
     text = init_py.read_text(encoding='utf-8')
     new_text, count = re.subn(
         r"__version__\s*=\s*'[^']*'",
@@ -155,46 +133,83 @@ def _sync_pkg_init_version(snapshot_pkg_dir: Path, version: str) -> None:
         LOG.debug('snapshot __init__.py 同步版本号 -> %s', version)
 
 
-# -------------------------- 单 ABI 目录填充（纯拷贝） --------------------------
+# -------------------------- 源码 stage --------------------------
 
 
-def _build_one_abi(abi: str, version: str, dry_run: bool) -> Path:
-    """在 build_cache/<abi>/maxagent/ 下放一份源码副本。
-
-    开源版不再做任何编译或加密，所有 ABI 目录内容一致。之所以仍
-    保留 ABI 目录分层，是为了兼容 ``mzp_install.ms`` 从
-    ``runtime\\cpXX\\maxagent\\`` 定位产物的历史约定，同时给未来
-    如果重新引入 ABI 相关产物留出扩展位。
-    """
+def _stage_source(version: str, dry_run: bool) -> Path:
+    """把 maxagent/ 复制到 build_cache/maxagent/，写入版本号。"""
     LOG.info('=' * 60)
-    LOG.info('准备 ABI 目录: %s (version=%s)', abi, version)
+    LOG.info('准备源码 stage: %s (version=%s)', STAGE_PKG_DIR, version)
     LOG.info('=' * 60)
-    abi_root = BUILD_CACHE_DIR / abi
     if dry_run:
-        LOG.info('[dry-run][%s] 将复制 %s -> %s/maxagent', abi, SOURCE_PKG_DIR, abi_root)
-        return abi_root
-    _clean_dir(abi_root)
-    snapshot_pkg = abi_root / 'maxagent'
-    _copy_pkg_snapshot(snapshot_pkg)
-    _sync_pkg_init_version(snapshot_pkg, version)
-    LOG.info('[%s] 完成，产物在 %s', abi, snapshot_pkg)
-    return abi_root
+        LOG.info('[dry-run] 将复制 %s -> %s', SOURCE_PKG_DIR, STAGE_PKG_DIR)
+        return STAGE_PKG_DIR
+    _ensure_dir(BUILD_CACHE_DIR)
+    _copy_pkg_snapshot(STAGE_PKG_DIR)
+    _sync_pkg_init_version(STAGE_PKG_DIR, version)
+    LOG.info('源码 stage 完成，产物在 %s', STAGE_PKG_DIR)
+    return STAGE_PKG_DIR
 
 
 # -------------------------- mzp 打包 --------------------------
 
 
-def _make_mzp(
-    version: str,
-    available_abis: Sequence[str],
-    dry_run: bool,
-) -> Path:
-    """将 build_cache/cpXX/ × N + mzp_install.ms 打成 mzp。"""
+def _write_mzp_run(zf: zipfile.ZipFile) -> None:
+    """写入 mzp.run（Windows CRLF）。"""
+    # mzp.run 是 Autodesk mzp 拖入清单，Max 严格按行解析。若为 LF
+    # 会被误当作单行 → 退化到"运行第一个文件"启发式，行为不可控。
+    # 无论源仓库里是 LF 还是 CRLF，打包时都强制统一为 CRLF。
+    src = RELEASE_DIR / 'mzp.run'
+    if not src.exists():
+        LOG.warning('mzp.run 缺失 -> Max 会退化到启发式解析')
+        return
+    raw = src.read_bytes()
+    normalized = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+    zf.writestr('mzp.run', normalized.replace(b'\n', b'\r\n'))
+
+
+def _write_install_script(zf: zipfile.ZipFile) -> None:
+    src = RELEASE_DIR / 'mzp_install.ms'
+    if src.exists():
+        zf.write(src, arcname='mzp_install.ms')
+    else:
+        LOG.warning('mzp_install.ms 缺失 -> mzp 完全无法自动安装')
+
+
+def _write_macros(zf: zipfile.ZipFile) -> None:
+    macros_src = RELEASE_DIR / 'macros'
+    if not macros_src.is_dir():
+        LOG.warning('release/macros/ 缺失，mzp 内将无 .mcr 文件')
+        return
+    for f in macros_src.rglob('*'):
+        if not f.is_file():
+            continue
+        arc = Path('macros') / f.relative_to(macros_src)
+        zf.write(f, arcname=arc.as_posix())
+
+
+def _write_runtime(zf: zipfile.ZipFile) -> int:
+    """写入 runtime/maxagent/*，返回打入的文件数。"""
+    if not STAGE_PKG_DIR.is_dir():
+        LOG.error('stage 目录不存在: %s', STAGE_PKG_DIR)
+        return 0
+    n = 0
+    for f in STAGE_PKG_DIR.rglob('*'):
+        if not f.is_file():
+            continue
+        arc = Path('runtime') / 'maxagent' / f.relative_to(STAGE_PKG_DIR)
+        zf.write(f, arcname=arc.as_posix())
+        n += 1
+    return n
+
+
+def _make_mzp(version: str, dry_run: bool) -> Path:
+    """打包最终 mzp。"""
     _ensure_dir(DIST_DIR)
     out_path = DIST_DIR / 'maxagent-{}.mzp'.format(version)
 
     if dry_run:
-        LOG.info('[dry-run] 将生成 %s，含 ABIs: %s', out_path, list(available_abis))
+        LOG.info('[dry-run] 将生成 %s', out_path)
         return out_path
 
     if out_path.exists():
@@ -202,83 +217,25 @@ def _make_mzp(
 
     LOG.info('打包 mzp: %s', out_path.name)
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        # 安装钩子（按 Autodesk mzp 协议组织）
-        #
-        #   * mzp.run        : 拖入清单文件（指令序列，非 INI），告诉 Max
-        #                       拖入时如何解压、执行哪个 dropScript。
-        #   * mzp_install.ms : 唯一的 dropScript——拷贝产物 / 注册宏 /
-        #                      注册菜单 / 最后拉起 AI 面板，全部一次完成。
-        #
-        # 关键约束：
-        #   * mzp.run 必须用 Windows CRLF 换行（INI 风格被 Max 严格按行
-        #     解析，Unix LF 会让 Max 把整个文件当作一行解释失败 → 退化到
-        #     "运行第一个文件"启发式 → 进而失败）。即使源仓库里的 mzp.run
-        #     是 LF，打包时也要在 zip 字节流里强制改成 CRLF。
-        #
-        # 参考: https://help.autodesk.com/view/MAXDEV/2027/ENU/?guid=GUID-35559C6A
-        mzp_run_src = RELEASE_DIR / 'mzp.run'
-        if mzp_run_src.exists():
-            raw = mzp_run_src.read_bytes()
-            normalized = raw.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
-            crlf_bytes = normalized.replace(b'\n', b'\r\n')
-            zf.writestr('mzp.run', crlf_bytes)
-        else:
-            LOG.warning('mzp.run 缺失 -> Max 会退化到启发式解析，行为不可控')
-
-        install_src = RELEASE_DIR / 'mzp_install.ms'
-        if install_src.exists():
-            zf.write(install_src, arcname='mzp_install.ms')
-        else:
-            LOG.warning('mzp_install.ms 缺失 -> mzp 完全无法自动安装')
-
-        # 预打包的 macroScript 文件（UTF-8 BOM .mcr）
-        macros_src = RELEASE_DIR / 'macros'
-        if macros_src.is_dir():
-            for f in macros_src.rglob('*'):
-                if f.is_file():
-                    arc = Path('macros') / f.relative_to(macros_src)
-                    zf.write(f, arcname=str(arc).replace('\\', '/'))
-        else:
-            LOG.warning('release/macros/ 目录缺失，mzp 内将无 .mcr 文件，宏注册会失败')
-
-        # 各 ABI 产物（纯 .py 源码）
-        for abi in available_abis:
-            abi_root = BUILD_CACHE_DIR / abi
-            for f in abi_root.rglob('*'):
-                if not f.is_file():
-                    continue
-                arc = Path('runtime') / abi / f.relative_to(abi_root)
-                zf.write(f, arcname=str(arc).replace('\\', '/'))
+        _write_mzp_run(zf)
+        _write_install_script(zf)
+        _write_macros(zf)
+        n = _write_runtime(zf)
+        LOG.info('  runtime/maxagent/ 打入 %d 个文件', n)
 
     size_mb = out_path.stat().st_size / 1024 / 1024
-    LOG.info('mzp 完成: %s (%.1f MB)', out_path, size_mb)
+    LOG.info('mzp 完成: %s (%.2f MB)', out_path, size_mb)
     return out_path
 
 
 # -------------------------- 主入口 --------------------------
 
 
-def _resolve_abis(
-    args_abis: Optional[List[str]], supported: Sequence[str],
-) -> List[str]:
-    """解析最终要构建的 ABI 列表。"""
-    if args_abis:
-        unknown = [a for a in args_abis if a not in supported]
-        if unknown:
-            raise ValueError(
-                '未知 ABI: {}，支持: {}'.format(unknown, list(supported))
-            )
-        return list(args_abis)
-    return list(supported)
-
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description='MaxAgent 一键打包（开源版）')
     parser.add_argument('--version', help='覆盖 release/version.py 中的版本号', default=None)
-    parser.add_argument('--abis', nargs='+',
-                        help='指定 ABI 列表（如 cp311 cp313），默认全部 supported ABI')
     parser.add_argument('--pack-only', action='store_true',
-                        help='仅打包：跳过复制源码，直接用 build_cache/ 现有产物聚合 mzp')
+                        help='仅打包：跳过复制源码，直接用 build_cache/maxagent/ 现有产物')
     parser.add_argument('--dry-run', action='store_true', help='仅打印计划不执行')
     parser.add_argument('--verbose', '-v', action='store_true')
     args = parser.parse_args(argv)
@@ -290,57 +247,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _bump_version(args.version)
     version_mod = _load_version_module()
     version: str = version_mod.__version__
-    supported_abis: Tuple[str, ...] = version_mod.SUPPORTED_ABIS
     LOG.info('版本号: %s', version)
 
-    # 2) 决定要构建的 ABI
-    abis = _resolve_abis(args.abis, supported_abis)
-    LOG.info('目标 ABIs: %s', abis)
-
-    # 3) 检查源包目录
+    # 2) 检查源包目录
     if not SOURCE_PKG_DIR.exists():
         LOG.error('源包目录不存在: %s', SOURCE_PKG_DIR)
         return 2
 
-    # 4) 准备 build_cache / dist
     _ensure_dir(BUILD_CACHE_DIR)
     _ensure_dir(DIST_DIR)
 
-    # --pack-only 短路：跳过复制，直接打包
+    # 3) 复制或复用 stage
     if args.pack_only:
-        LOG.info('--pack-only 模式：跳过复制源码，直接打包')
-        existing_abis: List[str] = []
-        for abi in abis:
-            abi_dir = BUILD_CACHE_DIR / abi
-            pkg_dir = abi_dir / 'maxagent'
-            if pkg_dir.is_dir():
-                existing_abis.append(abi)
-                LOG.info('[%s] 检测到已有产物: %s', abi, pkg_dir)
-            else:
-                LOG.warning('[%s] build_cache 中未找到 maxagent 包，跳过', abi)
-        if not existing_abis and not args.dry_run:
-            LOG.error('--pack-only 模式下 build_cache/ 内没有任何 ABI 产物')
+        LOG.info('--pack-only 模式：跳过复制源码')
+        if not STAGE_PKG_DIR.is_dir() and not args.dry_run:
+            LOG.error('build_cache/maxagent 不存在，无法 --pack-only')
             return 5
-        _make_mzp(version, existing_abis, args.dry_run)
-        LOG.info('打包完成 ✅')
-        return 0
-
-    # 5) 逐 ABI 复制源码
-    built_abis: List[str] = []
-    for abi in abis:
+    else:
         try:
-            _build_one_abi(abi, version, args.dry_run)
-            built_abis.append(abi)
+            _stage_source(version, args.dry_run)
         except Exception as exc:  # pylint: disable=broad-except
-            LOG.exception('[%s] 复制失败: %s', abi, exc)
+            LOG.exception('复制源码失败: %s', exc)
             return 3
 
-    # 6) 打包 mzp
-    if not built_abis and not args.dry_run:
-        LOG.error('没有任何 ABI 产物，跳过 mzp 打包')
-        return 4
-    _make_mzp(version, built_abis or list(abis), args.dry_run)
-
+    # 4) 打包 mzp
+    _make_mzp(version, args.dry_run)
     LOG.info('全部完成 ✅')
     return 0
 
