@@ -335,14 +335,15 @@ def pick_search_tool(client):
     return next(iter(tools.values()))
 
 
-def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE):
-    # type: (Optional[Dict[str, Any]], str, str) -> Dict[str, Any]
-    """按远端工具的 inputSchema 尽量把 query + 3ds Max 作用域 + locale 塞进合适字段。
+def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE, limit=None):
+    # type: (Optional[Dict[str, Any]], str, str, Optional[int]) -> Dict[str, Any]
+    """按远端工具的 inputSchema 尽量把 query + 3ds Max 作用域 + locale + limit 塞进合适字段。
 
     - ``schema`` 一般形如 ``{"type": "object", "properties": {...}, "required": [...]}``
     - 常见 query 字段名：query / q / question / text / prompt
     - 常见 scope 字段名：product / products / filter / scope / domain
     - 常见 locale 字段名：locale / language / lang / hl
+    - 常见 limit 字段名：limit / top_k / topK / max_results / maxResults / count / size / n
     """
     args = {}   # type: Dict[str, Any]
     props = {}  # type: Dict[str, Any]
@@ -409,6 +410,22 @@ def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE):
         default = prop_def.get('default')
         if default is not None:
             args[name] = default
+
+    # limit 注入：远端返回体上限约 16KB，条数越少单条内容越完整
+    if limit is not None:
+        try:
+            n = int(limit)
+        except (TypeError, ValueError):
+            n = 0
+        if n > 0:
+            limit_field = _find_field(props, (
+                'limit', 'top_k', 'topK', 'topk',
+                'max_results', 'maxResults', 'max_result', 'maxResult',
+                'count', 'size', 'n', 'k',
+            ))
+            if limit_field is not None:
+                args[limit_field] = n
+            # schema 未声明时不兜底传 limit，避免服务端 400
 
     return args
 
@@ -483,13 +500,14 @@ def _extract_text_from_result(result):
     return '\n\n'.join(p for p in parts if p)
 
 
-def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOCALE):
-    # type: (str, float, str) -> Dict[str, Any]
+def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOCALE, limit=None):
+    # type: (str, float, str, Optional[int]) -> Dict[str, Any]
     """在 Autodesk 官方知识库检索 3ds Max 相关内容。
 
     :param query: 用户自然语言查询
     :param timeout: 单次 HTTP 超时
     :param locale: Autodesk locale 码（ENU/CHS/JPN/DEU/FRA/...），默认 ENU
+    :param limit: 期望返回的结果条数（服务端返回体上限 ~16KB，条数越少单条越完整）
     :returns: ``{"ok": bool, "tool": str, "text": str, "raw": Any, "error": str?}``
     """
     q = (query or '').strip()
@@ -503,7 +521,9 @@ def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOC
     if tool is None:
         return {'ok': False, 'error': 'Autodesk MCP 未暴露任何可用工具'}
     tool_name = tool.get('name')
-    args = _augment_arguments_for_max_scope(tool.get('inputSchema'), q, locale=locale)
+    args = _augment_arguments_for_max_scope(
+        tool.get('inputSchema'), q, locale=locale, limit=limit,
+    )
     try:
         result = client.call_tool(tool_name, args)
     except MCPError as exc:
@@ -515,6 +535,7 @@ def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOC
         'query': q,
         'scope': PRODUCT_SCOPE,
         'locale': locale,
+        'limit': limit,
         'text': text,
         'raw': result,
     }
