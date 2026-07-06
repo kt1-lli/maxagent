@@ -297,18 +297,6 @@ def my_cool_op(target: str, count: int = 1) -> dict:
 
 ---
 
-## 🤝 贡献
-
-欢迎提 Issue / PR：
-
-- 工蜂：<https://git.woa.com/cmqli/max_agent>
-- Gitee：<https://gitee.com/cmqll/max_agent>
-
-主分支为 `master`，仓库配置了双 push URL，一次 `git push origin master` 会同时同步到工蜂和 Gitee。
-提交前请确保 `flake8 maxagent/ --max-line-length=120 --extend-ignore=W503,E203` 通过。
-
----
-
 ## 📜 License
 
 MIT License. 使用 `run_maxscript` / `run_python` 逃生舱时请保留默认的二次确认，
