@@ -43,21 +43,27 @@ logger = get_logger(__name__)
         '不会返回 Maya / Revit 等其它产品线的内容。'
         '\n\n'
         '调用时把用户的问题浓缩为 1~2 句关键词组合（英文命中率更高，中文也可）。'
-        '不要把整段无关背景塞进 query。'
+        '不要把整段无关背景塞进 query。示例：'
+        '"Biped_Object class" / "Biped Vertical_Horizontal_Turn"。'
         '\n\n'
-        'locale 参数：Autodesk 帮助中心语言码。默认 "ENU"（英文，覆盖最全）；'
-        '需要中文可传 "CHS"，日文 "JPN"，其它常见值：CHT/JPN/KOR/DEU/FRA/ESP/ITA/PTB/RUS。'
+        '参数：\n'
+        '- query: 关键词，越具体命中率越高。\n'
+        '- locale: Autodesk 帮助中心语言码。默认 "ENU"（英文，覆盖最全）；'
+        '需要中文可传 "CHS"，日文 "JPN"，其它常见值：CHT/JPN/KOR/DEU/FRA/ESP/ITA/PTB/RUS。\n'
+        '- limit: 返回条数（可选）。远端单次响应上限约 16KB，超过会被截断；'
+        '若首次结果被截断，重新调用时把 query 收窄或把 limit 调小到 3~5。'
     ),
     category='web',
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
 )
-def autodesk_max_docs(query, locale=DEFAULT_LOCALE, timeout=15.0):
+def autodesk_max_docs(query, locale=DEFAULT_LOCALE, limit=None, timeout=15.0):
     """检索 Autodesk 官方 3ds Max 文档。
 
     :param query: 检索关键词（自然语言，会被自动加上 "3ds Max:" 前缀）
     :param locale: Autodesk locale 码，默认 ENU（英文）；可传 CHS/JPN/DEU/FRA/... 等
+    :param limit: 期望返回条数（None=不限，服务端上限约 16KB）
     :param timeout: HTTP 超时秒数（默认 15）
     """
     q = (query or '').strip()
@@ -69,7 +75,15 @@ def autodesk_max_docs(query, locale=DEFAULT_LOCALE, timeout=15.0):
         t = 15.0
     t = max(3.0, min(60.0, t))
     loc = (str(locale).strip() if locale else '') or DEFAULT_LOCALE
-    result = search_max_knowledge(q, timeout=t, locale=loc)
+    n = None
+    if limit is not None:
+        try:
+            n = int(limit)
+            if n <= 0:
+                n = None
+        except (TypeError, ValueError):
+            n = None
+    result = search_max_knowledge(q, timeout=t, locale=loc, limit=n)
     if not result.get('ok'):
         logger.debug('autodesk_max_docs 调用失败: %s', result.get('error'))
     return result
