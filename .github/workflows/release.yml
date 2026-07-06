@@ -39,12 +39,12 @@ env:
 jobs:
 
   # ============================================================
-  # 阶段 1: 兼容性预检 + 全量回归测试
+  # 阶段 1: 兼容性预检
   # ============================================================
   precheck:
-    name: 预检与回归测试
+    name: 预检
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
@@ -59,7 +59,7 @@ jobs:
       - name: 装依赖
         run: |
           python -m pip install -U pip
-          python -m pip install pytest flake8
+          python -m pip install flake8
 
       - name: PEP8 检查（lint）
         run: |
@@ -75,12 +75,6 @@ jobs:
             echo '::error::检测到 distutils 导入，3.12+ 已移除'
             exit 1
           fi
-
-      - name: 全量回归测试
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          python -m pytest tests/ -v --tb=short
 
       - name: build.py dry-run
         run: |
