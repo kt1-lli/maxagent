@@ -24,7 +24,7 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-from ..autodesk_mcp import search_max_knowledge
+from ..autodesk_mcp import DEFAULT_LOCALE, search_max_knowledge
 from ..logger import get_logger
 from .registry import tool
 
@@ -44,16 +44,20 @@ logger = get_logger(__name__)
         '\n\n'
         '调用时把用户的问题浓缩为 1~2 句关键词组合（英文命中率更高，中文也可）。'
         '不要把整段无关背景塞进 query。'
+        '\n\n'
+        'locale 参数：Autodesk 帮助中心语言码。默认 "ENU"（英文，覆盖最全）；'
+        '需要中文可传 "CHS"，日文 "JPN"，其它常见值：CHT/JPN/KOR/DEU/FRA/ESP/ITA/PTB/RUS。'
     ),
     category='web',
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
 )
-def autodesk_max_docs(query, timeout=15.0):
+def autodesk_max_docs(query, locale=DEFAULT_LOCALE, timeout=15.0):
     """检索 Autodesk 官方 3ds Max 文档。
 
     :param query: 检索关键词（自然语言，会被自动加上 "3ds Max:" 前缀）
+    :param locale: Autodesk locale 码，默认 ENU（英文）；可传 CHS/JPN/DEU/FRA/... 等
     :param timeout: HTTP 超时秒数（默认 15）
     """
     q = (query or '').strip()
@@ -64,7 +68,8 @@ def autodesk_max_docs(query, timeout=15.0):
     except (TypeError, ValueError):
         t = 15.0
     t = max(3.0, min(60.0, t))
-    result = search_max_knowledge(q, timeout=t)
+    loc = (str(locale).strip() if locale else '') or DEFAULT_LOCALE
+    result = search_max_knowledge(q, timeout=t, locale=loc)
     if not result.get('ok'):
         logger.debug('autodesk_max_docs 调用失败: %s', result.get('error'))
     return result

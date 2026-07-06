@@ -62,6 +62,28 @@ DEFAULT_MCP_URL = 'https://developer.api.autodesk.com/knowledge/public/v1/mcp'
 PRODUCT_SCOPE = '3ds Max'
 PRODUCT_SCOPE_ID = '3dsMax'
 
+# 默认 locale：Autodesk 帮助中心使用的语言代码（ENU/CHS/JPN/DEU/FRA/...）
+# 端点要求必须传 locale，否则会拒绝或返回空。ENU 覆盖面最广。
+DEFAULT_LOCALE = 'ENU'
+
+# Autodesk 常见 locale 码 → BCP-47 兜底映射（有的字段要 "en-US" 而不是 "ENU"）
+_LOCALE_BCP47 = {
+    'ENU': 'en-US',
+    'CHS': 'zh-CN',
+    'CHT': 'zh-TW',
+    'JPN': 'ja-JP',
+    'KOR': 'ko-KR',
+    'DEU': 'de-DE',
+    'FRA': 'fr-FR',
+    'ESP': 'es-ES',
+    'ITA': 'it-IT',
+    'PTB': 'pt-BR',
+    'RUS': 'ru-RU',
+    'PLK': 'pl-PL',
+    'CSY': 'cs-CZ',
+    'HUN': 'hu-HU',
+}
+
 # 单次 HTTP 请求超时（秒）
 DEFAULT_HTTP_TIMEOUT = 15.0
 
@@ -313,20 +335,25 @@ def pick_search_tool(client):
     return next(iter(tools.values()))
 
 
-def _augment_arguments_for_max_scope(schema, query):
-    # type: (Optional[Dict[str, Any]], str) -> Dict[str, Any]
-    """按远端工具的 inputSchema 尽量把 query + 3ds Max 作用域塞进合适字段。
+def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE):
+    # type: (Optional[Dict[str, Any]], str, str) -> Dict[str, Any]
+    """按远端工具的 inputSchema 尽量把 query + 3ds Max 作用域 + locale 塞进合适字段。
 
     - ``schema`` 一般形如 ``{"type": "object", "properties": {...}, "required": [...]}``
     - 常见 query 字段名：query / q / question / text / prompt
     - 常见 scope 字段名：product / products / filter / scope / domain
+    - 常见 locale 字段名：locale / language / lang / hl
     """
     args = {}   # type: Dict[str, Any]
     props = {}  # type: Dict[str, Any]
+    required = []  # type: List[str]
     if isinstance(schema, dict):
         raw_props = schema.get('properties')
         if isinstance(raw_props, dict):
             props = raw_props
+        raw_required = schema.get('required')
+        if isinstance(raw_required, list):
+            required = [x for x in raw_required if isinstance(x, str)]
 
     query_field = _find_field(props, ('query', 'q', 'question', 'text', 'prompt', 'input'))
     if query_field is None:
@@ -353,7 +380,50 @@ def _augment_arguments_for_max_scope(schema, query):
         else:
             args[filter_field] = PRODUCT_SCOPE_ID
 
+    # locale 注入：远端强制要求；schema 未声明时也无脑传 "locale" 兜底，
+    # 服务端不认识会忽略。若声明了 language/lang/hl 则同时填入。
+    loc = (locale or DEFAULT_LOCALE).strip() or DEFAULT_LOCALE
+    loc_bcp47 = _LOCALE_BCP47.get(loc.upper(), loc)
+    locale_field = _find_field(props, ('locale', 'language', 'lang', 'hl'))
+    if locale_field is not None:
+        prop_def = props.get(locale_field) or {}
+        # enum 里明确列了值就按 enum 匹配
+        enum_vals = prop_def.get('enum') if isinstance(prop_def, dict) else None
+        if isinstance(enum_vals, list) and enum_vals:
+            args[locale_field] = _match_locale_in_enum(loc, loc_bcp47, enum_vals)
+        else:
+            # BCP-47 优先 for language/lang/hl；Autodesk locale 码优先 for locale
+            if locale_field.lower() == 'locale':
+                args[locale_field] = loc
+            else:
+                args[locale_field] = loc_bcp47
+    else:
+        # schema 未声明也兜底传一份
+        args['locale'] = loc
+
+    # 若 required 里还有未填的字段，尝试用最保守的默认值兜底
+    for name in required:
+        if name in args:
+            continue
+        prop_def = props.get(name) or {}
+        default = prop_def.get('default')
+        if default is not None:
+            args[name] = default
+
     return args
+
+
+def _match_locale_in_enum(loc, loc_bcp47, enum_vals):
+    # type: (str, str, List[Any]) -> Any
+    """在 enum 候选里挑一个和 loc 最匹配的值；找不到就退化到第一个含 en 的。"""
+    lowered = {str(v).lower(): v for v in enum_vals}
+    for cand in (loc, loc_bcp47, loc.upper(), loc.lower()):
+        if cand and cand.lower() in lowered:
+            return lowered[cand.lower()]
+    for k, v in lowered.items():
+        if 'en' in k:
+            return v
+    return enum_vals[0]
 
 
 def _find_field(props, candidates):
@@ -413,12 +483,13 @@ def _extract_text_from_result(result):
     return '\n\n'.join(p for p in parts if p)
 
 
-def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT):
-    # type: (str, float) -> Dict[str, Any]
+def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOCALE):
+    # type: (str, float, str) -> Dict[str, Any]
     """在 Autodesk 官方知识库检索 3ds Max 相关内容。
 
     :param query: 用户自然语言查询
     :param timeout: 单次 HTTP 超时
+    :param locale: Autodesk locale 码（ENU/CHS/JPN/DEU/FRA/...），默认 ENU
     :returns: ``{"ok": bool, "tool": str, "text": str, "raw": Any, "error": str?}``
     """
     q = (query or '').strip()
@@ -432,7 +503,7 @@ def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT):
     if tool is None:
         return {'ok': False, 'error': 'Autodesk MCP 未暴露任何可用工具'}
     tool_name = tool.get('name')
-    args = _augment_arguments_for_max_scope(tool.get('inputSchema'), q)
+    args = _augment_arguments_for_max_scope(tool.get('inputSchema'), q, locale=locale)
     try:
         result = client.call_tool(tool_name, args)
     except MCPError as exc:
@@ -443,6 +514,7 @@ def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT):
         'tool': tool_name,
         'query': q,
         'scope': PRODUCT_SCOPE,
+        'locale': locale,
         'text': text,
         'raw': result,
     }
@@ -486,6 +558,7 @@ def _iter_sse_events(text):
 __all__ = [
     'DEFAULT_MCP_URL',
     'PRODUCT_SCOPE',
+    'DEFAULT_LOCALE',
     'MCPError',
     'get_client',
     'reset_client',
