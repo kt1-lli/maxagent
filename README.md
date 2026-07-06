@@ -156,10 +156,6 @@ for t in list_tools():
 maxagent/
 ├── install.ms                     # 拖入 Max 视口即可启动的 MaxScript 入口
 ├── README.md
-├── docs/
-│   ├── architecture.md            # 架构与线程模型
-│   ├── tool_development.md        # 自定义工具开发指南
-│   └── troubleshooting.md         # 常见问题
 ├── release/
 │   ├── build.py                   # 打包脚本（源码 → mzp）
 │   ├── version.py                 # 版本号唯一来源
@@ -167,8 +163,7 @@ maxagent/
 │   ├── mzp_install.ms             # mzp 内的自安装脚本
 │   ├── mzp.run                    # mzp 描述
 │   ├── macros/                    # 注册到 Max Customize UI 的宏
-│   └── ci/                        # GitHub Actions / 工蜂蓝盾流水线配置
-├── .github/workflows/release.yml  # 主 CI（lint + 打包 + 发布）
+│   └── ci/                        # 工蜂蓝盾流水线配置
 └── maxagent/                      # 主包
     ├── __init__.py                # 公开 API：show / hide / toggle / reload_pkg
     ├── startup.py                 # Max 启动入口
@@ -254,8 +249,6 @@ maxagent/
                         Max 场景 ✓
 ```
 
-详细分层与线程模型见 [docs/architecture.md](docs/architecture.md)。
-
 ---
 
 ## 🔍 Autodesk 官方 Knowledge MCP
@@ -291,13 +284,11 @@ def my_cool_op(target: str, count: int = 1) -> dict:
 工具默认在 Max 主线程执行、并被 `pymxs.undo` 包裹，可 Ctrl+Z 回滚。
 若不需要 undo（如纯查询工具），加 `wrap_undo=False`。
 
-详细指南见 [docs/tool_development.md](docs/tool_development.md)。
-
 ---
 
 ## 🐛 故障排查
 
-- LLM 连不上 / 401 / 超时 → [docs/troubleshooting.md](docs/troubleshooting.md)
+- LLM 连不上 / 401 / 超时 → 检查 Profile 的 Base URL 与 API Key，本地服务需先启动
 - Max 启动白屏 / 卡住 → 立即在 startup 目录把 `maxagent_startup.py` 改名为 `.bak`
 - 工具调用失败 → 看面板红色 ✗ 后的具体错误，多数是模型给错参数
 - 模型不调用工具 → 检查 Profile 的 `supports_tools`，且模型本身要支持 tools
