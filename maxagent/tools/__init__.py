@@ -49,6 +49,7 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     from . import knowledge_tools  # noqa: F401
     from . import web_tools    # noqa: F401
     from . import autodesk_docs  # noqa: F401
+    from . import memory_tools  # noqa: F401
 
     if include_escape_hatch:
         from . import escape_hatch  # noqa: F401
