@@ -161,9 +161,8 @@ maxagent/
 │   ├── version.py                 # 版本号唯一来源
 │   ├── pyproject.toml
 │   ├── mzp_install.ms             # mzp 内的自安装脚本
-│   ├── mzp.run                    # mzp 描述
 │   ├── macros/                    # 注册到 Max Customize UI 的宏
-│   └── ci/                        # 工蜂蓝盾流水线配置
+│   └── mzp.run                    # mzp 描述
 └── maxagent/                      # 主包
     ├── __init__.py                # 公开 API：show / hide / toggle / reload_pkg
     ├── startup.py                 # Max 启动入口
@@ -294,18 +293,6 @@ def my_cool_op(target: str, count: int = 1) -> dict:
 - 模型不调用工具 → 检查 Profile 的 `supports_tools`，且模型本身要支持 tools
 - Autodesk MCP 无响应 → 需要外网可达 `developer.api.autodesk.com`
 - 开发时改了代码不生效 → `maxagent.reload_pkg()` 或 `g_reload_max_agent()`
-
----
-
-## 🤝 贡献
-
-欢迎提 Issue / PR：
-
-- 工蜂：<https://git.woa.com/cmqli/max_agent>
-- Gitee：<https://gitee.com/cmqll/max_agent>
-
-主分支为 `master`，仓库配置了双 push URL，一次 `git push origin master` 会同时同步到工蜂和 Gitee。
-提交前请确保 `flake8 maxagent/ --max-line-length=120 --extend-ignore=W503,E203` 通过。
 
 ---
 
