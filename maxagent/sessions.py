@@ -260,6 +260,16 @@ class SessionManager(object):
             'session_create sid=%s title=%s has_prompt=%s',
             sid, meta.title, system_prompt is not None,
         )
+        # 事件日志：session_start
+        try:
+            from .memory import get_event_logger
+            get_event_logger().log(
+                'session_start',
+                payload={'sid': sid, 'title': meta.title},
+                session_id=sid,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
         return meta
 
     def save(self, meta, conversation):
@@ -328,6 +338,16 @@ class SessionManager(object):
         self._save_index(metas)
         # DEBUG 埋点：会话删除
         logger.debug('session_delete sid=%s title=%s', sid, target.title)
+        # 事件日志：session_end
+        try:
+            from .memory import get_event_logger
+            get_event_logger().log(
+                'session_end',
+                payload={'sid': sid, 'title': target.title},
+                session_id=sid,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
         return True
 
     def rename(self, sid, new_title):

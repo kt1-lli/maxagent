@@ -158,6 +158,15 @@ class AgentWorker(QObject):
         # 只是在需要时把 memory addon 也拼接进去。
         self._external_sys_addon_provider = None  # type: Optional[Any]
 
+        # ---------- 双层记忆（长期记忆 + 事件日志） ----------
+        # 事件日志：原始对话/工具调用按时间落盘（按天分片 JSONL）
+        # 长期记忆：INSTRUCTIONS.md + MEMORY.md + topic/*.md 每轮自动注入
+        try:
+            from ..memory import get_event_logger
+            self._event_logger = get_event_logger()
+        except Exception:  # pylint: disable=broad-except
+            self._event_logger = None
+
         # 工具过滤回调：签名 (tool_name: str) -> bool；返回 False 时该工具
         # 不会被纳入本轮 LLM 的 tools schema，相当于"本轮临时屏蔽"。
         # 用于联网开关：联网关闭时屏蔽 web_* 工具，避免 LLM 误用。
@@ -226,7 +235,15 @@ class AgentWorker(QObject):
                 mem_addon = ''
             if mem_addon:
                 parts.append(mem_addon)
-            # 2) 外部自定义 addon
+            # 2) 长期记忆自动注入（INSTRUCTIONS.md + MEMORY.md）
+            try:
+                from ..memory import build_auto_memory_addon
+                lt_addon = build_auto_memory_addon()
+            except Exception:  # pylint: disable=broad-except
+                lt_addon = ''
+            if lt_addon:
+                parts.append(lt_addon)
+            # 3) 外部自定义 addon
             if self._external_sys_addon_provider is not None:
                 try:
                     ext_addon = self._external_sys_addon_provider(user_input)
@@ -431,6 +448,26 @@ class AgentWorker(QObject):
         """
         self.reset_cancel()
         self._current_user_input = user_input or ''
+        # 记录用户输入到事件日志（Layer 1：原始对话按时间落盘）
+        if self._event_logger is not None and user_input:
+            try:
+                self._event_logger.log(
+                    'user_input',
+                    payload={'text': user_input},
+                    session_id=getattr(self, '_session_id', '') or '',
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # 检测显式长期记忆意图（记住/以后/默认/总是/必须/严禁 等），
+        # 命中即追加到 INSTRUCTIONS.md（Layer 2：长期记忆写入）
+        try:
+            from ..memory import write_instruction_from_user_message
+            write_instruction_from_user_message(
+                user_input,
+                session_id=getattr(self, '_session_id', '') or '',
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
         # 把用户输入立刻写入对话历史（在调用线程也安全，因为 _conv 修改时序明确）
         if not skip_add_user:
             self._conv.add_user(user_input)
@@ -870,6 +907,16 @@ class AgentWorker(QObject):
                     )
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.warning('Session memory 学习异常: %s', exc)
+                # 记录本轮最终 assistant 回复到事件日志
+                if self._event_logger is not None and content:
+                    try:
+                        self._event_logger.log(
+                            'assistant_reply',
+                            payload={'text': content},
+                            session_id=getattr(self, '_session_id', '') or '',
+                        )
+                    except Exception:  # pylint: disable=broad-except
+                        pass
                 self.finished.emit()
                 return
 
@@ -963,6 +1010,21 @@ class AgentWorker(QObject):
 
         self.tool_started.emit(name, args_str, call_id)
 
+        # 记录工具调用事件（Layer 1）
+        if self._event_logger is not None:
+            try:
+                self._event_logger.log(
+                    'tool_call',
+                    payload={
+                        'name': name,
+                        'arguments': args,
+                        'call_id': call_id,
+                    },
+                    session_id=getattr(self, '_session_id', '') or '',
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+
         # 走主线程注入的同步执行器（pymxs 必须在主线程）
         if self._sync_tool_runner is None:
             err = '未注入 sync_tool_runner，无法在主线程执行工具'
@@ -1016,6 +1078,21 @@ class AgentWorker(QObject):
         )
         self.tool_finished.emit(name, ok, content_str, call_id)
         self._macro_recorder.record(name, args, ok)
+        # 记录工具结果事件（Layer 1）
+        if self._event_logger is not None:
+            try:
+                self._event_logger.log(
+                    'tool_result',
+                    payload={
+                        'name': name,
+                        'ok': ok,
+                        'call_id': call_id,
+                        'result': result_dict,
+                    },
+                    session_id=getattr(self, '_session_id', '') or '',
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     # ------------------------------------------------------------------ #
     # 自动状态复核
