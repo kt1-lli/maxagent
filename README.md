@@ -161,9 +161,8 @@ maxagent/
 │   ├── version.py                 # 版本号唯一来源
 │   ├── pyproject.toml
 │   ├── mzp_install.ms             # mzp 内的自安装脚本
-│   ├── mzp.run                    # mzp 描述
 │   ├── macros/                    # 注册到 Max Customize UI 的宏
-│   └── ci/                        # 工蜂蓝盾流水线配置
+│   └── mzp.run                    # mzp 描述
 └── maxagent/                      # 主包
     ├── __init__.py                # 公开 API：show / hide / toggle / reload_pkg
     ├── startup.py                 # Max 启动入口
