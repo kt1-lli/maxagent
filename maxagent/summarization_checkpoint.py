@@ -188,14 +188,12 @@ class ContextCompressor(object):
 
         # 使用轻量级参数：短 max_tokens、正 temperature
         # 注意：这里不流式、不启用 tools，纯文本生成
-        # 兼容要求 temperature 必须为 1 的模型/网关（如 Moonshot kimi-k3）。
-        base_url = getattr(self._llm, '_base_url', '')
-        model = getattr(self._llm, '_model', '')
+        temp = 0.3  # 允许适度创造性，但不要太发散
+        # 通用参数覆盖：例如 Moonshot kimi-k3 要求 temperature=1。
         profile = getattr(self._llm, '_profile', None)
-        force_one = getattr(profile, 'force_temperature_one', False)
-        if not force_one and "moonshot.cn" in base_url.lower() and "kimi-k3" in model.lower():
-            force_one = True
-        temp = 1.0 if force_one else 0.3  # 允许适度创造性，但不要太发散
+        overrides = getattr(profile, 'param_overrides', None)
+        if isinstance(overrides, dict) and "temperature" in overrides:
+            temp = overrides["temperature"]
         response = self._llm.chat(
             messages=prompt_messages,
             max_tokens=self._max_summary_tokens,
