@@ -1046,19 +1046,28 @@ class AgentWorker(QObject):
         ok = True
         try:
             result = self._sync_tool_runner(name, args)
-            result_dict = {'ok': True, 'result': result}
+            result_dict = {
+                'ok': True,
+                'data': result,
+                'error': None,
+                'suggestion': None,
+            }
         except ToolExecutionError as exc:
             ok = False
             result_dict = {
                 'ok': False,
+                'data': None,
                 'error': str(exc),
+                'suggestion': '请检查工具参数与当前场景状态，修正后重试。',
                 'tool': name,
             }
         except Exception as exc:  # pylint: disable=broad-except
             ok = False
             result_dict = {
                 'ok': False,
+                'data': None,
                 'error': '{}: {}'.format(type(exc).__name__, exc),
+                'suggestion': '工具执行异常，请检查参数合法性及场景状态后重试。',
                 'tool': name,
             }
 
@@ -1087,7 +1096,7 @@ class AgentWorker(QObject):
                         'name': name,
                         'ok': ok,
                         'call_id': call_id,
-                        'result': result_dict,
+                        'data': result_dict,
                     },
                     session_id=getattr(self, '_session_id', '') or '',
                 )
@@ -1150,7 +1159,7 @@ class AgentWorker(QObject):
 
         # 处理结果
         if isinstance(verify_result, dict) and verify_result.get('ok'):
-            info = verify_result.get('result', {})
+            info = verify_result.get('data', {})
             if info.get('found'):
                 return {
                     'target': target_name,
