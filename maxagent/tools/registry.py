@@ -274,3 +274,201 @@ def build_openai_tools_schema(category=None, include_dangerous=True):
 def clear_registry():
     """清空注册表（仅测试用）。"""
     _REGISTRY.clear()
+
+
+# ---------------------------------------------------------------------- #
+# 参数校验
+# ---------------------------------------------------------------------- #
+
+try:
+    string_types = (str, unicode)  # type: ignore[name-defined]
+except NameError:
+    string_types = (str,)
+
+
+def validate_tool_args(name, args):
+    # type: (str, Dict[str, Any]) -> "tuple[bool, str]"
+    """基于 JSON Schema 校验工具参数。
+
+    :param name: 工具名
+    :param args: 参数字典
+    :returns: (is_valid: bool, error_message: str)
+    """
+    spec = get_tool(name)
+    if spec is None:
+        return (False, "未知工具: {}".format(name))
+    if not isinstance(args, dict):
+        return (False, "参数必须是对象")
+
+    schema = spec.parameters
+    if not isinstance(schema, dict):
+        return (True, "")
+
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+    errors = []
+
+    # 1. 必填字段缺失
+    for key in required:
+        if key not in args:
+            errors.append("参数 '{}' 必填".format(key))
+            continue
+        value = args[key]
+        if value is None:
+            prop_schema = properties.get(key, {})
+            if not prop_schema.get("nullable"):
+                errors.append("参数 '{}' 必填".format(key))
+
+    if errors:
+        return (False, "; ".join(errors))
+
+    # 2. 逐个参数按 schema 校验
+    for key, value in args.items():
+        prop_schema = properties.get(key, {})
+        if not prop_schema:
+            continue
+        is_valid, error = _validate_value(value, prop_schema, key)
+        if not is_valid:
+            errors.append(error)
+
+    if errors:
+        return (False, "; ".join(errors))
+    return (True, "")
+
+
+def _validate_value(value, schema, path):
+    # type: (Any, Dict[str, Any], str) -> "tuple[bool, str]"
+    """校验单个值是否符合 schema 定义。"""
+    if not isinstance(schema, dict):
+        return (True, "")
+
+    errors = []
+    expected_type = schema.get("type")
+
+    # 值为 None 时，仅当声明 nullable 或通过 type 允许 null 才通过
+    if value is None:
+        if expected_type is None:
+            return (True, "")
+        if isinstance(expected_type, list) and "null" in expected_type:
+            return (True, "")
+        if expected_type == "null":
+            return (True, "")
+        if schema.get("nullable"):
+            return (True, "")
+        return (False, "参数 '{}' 不能为空".format(path))
+
+    # schema 中缺少 type 时按通过处理，不阻塞自定义 schema
+    if expected_type is None:
+        return (True, "")
+
+    # enum 校验优先于 type（枚举值本身可能跨多种类型）
+    enum_values = schema.get("enum")
+    if enum_values is not None:
+        if value not in enum_values:
+            errors.append("参数 '{}' 必须是 {} 之一".format(path, enum_values))
+
+    # type 校验
+    type_ok = True
+    if isinstance(expected_type, list):
+        type_ok = _type_matches_any(value, expected_type)
+    else:
+        type_ok = _type_matches(value, expected_type)
+    if not type_ok:
+        errors.append(_type_error(path, value, expected_type))
+    else:
+        # 数字范围
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            minimum = schema.get("minimum")
+            if minimum is not None and value < minimum:
+                errors.append("参数 '{}' 不能小于 {}".format(path, minimum))
+            maximum = schema.get("maximum")
+            if maximum is not None and value > maximum:
+                errors.append("参数 '{}' 不能大于 {}".format(path, maximum))
+
+        # 字符串长度
+        if isinstance(value, string_types):
+            min_length = schema.get("minLength")
+            if min_length is not None and len(value) < min_length:
+                errors.append("参数 '{}' 长度不能小于 {}".format(path, min_length))
+            max_length = schema.get("maxLength")
+            if max_length is not None and len(value) > max_length:
+                errors.append("参数 '{}' 长度不能大于 {}".format(path, max_length))
+
+        # 数组长度及元素类型
+        if isinstance(value, list):
+            min_items = schema.get("minItems")
+            if min_items is not None and len(value) < min_items:
+                errors.append("参数 '{}' 元素个数不能小于 {}".format(path, min_items))
+            max_items = schema.get("maxItems")
+            if max_items is not None and len(value) > max_items:
+                errors.append("参数 '{}' 元素个数不能大于 {}".format(path, max_items))
+            item_schema = schema.get("items")
+            if isinstance(item_schema, dict):
+                for idx, item in enumerate(value):
+                    is_valid, error = _validate_value(
+                        item, item_schema, "{}[{}]".format(path, idx),
+                    )
+                    if not is_valid:
+                        errors.append(error)
+
+    if errors:
+        return (False, "; ".join(errors))
+    return (True, "")
+
+
+def _type_matches(value, type_name):
+    # type: (Any, str) -> bool
+    """判断 value 是否匹配单一 JSON Schema 类型。"""
+    if type_name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if type_name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == "string":
+        return isinstance(value, string_types)
+    if type_name == "boolean":
+        return isinstance(value, bool)
+    if type_name == "array":
+        return isinstance(value, list)
+    if type_name == "object":
+        return isinstance(value, dict)
+    if type_name == "null":
+        return value is None
+    return False
+
+
+def _type_matches_any(value, type_names):
+    # type: (Any, List[str]) -> bool
+    """判断 value 是否匹配多种 JSON Schema 类型之一。"""
+    return any(_type_matches(value, t) for t in type_names)
+
+
+def _type_error(path, value, expected):
+    # type: (str, Any, "str | List[str]") -> str
+    """构造类型不匹配的中文错误信息。"""
+    if isinstance(expected, list):
+        expected_str = " 或 ".join(expected)
+    else:
+        expected_str = expected
+    return "参数 '{}' 期望 {}，收到 {}".format(
+        path, expected_str, _json_type_name(value),
+    )
+
+
+def _json_type_name(value):
+    # type: (Any) -> str
+    """把 Python 值映射到 JSON Schema 类型名（用于错误信息）。"""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, string_types):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
