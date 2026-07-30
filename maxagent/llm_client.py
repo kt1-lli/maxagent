@@ -310,6 +310,14 @@ class LLMClient(object):
         # Temperature 分层：reasoning / 工具调用轮次用更低温度
         # 减少参数幻觉和过度联想；最终回复轮次保持用户设定温度
         effective_temp = 0.1 if reasoning_mode else temperature
+        # 兼容要求 temperature 必须为 1 的模型/网关（如 Moonshot kimi-k3）。
+        # 优先读取 profile 配置项；老配置不存在该字段时，保留旧的模型名兜底。
+        profile = getattr(self, '_profile', None)
+        force_one = getattr(profile, 'force_temperature_one', False)
+        if not force_one and "moonshot.cn" in self._base_url.lower() and "kimi-k3" in self._model.lower():
+            force_one = True
+        if force_one:
+            effective_temp = 1.0
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,

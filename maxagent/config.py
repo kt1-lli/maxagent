@@ -109,6 +109,10 @@ class LLMProfile:
     # 模型采样参数
     temperature: float = 0.2
     max_tokens: int = 4096
+    # 部分模型/网关（如 Moonshot kimi-k3）服务端仅接受 temperature=1，
+    # 非 1 值会直接返回 400。开启后所有发往该 profile 的请求（含
+    # reasoning 轮次和自动摘要）都会强制使用 temperature=1。
+    force_temperature_one: bool = False
     # 自定义 HTTP 头（如公司网关需要的鉴权头）
     extra_headers: Dict[str, str] = field(default_factory=dict)
     # Agent 工具调用循环的最大轮数。批量任务（如"测试所有工具"）
