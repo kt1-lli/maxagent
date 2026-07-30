@@ -798,7 +798,11 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         if cap <= 0:
             from ..tools.dispatcher import DEFAULT_RESULT_MAX_BYTES
             cap = DEFAULT_RESULT_MAX_BYTES
-        return ToolDispatcher(result_max_bytes=cap)
+        dispatcher = ToolDispatcher(result_max_bytes=cap)
+        # 让 batch_execute 工具能复用带 result_max_bytes 配置的实例
+        from ..tools import set_global_dispatcher
+        set_global_dispatcher(dispatcher)
+        return dispatcher
 
     def _get_active_prices(self):
         """读当前 profile 的 (input, output) 计费单价（USD per 1M tokens）。"""
