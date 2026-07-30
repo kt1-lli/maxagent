@@ -26,6 +26,7 @@ from ..runtime_helpers import run_on_main
 from ..runtime_helpers import undo_block
 from ..logger import get_logger
 from .registry import get_tool
+from .registry import validate_tool_args
 
 class ToolExecutionError(Exception):
     """工具执行异常。"""
@@ -126,7 +127,13 @@ class ToolDispatcher(object):
                 )
         stages["confirm"] = (time.time() - t_confirm) * 1000
 
-        # 2. 实际执行（带阶段计时）
+        # 2. 参数校验前置化：在主线程执行前拦截非法参数
+        is_valid, error_msg = validate_tool_args(tool_name, arguments)
+        if not is_valid:
+            logger.warning("参数校验失败 tool=%s: %s", tool_name, error_msg)
+            return _err(error_msg, "bad_arguments")
+
+        # 3. 实际执行（带阶段计时）
         t0 = time.time()
         try:
             result = self._invoke(spec, arguments, stages)
@@ -160,7 +167,7 @@ class ToolDispatcher(object):
             )
         elapsed_ms = (time.time() - t0) * 1000
 
-        # 3. 序列化兜底：保证返回值可被 json.dumps
+        # 4. 序列化兜底：保证返回值可被 json.dumps
         t_ser = time.time()
 
         # D3：工具返回结果增强——对 create_ 类工具，自动附加新对象的
@@ -178,7 +185,7 @@ class ToolDispatcher(object):
         }
         stages["serialize"] = (time.time() - t_ser) * 1000
 
-        # 4. 结果体积裁剪：避免 list_scene_objects 这类返回数千项的
+        # 5. 结果体积裁剪：避免 list_scene_objects 这类返回数千项的
         #    工具一次性把上下文打爆。
         t_trunc = time.time()
         if self._result_max_bytes > 0:
