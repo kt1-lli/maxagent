@@ -19,6 +19,7 @@ import traceback
 from typing import Any
 from typing import Callable
 from typing import Dict
+from typing import List
 from typing import Optional
 
 from ..runtime_helpers import IN_MAX
@@ -143,11 +144,7 @@ class ToolDispatcher(object):
                 "✗ tool=%s timeout after %.0fms stages=%s: %s",
                 tool_name, elapsed, _fmt_stages(stages), exc,
             )
-            try:
-                from ..user_tools_loader import bump_tool_usage
-                bump_tool_usage(tool_name, ok=False)
-            except Exception:  # pylint: disable=broad-except
-                pass
+            self._bump_usage(tool_name, ok=False)
             return _err(str(exc), "timeout")
         except Exception as exc:  # pylint: disable=broad-except
             elapsed = (time.time() - t0) * 1000
@@ -156,11 +153,7 @@ class ToolDispatcher(object):
                 "✗ tool=%s 执行异常 after %.0fms stages=%s:\n%s",
                 tool_name, elapsed, _fmt_stages(stages), tb,
             )
-            try:
-                from ..user_tools_loader import bump_tool_usage
-                bump_tool_usage(tool_name, ok=False)
-            except Exception:  # pylint: disable=broad-except
-                pass
+            self._bump_usage(tool_name, ok=False)
             return _err(
                 "{}: {}".format(type(exc).__name__, exc),
                 "exec_error",
@@ -196,11 +189,9 @@ class ToolDispatcher(object):
 
         # 5. 学习工具的使用统计累加（user tools 才有 .meta.json）。
         #    捕获所有异常：进化指标累加绝不能影响主路径返回。
-        try:
-            from ..user_tools_loader import bump_tool_usage
-            bump_tool_usage(tool_name, ok=True)
-        except Exception:  # pylint: disable=broad-except
-            pass
+        self._bump_usage(tool_name, ok=True)
+
+        # DEBUG 埋点：出参摘要 + 总耗时 + 阶段分布
 
         # DEBUG 埋点：出参摘要 + 总耗时 + 阶段分布
         # 超过 500ms 自动升到 INFO，便于线上抓到慢调用现场。
@@ -219,9 +210,247 @@ class ToolDispatcher(object):
             )
         return out
 
+    def dispatch_batch(self, calls):
+        # type: (List[Dict[str, Any]]) -> Dict[str, Any]
+        """批量执行工具调用。
+
+        :param calls: 每个元素为 {"tool": str, "arguments": dict}
+        :returns: 统一协议 dict:
+            {
+                "ok": True,
+                "data": {
+                    "results": [
+                        {"tool": "...", "ok": True, "data": ...},
+                        {"tool": "...", "ok": False, "error": "...", "suggestion": "..."},
+                        ...
+                    ],
+                    "total": N,
+                    "success": N,
+                    "failed": N,
+                },
+                "error": None,
+                "suggestion": None,
+            }
+        """
+        # 1. 基础校验：calls 必须是 list
+        if not isinstance(calls, list):
+            return _err("批量调用参数必须是列表", "bad_arguments")
+
+        # 2. 校验每个元素并解析出 ToolSpec
+        parsed = []  # type: List[tuple]
+        for idx, item in enumerate(calls):
+            if not isinstance(item, dict):
+                return _err(
+                    "第 {} 个调用必须是对象".format(idx + 1),
+                    "bad_arguments",
+                )
+            tool_name = item.get("tool")
+            arguments = item.get("arguments", {})
+            if not isinstance(tool_name, str) or not tool_name:
+                return _err(
+                    "第 {} 个调用缺少 'tool' 字段".format(idx + 1),
+                    "bad_arguments",
+                )
+            if not isinstance(arguments, dict):
+                return _err(
+                    "第 {} 个调用的 'arguments' 必须是对象".format(idx + 1),
+                    "bad_arguments",
+                )
+            spec = get_tool(tool_name)
+            if spec is None:
+                return _err(
+                    "第 {} 个调用指向未知工具: {}".format(idx + 1, tool_name),
+                    "unknown_tool",
+                )
+            # 禁用名单兜底
+            try:
+                from ..disabled_registry import is_tool_disabled
+                if is_tool_disabled(tool_name):
+                    return _err(
+                        "工具 {} 已被用户在「我的资源」中禁用".format(tool_name),
+                        "tool_disabled",
+                    )
+            except Exception:  # pylint: disable=broad-except
+                pass
+            parsed.append((tool_name, spec, arguments))
+
+        # 3. 前置参数校验
+        for idx, (tool_name, __, arguments) in enumerate(parsed):
+            is_valid, error_msg = validate_tool_args(tool_name, arguments)
+            if not is_valid:
+                return _err(
+                    "第 {} 个调用参数校验失败: {}".format(idx + 1, error_msg),
+                    "bad_arguments",
+                )
+
+        # 4. 危险工具确认：批次中只要有一个 dangerous 工具，统一确认一次
+        dangerous_tools = [
+            name for name, spec, __ in parsed if spec.dangerous
+        ]
+        if dangerous_tools and self._confirm_cb is not None:
+            try:
+                confirmed = self._confirm_cb(
+                    "batch_execute",
+                    {
+                        "count": len(parsed),
+                        "dangerous_tools": dangerous_tools,
+                    },
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                return _err(
+                    "批量危险操作确认回调异常: {}".format(exc),
+                    "confirm_error",
+                )
+            if not confirmed:
+                return _err("用户已取消执行", "user_cancelled")
+
+        # 5. 拆分主线程 / 非主线程
+        main_calls = []   # type: List[tuple]
+        side_calls = []   # type: List[tuple]
+        for name, spec, args in parsed:
+            if spec.run_on_main_thread and IN_MAX:
+                main_calls.append((name, spec, args))
+            else:
+                side_calls.append((name, spec, args))
+
+        results = []  # type: List[Dict[str, Any]]
+
+        # 6. 主线程批次：只 marshal 一次，包一次 undo group
+        if main_calls:
+
+            def _run_main_batch():
+                batch_results = []
+                with undo_block("agent: batch_execute"):
+                    for name, spec, args in main_calls:
+                        batch_results.append(
+                            self._execute_one(name, spec, args),
+                        )
+                return batch_results
+
+            try:
+                results.extend(run_on_main(_run_main_batch, _timeout=self._timeout))
+            except TimeoutError as exc:
+                logger.warning("批量工具主线程执行超时: %s", exc)
+                # 超时后给主线程批次每个调用都返回超时错误
+                for name, __, __ in main_calls:
+                    self._bump_usage(name, ok=False)
+                    results.append(
+                        _sub_result(name, False, _err(str(exc), "timeout")),
+                    )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.exception("批量工具主线程执行异常: %s", exc)
+                for name, __, __ in main_calls:
+                    self._bump_usage(name, ok=False)
+                    results.append(
+                        _sub_result(
+                            name,
+                            False,
+                            _err(
+                                "主线程批次异常: {}".format(exc),
+                                "exec_error",
+                            ),
+                        ),
+                    )
+
+        # 7. 非主线程批次：当前线程直接执行
+        for name, spec, args in side_calls:
+            results.append(self._execute_one(name, spec, args))
+
+        # 8. 统计与结果裁剪
+        success = sum(1 for r in results if r.get("ok"))
+        failed = len(results) - success
+        batch_out = {
+            "ok": True,
+            "data": {
+                "results": results,
+                "total": len(results),
+                "success": success,
+                "failed": failed,
+            },
+            "error": None,
+            "suggestion": None,
+        }
+        if self._result_max_bytes > 0:
+            batch_out = _maybe_truncate_result(
+                batch_out,
+                self._result_max_bytes,
+                tool_name="batch_execute",
+            )
+        return batch_out
+
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
+
+    def _execute_one(self, tool_name, spec, arguments):
+        # type: (str, Any, Dict[str, Any]) -> Dict[str, Any]
+        """执行单个子调用，返回带子结果协议的 dict。
+
+        与 dispatch() 不同：这里只做执行、序列化、单结果裁剪，
+        不做危险确认（批次已统一确认）。
+        """
+        do_undo = self._wrap_undo and spec.wrap_undo
+        on_main = spec.run_on_main_thread and IN_MAX
+
+        def _call():
+            if do_undo:
+                with undo_block("agent: " + spec.name):
+                    return spec.func(**arguments)
+            return spec.func(**arguments)
+
+        def _run_main():
+            # 主线程批次：整个批次函数已被 run_on_main 投递到主线程，
+            # 但单个子调用仍可能包 undo，必须继续在主线程里执行。
+            return _call()
+
+        try:
+            if on_main:
+                raw = run_on_main(_run_main, _timeout=self._timeout)
+            else:
+                raw = _call()
+        except TimeoutError as exc:
+            self._bump_usage(tool_name, ok=False)
+            return _sub_result(tool_name, False, _err(str(exc), "timeout"))
+        except Exception as exc:  # pylint: disable=broad-except
+            self._bump_usage(tool_name, ok=False)
+            logger.exception("批量子调用 %s 异常", tool_name)
+            return _sub_result(
+                tool_name,
+                False,
+                _err(
+                    "{}: {}".format(type(exc).__name__, exc),
+                    "exec_error",
+                ),
+            )
+
+        safe = _safe_serialize(raw)
+        if tool_name.startswith('create_') and isinstance(safe, dict):
+            safe = _enrich_create_result(safe)
+
+        out = {
+            "ok": True,
+            "data": safe,
+            "error": None,
+            "suggestion": None,
+        }
+        if self._result_max_bytes > 0:
+            out = _maybe_truncate_result(
+                out, self._result_max_bytes, tool_name=tool_name,
+            )
+        return _sub_result(tool_name, True, out)
+
+    @staticmethod
+    def _bump_usage(tool_name, ok):
+        # type: (str, bool) -> None
+        """累加工具使用统计。
+
+        失败也不影响主路径。
+        """
+        try:
+            from ..user_tools_loader import bump_tool_usage
+            bump_tool_usage(tool_name, ok=ok)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     def _invoke(self, spec, arguments, stages):
         """根据 spec 决定如何调用 func。
@@ -318,6 +547,24 @@ def _err(msg, kind):
         "suggestion": suggestions.get(kind, "请检查输入参数与当前场景状态后重试。"),
         "type": kind,
     }
+
+
+def _sub_result(tool_name, ok, result):
+    # type: (str, bool, Dict[str, Any]) -> Dict[str, Any]
+    """把 dispatch() / _execute_one() 返回的单工具结果转换为批次子结果。
+
+    子结果必须包含 tool 名，并把内层 ``ok/error/suggestion/data`` 铺平。
+    """
+    out = {"tool": tool_name, "ok": ok}
+    if isinstance(result, dict):
+        out["data"] = result.get("data")
+        if result.get("error") is not None:
+            out["error"] = result["error"]
+        if result.get("suggestion") is not None:
+            out["suggestion"] = result["suggestion"]
+    else:
+        out["data"] = result
+    return out
 
 
 def _fmt_stages(stages):
