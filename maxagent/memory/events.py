@@ -32,6 +32,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import json
+import math
 import os
 import threading
 import time
@@ -206,18 +207,7 @@ class EventLogger(object):
         if query:
             query_tokens = _tokenize(query)
             if query_tokens:
-                scored = []
-                for e in events:
-                    text = _event_text(e).lower()
-                    hits = sum(1 for t in query_tokens if t in text)
-                    if hits > 0:
-                        scored.append((hits, e))
-                # 按命中数降序 + 时间倒序（后发生的更新）
-                scored.sort(
-                    key=lambda pair: (pair[0], pair[1].get('ts', 0.0)),
-                    reverse=True,
-                )
-                events = [e for _, e in scored]
+                events = _rank_events_by_tfidf(events, query_tokens)
             else:
                 events.sort(key=lambda e: e.get('ts', 0.0), reverse=True)
         else:
@@ -252,6 +242,62 @@ def _tokenize(text):
         return []
     # 允许中文原样匹配（不分词），空格分隔多个必要项
     return [t for t in str(text).lower().split() if t]
+
+
+def _rank_events_by_tfidf(events, query_tokens):
+    # type: (List[Dict[str, Any]], List[str]) -> List[Dict[str, Any]]
+    """使用 BM25/TF-IDF 风格打分对事件排序。
+
+    实现说明：
+    - 对每个 query token 计算其在每个事件中的词频 TF；
+    - 计算 IDF = log(N / df)，N 为事件总数，df 为包含该 token 的事件数；
+    - 得分 = sum(TF * IDF)；
+    - 命中越多、越稀有 token 命中越多，得分越高。
+    当前为全量遍历实现，事件数量大时可能较慢；未来可增量索引优化。
+
+    :param events: 已通过 keyword/kind 过滤后的事件列表
+    :param query_tokens: 小写 query token 列表
+    :returns: 按得分降序 + 时间倒序排序后的事件列表
+    """
+    if not events or not query_tokens:
+        return events
+
+    n_events = len(events)
+    event_texts = [_event_text(e).lower() for e in events]
+
+    # 计算每个 token 的文档频率 df
+    df_map = {}  # type: Dict[str, int]
+    for token in query_tokens:
+        df = 0
+        for text in event_texts:
+            if token in text:
+                df += 1
+        df_map[token] = df
+
+    scored = []
+    for idx, e in enumerate(events):
+        text = event_texts[idx]
+        score = 0.0
+        for token in query_tokens:
+            df = df_map.get(token, 0)
+            if df == 0:
+                continue
+            # TF：token 在事件中出现的次数
+            tf = text.count(token)
+            if tf == 0:
+                continue
+            # IDF：平滑处理避免 log(1)=0
+            idf = math.log(float(n_events) / float(df))
+            score += float(tf) * idf
+        if score > 0.0:
+            scored.append((score, e))
+
+    # 按得分降序 + 时间倒序（后发生的更新）
+    scored.sort(
+        key=lambda pair: (pair[0], pair[1].get('ts', 0.0)),
+        reverse=True,
+    )
+    return [e for _, e in scored]
 
 
 # ---------------------------------------------------------------------- #
