@@ -170,7 +170,12 @@ class ToolDispatcher(object):
         if tool_name.startswith('create_') and isinstance(safe, dict):
             safe = _enrich_create_result(safe)
 
-        out = {"ok": True, "result": safe}
+        out = {
+            "ok": True,
+            "data": safe,
+            "error": None,
+            "suggestion": None,
+        }
         stages["serialize"] = (time.time() - t_ser) * 1000
 
         # 4. 结果体积裁剪：避免 list_scene_objects 这类返回数千项的
@@ -268,7 +273,44 @@ class ToolDispatcher(object):
 # ---------------------------------------------------------------------- #
 
 def _err(msg, kind):
-    return {"ok": False, "error": msg, "type": kind}
+    # type: (str, str) -> Dict[str, Any]
+    """构造统一错误协议，并给出 LLM 可执行的下一步建议。"""
+    suggestions = {
+        "unknown_tool": (
+            "请检查工具名拼写是否准确，并从可用工具列表中选择合适的工具；"
+            "如不确定，先调用 list_tools 或 list_all_tools 获取当前可用工具。"
+        ),
+        "tool_disabled": (
+            "该工具已被用户在「我的资源」中禁用；"
+            "请改用其他可用工具完成目标，或引导用户在设置中启用该工具。"
+        ),
+        "bad_arguments": (
+            "请重新核对工具 schema 中 required 字段与参数类型，"
+            "按规范构造参数对象后重试；必要时可先调用 get_tool_schema 查看详情。"
+        ),
+        "user_cancelled": (
+            "用户已取消本次危险操作；请向用户确认是否继续，"
+            "或改用非危险方式完成目标。"
+        ),
+        "confirm_error": (
+            "确认回调发生异常；请稍后重试，或检查 UI 确认流程是否正常。"
+        ),
+        "timeout": (
+            "工具执行超时；建议缩小操作范围（如减少选中对象、降低精度）后重试，"
+            "或在设置中调高工具超时时间。"
+        ),
+        "exec_error": (
+            "工具执行期间发生异常；请检查参数合法性、对象是否存在、"
+            "以及当前场景状态是否符合工具预期，修正后重试。"
+        ),
+    }
+    return {
+        "ok": False,
+        "data": None,
+        "error": msg,
+        "suggestion": suggestions.get(kind, "请检查输入参数与当前场景状态后重试。"),
+        "type": kind,
+    }
 
 
 def _fmt_stages(stages):
@@ -347,7 +389,7 @@ def _maybe_truncate_result(out, max_bytes, tool_name=""):
     if raw_size <= max_bytes:
         return out
 
-    result = out.get("result")
+    data = out.get("data")
     truncated_info = {
         "tool": tool_name,
         "original_bytes": raw_size,
@@ -358,29 +400,29 @@ def _maybe_truncate_result(out, max_bytes, tool_name=""):
         ),
     }
 
-    if isinstance(result, list):
-        new_result, kept = _truncate_list(result, max_bytes)
-        truncated_info["original_count"] = len(result)
+    if isinstance(data, list):
+        new_data, kept = _truncate_list(data, max_bytes)
+        truncated_info["original_count"] = len(data)
         truncated_info["kept_count"] = kept
-        out["result"] = new_result
-    elif isinstance(result, dict):
-        new_result, kept = _truncate_dict(result, max_bytes)
-        truncated_info["original_keys"] = len(result)
+        out["data"] = new_data
+    elif isinstance(data, dict):
+        new_data, kept = _truncate_dict(data, max_bytes)
+        truncated_info["original_keys"] = len(data)
         truncated_info["kept_keys"] = kept
-        out["result"] = new_result
-    elif isinstance(result, str):
+        out["data"] = new_data
+    elif isinstance(data, str):
         # 字符串直接按字符数估算
         approx_chars = max(1, max_bytes // 2)
-        out["result"] = (
-            result[:approx_chars] + "...(truncated)"
-            if len(result) > approx_chars else result
+        out["data"] = (
+            data[:approx_chars] + "...(truncated)"
+            if len(data) > approx_chars else data
         )
-        truncated_info["original_chars"] = len(result)
+        truncated_info["original_chars"] = len(data)
     else:
         # 其他奇怪类型：转字符串截断
-        s = str(result)
+        s = str(data)
         approx_chars = max(1, max_bytes // 2)
-        out["result"] = s[:approx_chars] + "...(truncated)"
+        out["data"] = s[:approx_chars] + "...(truncated)"
 
     out["__truncated__"] = truncated_info
     return out
@@ -463,17 +505,17 @@ def _summarize_result(out, max_chars=300):
         return str(out)[:max_chars]
     if not out.get("ok"):
         return "FAILED: {}".format(out.get("error") or "?")[:max_chars]
-    res = out.get("result")
-    if isinstance(res, list):
-        return "list[{}]".format(len(res))
-    if isinstance(res, dict):
-        keys = list(res.keys())[:5]
-        return "dict(keys={}, total={})".format(keys, len(res))
-    if isinstance(res, str):
-        if len(res) > max_chars:
-            return "str[{}]: {}...".format(len(res), res[:max_chars])
-        return "str: {}".format(res)
-    return "{}={}".format(type(res).__name__, str(res)[:max_chars])
+    data = out.get("data")
+    if isinstance(data, list):
+        return "list[{}]".format(len(data))
+    if isinstance(data, dict):
+        keys = list(data.keys())[:5]
+        return "dict(keys={}, total={})".format(keys, len(data))
+    if isinstance(data, str):
+        if len(data) > max_chars:
+            return "str[{}]: {}...".format(len(data), data[:max_chars])
+        return "str: {}".format(data)
+    return "{}={}".format(type(data).__name__, str(data)[:max_chars])
 
 
 def _enrich_create_result(result):

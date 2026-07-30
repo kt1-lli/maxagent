@@ -64,13 +64,13 @@ def build_scene_snapshot(sync_tool_runner):
 
     # 对象列表精简：只保留 name + class + position
     if isinstance(obj_result, dict) and obj_result.get('ok'):
-        raw = obj_result.get('result', {})
+        raw = obj_result.get('data', {})
         snapshot['objects'] = _summarize_objects(raw.get('items', []))
         snapshot['object_count'] = raw.get('total', 0)
 
     # 选择集
     if isinstance(sel_result, dict) and sel_result.get('ok'):
-        raw = sel_result.get('result', {})
+        raw = sel_result.get('data', {})
         snapshot['selection'] = [
             item.get('name', '')
             for item in raw.get('items', [])
@@ -78,7 +78,7 @@ def build_scene_snapshot(sync_tool_runner):
 
     # 时间
     if isinstance(time_result, dict) and time_result.get('ok'):
-        snapshot['time'] = time_result.get('result', {})
+        snapshot['time'] = time_result.get('data', {})
 
     return snapshot if snapshot else None
 
