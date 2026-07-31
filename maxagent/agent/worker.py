@@ -734,14 +734,41 @@ class AgentWorker(QObject):
             # 最后一条 user message 中作为上下文锚点。
             task_prompt = get_task_prompt(self._task_ctx)
             if task_prompt and messages:
-                # 找到最后一条 user message，在前面追加任务卡
+                # 找到最后一条 user message，在前面追加任务卡。
+                # 注意：视觉启用时 content 是 OpenAI 视觉协议 list，
+                # 不能直接做字符串拼接，需要按 list 形态合并。
                 for idx in range(len(messages) - 1, -1, -1):
                     if messages[idx].get('role') == 'user':
                         orig = messages[idx].get('content') or ''
-                        messages[idx] = {
-                            'role': 'user',
-                            'content': task_prompt + '\n\n---\n\n' + orig,
-                        }
+                        if isinstance(orig, list):
+                            # 视觉协议 list：在第一个 text 项前追加任务卡
+                            merged = task_prompt + '\n\n---\n\n'
+                            new_content = []
+                            inserted = False
+                            for item in orig:
+                                if not inserted and item.get('type') == 'text':
+                                    new_content.append({
+                                        'type': 'text',
+                                        'text': merged + item.get('text', ''),
+                                    })
+                                    inserted = True
+                                else:
+                                    new_content.append(dict(item))
+                            if not inserted:
+                                # list 中没有 text 项，在头部插入
+                                new_content.insert(0, {
+                                    'type': 'text',
+                                    'text': merged,
+                                })
+                            messages[idx] = {
+                                'role': 'user',
+                                'content': new_content,
+                            }
+                        else:
+                            messages[idx] = {
+                                'role': 'user',
+                                'content': task_prompt + '\n\n---\n\n' + orig,
+                            }
                         break
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
