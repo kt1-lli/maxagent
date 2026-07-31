@@ -91,8 +91,8 @@ class Skill(object):
     def __init__(self, name, description='', trigger_keywords=None,
                  instructions='', created_at=None, updated_at=None,
                  use_count=0, source_session_sid='', file_path=None,
-                 impl_path=None, status='stable'):
-        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str) -> None
+                 impl_path=None, status='stable', patches=None):
+        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]]) -> None
         self.name = name
         self.description = description or ''
         self.trigger_keywords = list(trigger_keywords or [])
@@ -109,6 +109,8 @@ class Skill(object):
         # 运行统计：成功/失败次数
         self.success_count = 0
         self.fail_count = 0
+        # 补丁列表：每次用户/Agent 对参数的修正建议
+        self.patches = list(patches) if patches else []
 
     def to_dict(self):
         return {
@@ -125,6 +127,7 @@ class Skill(object):
             'status': self.status,
             'success_count': self.success_count,
             'fail_count': self.fail_count,
+            'patches': list(self.patches),
         }
 
     @classmethod
@@ -141,6 +144,7 @@ class Skill(object):
             file_path=data.get('file_path'),
             impl_path=data.get('impl_path'),
             status=data.get('status', 'stable'),
+            patches=data.get('patches') or [],
         )
         s.success_count = int(data.get('success_count', 0) or 0)
         s.fail_count = int(data.get('fail_count', 0) or 0)

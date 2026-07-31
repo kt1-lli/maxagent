@@ -201,6 +201,114 @@ def delete_skill(name):
 
 
 @tool(
+    name='propose_skill_patch',
+    description=(
+        '为某个已有 Skill 提议一个参数/流程修正补丁。'
+        '当用户纠正某个 Skill 的执行结果、或执行失败后分析出是 Skill '
+        'instructions 本身有问题时调用。补丁不会立即生效，而是保存为待审'
+        '核条目，用户在设置面板中确认后 apply。'
+    ),
+    category='skills',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def propose_skill_patch(name, reason, instruction_changes=None,
+                        param_defaults=None):
+    # type: (str, str, Optional[Dict[str, str]], Optional[Dict[str, Any]]) -> dict
+    """为 Skill 提议补丁。
+
+    :param name: 技能名
+    :param reason: 补丁原因（为什么需要修正）
+    :param instruction_changes: instructions 中要替换的片段，
+        例如 {'old': '创建半径为 10 的球', 'new': '创建半径为 5 的球'}
+    :param param_defaults: 默认参数修正，例如 {'radius': 5}
+    """
+    s = _mgr().get(name)
+    if s is None:
+        return {'ok': False, 'error': '技能不存在: {}'.format(name)}
+    patch = {
+        'created_at': time.time(),
+        'reason': reason or '',
+        'instruction_changes': dict(instruction_changes) if instruction_changes else {},
+        'param_defaults': dict(param_defaults) if param_defaults else {},
+        'applied': False,
+    }
+    s.patches.append(patch)
+    s.updated_at = time.time()
+    try:
+        _mgr().save(s, overwrite=True)
+    except Exception as exc:  # pylint: disable=broad-except
+        return {'ok': False, 'error': '保存补丁失败: {}'.format(exc)}
+    return {
+        'ok': True,
+        'skill': s.name,
+        'patch_index': len(s.patches) - 1,
+        'pending_patches': len(s.patches),
+    }
+
+
+@tool(
+    name='apply_skill_patch',
+    description=(
+        '应用某个 Skill 的待审核补丁。'
+        '仅限专家模式调用，应用后会修改 Skill 的 instructions 或默认参数。'
+    ),
+    category='skills',
+    dangerous=True,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def apply_skill_patch(name, patch_index=0):
+    # type: (str, int) -> dict
+    """应用指定 Skill 的待审核补丁。
+
+    :param name: 技能名
+    :param patch_index: 补丁在 patches 列表中的索引，默认 0
+    """
+    s = _mgr().get(name)
+    if s is None:
+        return {'ok': False, 'error': '技能不存在: {}'.format(name)}
+    patches = s.patches
+    if not patches or patch_index < 0 or patch_index >= len(patches):
+        return {
+            'ok': False,
+            'error': '补丁索引非法: {}（共 {} 个）'.format(
+                patch_index, len(patches),
+            ),
+        }
+    patch = patches[patch_index]
+    if patch.get('applied'):
+        return {'ok': False, 'error': '该补丁已被应用过'}
+
+    changes = patch.get('instruction_changes') or {}
+    old = changes.get('old', '')
+    new = changes.get('new', '')
+    if old and old in s.instructions:
+        s.instructions = s.instructions.replace(old, new, 1)
+    param_defaults = patch.get('param_defaults') or {}
+    if param_defaults:
+        # 在 instructions 末尾追加默认参数说明
+        lines = ['', '--- 默认参数修正 ---']
+        for key, value in param_defaults.items():
+            lines.append('{}: {}'.format(key, value))
+        s.instructions += '\n' + '\n'.join(lines)
+    patch['applied'] = True
+    s.updated_at = time.time()
+    try:
+        _mgr().save(s, overwrite=True)
+    except Exception as exc:  # pylint: disable=broad-except
+        return {'ok': False, 'error': '应用补丁失败: {}'.format(exc)}
+    return {
+        'ok': True,
+        'skill': s.name,
+        'patch_index': patch_index,
+        'instruction_changes': bool(old and new),
+        'param_defaults': bool(param_defaults),
+    }
+
+
+@tool(
     name='run_skill_code',
     description=(
         '执行某个技能的代码实现（impl.py）。'
@@ -272,5 +380,7 @@ __all__ = [
     'show_skill',
     'delete_skill',
     'run_skill_code',
+    'propose_skill_patch',
+    'apply_skill_patch',
     'reset_manager_for_test',
 ]
