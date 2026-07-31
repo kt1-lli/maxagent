@@ -14,6 +14,8 @@ from __future__ import print_function
 from ..logger import get_logger
 from .dispatcher import ToolDispatcher
 from .dispatcher import ToolExecutionError
+from .batch import batch_execute
+from .batch import set_global_dispatcher
 from .registry import build_openai_tools_schema
 from .registry import get_tool
 from .registry import list_tools
