@@ -56,6 +56,9 @@ logger = get_logger(__name__)
 # Skill 名字校验：只允许中英文 + 数字 + 下划线 + 短横线 + 空格
 _NAME_RE = re.compile(r'^[\w\u4e00-\u9fa5\- ]{1,32}$')
 
+# Skill 生命周期状态
+_VALID_STATUSES = ('draft', 'beta', 'stable', 'deprecated')
+
 # 单个 instructions 最大长度（防止 LLM 写出过长指令污染 prompt）
 MAX_INSTRUCTIONS_CHARS = 4000
 
@@ -78,12 +81,18 @@ def _safe_filename(name):
 
 
 class Skill(object):
-    """一个 Skill 实例（纯数据对象）。"""
+    """一个 Skill 实例。
+
+    Skill 现在支持两种形态：
+    - 声明式：纯 instructions + trigger_keywords，安全、可解释
+    - 过程式：同目录下存在 ``{safe_name}.impl.py``，可被专家模式调用
+    """
 
     def __init__(self, name, description='', trigger_keywords=None,
                  instructions='', created_at=None, updated_at=None,
-                 use_count=0, source_session_sid='', file_path=None):
-        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str]) -> None
+                 use_count=0, source_session_sid='', file_path=None,
+                 impl_path=None, status='stable'):
+        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str) -> None
         self.name = name
         self.description = description or ''
         self.trigger_keywords = list(trigger_keywords or [])
@@ -94,6 +103,12 @@ class Skill(object):
         self.use_count = int(use_count)
         self.source_session_sid = source_session_sid or ''
         self.file_path = file_path
+        self.impl_path = impl_path
+        # 生命周期状态：draft / beta / stable / deprecated
+        self.status = status if status in _VALID_STATUSES else 'stable'
+        # 运行统计：成功/失败次数
+        self.success_count = 0
+        self.fail_count = 0
 
     def to_dict(self):
         return {
@@ -106,11 +121,15 @@ class Skill(object):
             'use_count': self.use_count,
             'source_session_sid': self.source_session_sid,
             'file_path': self.file_path,
+            'impl_path': self.impl_path,
+            'status': self.status,
+            'success_count': self.success_count,
+            'fail_count': self.fail_count,
         }
 
     @classmethod
     def from_dict(cls, data):
-        return cls(
+        s = cls(
             name=data.get('name', ''),
             description=data.get('description', ''),
             trigger_keywords=data.get('trigger_keywords') or [],
@@ -120,7 +139,44 @@ class Skill(object):
             use_count=int(data.get('use_count', 0) or 0),
             source_session_sid=data.get('source_session_sid', ''),
             file_path=data.get('file_path'),
+            impl_path=data.get('impl_path'),
+            status=data.get('status', 'stable'),
         )
+        s.success_count = int(data.get('success_count', 0) or 0)
+        s.fail_count = int(data.get('fail_count', 0) or 0)
+        return s
+
+    def has_impl(self):
+        # type: () -> bool
+        """本 Skill 是否包含可执行代码实现。"""
+        if not self.impl_path:
+            return False
+        return os.path.isfile(self.impl_path)
+
+    def load_impl(self):
+        # type: () -> Any
+        """加载 impl.py 并返回入口 run 函数。
+
+        加载规则：
+        - impl.py 必须存在且与同目录 skill json 同名
+        - 文件中必须定义 ``run(ctx, **kwargs)`` 函数
+        - 每次调用都重新加载，支持热更新；加载失败抛出异常
+        """
+        if not self.has_impl():
+            raise RuntimeError('Skill 没有实现文件: {}'.format(self.name))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'maxagent_skill_impl_{}'.format(_safe_filename(self.name)),
+            self.impl_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError('无法加载 impl 文件: {}'.format(self.impl_path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        run = getattr(module, 'run', None)
+        if run is None or not callable(run):
+            raise RuntimeError('impl.py 缺少 run(ctx, **kwargs) 入口')
+        return run
 
     def brief(self):
         """简短一行描述，给 system prompt 用。"""
@@ -128,11 +184,20 @@ class Skill(object):
         if len(desc) > MAX_BRIEF_DESC_CHARS:
             desc = desc[:MAX_BRIEF_DESC_CHARS] + '...'
         kws = ' / '.join(self.trigger_keywords[:3]) if self.trigger_keywords else ''
+        status_tag = ''
+        if self.status != 'stable':
+            status_tag = '[{}]'.format(self.status)
+        impl_tag = '[code]' if self.has_impl() else ''
+        tags = ' '.join(filter(None, [status_tag, impl_tag]))
+        if tags:
+            tags = ' ' + tags
         if kws:
-            return '- {name}（触发词: {kw}）：{desc}'.format(
-                name=self.name, kw=kws, desc=desc,
+            return '- {name}{tags}（触发词: {kw}）：{desc}'.format(
+                name=self.name, tags=tags, kw=kws, desc=desc,
             )
-        return '- {name}：{desc}'.format(name=self.name, desc=desc)
+        return '- {name}{tags}：{desc}'.format(
+            name=self.name, tags=tags, desc=desc,
+        )
 
 
 class SkillManager(object):
@@ -158,6 +223,23 @@ class SkillManager(object):
             self._base, '{}.json'.format(_safe_filename(skill.name)),
         )
 
+    def _impl_path_for(self, skill):
+        # type: (Skill) -> str
+        """根据 skill 名推断同目录 impl.py 路径。"""
+        base = os.path.splitext(self._file_path_for(skill))[0]
+        return base + '.impl.py'
+
+    def _attach_impl_path(self, skill):
+        # type: (Skill) -> None
+        """如果同目录存在 impl.py，则自动绑定到 skill。"""
+        if not skill.file_path:
+            return
+        impl_path = os.path.splitext(skill.file_path)[0] + '.impl.py'
+        if os.path.isfile(impl_path):
+            skill.impl_path = impl_path
+        else:
+            skill.impl_path = None
+
     # ------------------------------------------------------------------ #
     # 索引（损坏时扫描重建）
     # ------------------------------------------------------------------ #
@@ -180,6 +262,8 @@ class SkillManager(object):
                 with open(full, 'r', encoding='utf-8') as fh:
                     data = json.load(fh)
                 s = Skill.from_dict(data)
+                # 自动绑定同目录 impl.py
+                self._attach_impl_path(s)
                 # 禁用项对 LLM 完全不可见——既不进 system prompt，也不
                 # 出现在 list_skills 工具的返回；但仍然保留磁盘文件，
                 # 用户在「我的资源」面板能看到并随时启用。
@@ -220,6 +304,7 @@ class SkillManager(object):
                 with open(full, 'r', encoding='utf-8') as fh:
                     data = json.load(fh)
                 s = Skill.from_dict(data)
+                self._attach_impl_path(s)
                 s.file_path = full
                 out.append(s)
             except (OSError, ValueError) as exc:
@@ -256,6 +341,12 @@ class SkillManager(object):
                     len(skill.instructions), MAX_INSTRUCTIONS_CHARS,
                 ),
             )
+        if skill.status and skill.status not in _VALID_STATUSES:
+            raise ValueError(
+                '技能状态非法: {}，可选: {}'.format(
+                    skill.status, ', '.join(_VALID_STATUSES),
+                ),
+            )
         if not overwrite and self.get(skill.name) is not None:
             raise ValueError('同名技能已存在: {}'.format(skill.name))
 
@@ -264,6 +355,8 @@ class SkillManager(object):
             skill.created_at = skill.updated_at
         path = self._file_path_for(skill)
         skill.file_path = path
+        # 若已有同目录 impl.py 则自动关联
+        self._attach_impl_path(skill)
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as fh:
             json.dump(skill.to_dict(), fh, ensure_ascii=False, indent=2)
@@ -320,6 +413,9 @@ class SkillManager(object):
         lines.append(
             '当用户的请求与某个技能的描述或触发词相符时，'
             '请按照该技能的 instructions 执行；'
+            '如果技能标记了 [code] 且用户明确要求执行该技能代码，'
+            '请使用 run_skill_code 工具调用其代码实现（该工具为 dangerous，'
+            '需要用户确认）；'
             '如果没有完全匹配的技能，按用户的具体要求处理即可。'
         )
 
