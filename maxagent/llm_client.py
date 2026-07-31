@@ -326,6 +326,13 @@ class LLMClient(object):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        # 通用参数覆盖：profile.param_overrides 最后生效，可覆盖
+        # temperature / top_p / max_tokens 等任意字段，兼容不同模型/网关
+        # 的特殊要求（如 Moonshot kimi-k3 需要 temperature=1）。
+        profile = getattr(self, '_profile', None)
+        overrides = getattr(profile, 'param_overrides', None)
+        if overrides:
+            payload.update(overrides)
         # DeepSeek 增强：本客户端已在 _chat_stream / _chat_blocking 中
         # 完整支持 reasoning_content 的收集与回传（见 reasoning_chunks
         # 处理逻辑）。对于支持 thinking 的模型（如 deepseek-reasoner），
@@ -704,10 +711,12 @@ class LLMClient(object):
 
 def build_client_from_profile(profile) -> LLMClient:
     """从 LLMProfile 构造客户端。"""
-    return LLMClient(
+    client = LLMClient(
         base_url=profile.base_url,
         api_key=profile.api_key,
         model=profile.model,
         timeout=profile.timeout,
         extra_headers=profile.extra_headers,
     )
+    client._profile = profile
+    return client

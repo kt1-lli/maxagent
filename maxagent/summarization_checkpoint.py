@@ -182,25 +182,81 @@ class ContextCompressor(object):
 
     def _call_llm_summarize(self, prompt_messages):
         # type: (List[Dict[str, str]]) -> str
-        """调用 LLM 生成摘要（轻量级参数）。"""
+        """调用 LLM 生成摘要（轻量级参数）。
+
+        如果 LLM 调用失败或返回空，则回退到本地滑动窗口策略：
+        直接丢弃 messages 列表中最老的一半非保护消息，保留 system、
+        最近 user、最近 assistant 以及最近 tool_call/tool_result 配对。
+        """
         if self._llm is None:
             raise RuntimeError('未提供 LLM 客户端')
 
         # 使用轻量级参数：短 max_tokens、正 temperature
         # 注意：这里不流式、不启用 tools，纯文本生成
-        response = self._llm.chat(
-            messages=prompt_messages,
-            max_tokens=self._max_summary_tokens,
-            temperature=0.3,  # 允许适度创造性，但不要太发散
-            stream=False,
-            tools_schema=None,
-        )
+        temp = 0.3  # 允许适度创造性，但不要太发散
+        # 通用参数覆盖：例如 Moonshot kimi-k3 要求 temperature=1。
+        profile = getattr(self._llm, '_profile', None)
+        overrides = getattr(profile, 'param_overrides', None)
+        if isinstance(overrides, dict) and "temperature" in overrides:
+            temp = overrides["temperature"]
+        try:
+            response = self._llm.chat(
+                messages=prompt_messages,
+                max_tokens=self._max_summary_tokens,
+                temperature=temp,
+                stream=False,
+                tools_schema=None,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('LLM 摘要失败，回退到本地滑动窗口: %s', exc)
+            fallback = self._fallback_window_summary(prompt_messages)
+            return self._fallback_summary(fallback)
+
         # 兼容不同返回格式
+        content = ''
         if isinstance(response, dict):
-            return response.get('content', '') or response.get('text', '')
-        if isinstance(response, str):
-            return response
-        return str(response)
+            content = response.get('content', '') or response.get('text', '')
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
+
+        if not content:
+            logger.warning('LLM 摘要返回为空，回退到本地滑动窗口')
+            fallback = self._fallback_window_summary(prompt_messages)
+            return self._fallback_summary(fallback)
+        return content
+
+    def _fallback_window_summary(self, prompt_messages):
+        # type: (List[Dict[str, str]]) -> List[Dict[str, Any]]
+        """摘要失败时回退到本地滑动窗口，返回简化后的 messages 列表。
+
+        策略：
+        - 如果 messages 长度 <= 6，保留全部；
+        - 否则从索引 1 开始（跳过 system）丢弃一半非保护消息；
+        - 保护消息：system（索引 0）、最近 4 条消息。
+        """
+        messages = prompt_messages
+        if len(messages) <= 6:
+            return messages
+
+        # 保护最近 4 条
+        protect_count = min(4, len(messages) - 1)
+        protected_tail = messages[-protect_count:]
+
+        # 中间可丢弃部分：从索引 1 开始，到保护区分界
+        middle_start = 1
+        middle_end = len(messages) - protect_count
+        middle = messages[middle_start:middle_end]
+
+        if not middle:
+            return messages
+
+        # 丢弃中间的一半（保留后半）
+        keep_from = len(middle) // 2
+        kept_middle = middle[keep_from:]
+
+        return [messages[0]] + kept_middle + protected_tail
 
     def _parse_summary(self, raw_text, original_count):
         # type: (str, int) -> SummarizationCheckpoint

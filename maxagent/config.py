@@ -19,6 +19,7 @@ import os
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
+from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -109,6 +110,10 @@ class LLMProfile:
     # 模型采样参数
     temperature: float = 0.2
     max_tokens: int = 4096
+    # 部分模型/网关（如 Moonshot kimi-k3）服务端仅接受 temperature=1，
+    # 非 1 值会直接返回 400。开启后所有发往该 profile 的请求（含
+    # reasoning 轮次和自动摘要）都会强制使用 temperature=1。
+    force_temperature_one: bool = False
     # 自定义 HTTP 头（如公司网关需要的鉴权头）
     extra_headers: Dict[str, str] = field(default_factory=dict)
     # Agent 工具调用循环的最大轮数。批量任务（如"测试所有工具"）
@@ -135,6 +140,12 @@ class LLMProfile:
     # GPT-4o (in 5 / out 15)；GPT-4o-mini (in 0.15 / out 0.6)。
     price_input_per_1m: float = 0.0
     price_output_per_1m: float = 0.0
+    # 通用参数覆盖：用于覆盖发往 LLM 的 payload 中任意字段的字典。
+    # 未来任何模型/网关对 temperature / top_p / max_tokens 等参数有
+    # 特殊要求时，只需在这里配置即可，无需改动代码。
+    # 老配置中的 force_temperature_one=True 会在 from_dict 中自动迁移为
+    # param_overrides["temperature"] = 1.0。
+    param_overrides: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict:
         data = asdict(self)
@@ -158,6 +169,17 @@ class LLMProfile:
         # 过滤掉未知字段，保持向前兼容
         valid_keys = {f for f in cls.__dataclass_fields__}
         data = {k: v for k, v in data.items() if k in valid_keys}
+        # 兼容迁移：老配置 force_temperature_one=True 且 param_overrides 中
+        # 没有 temperature 时，自动把 temperature=1.0 写入 param_overrides，
+        # 保证旧配置在新版中行为不变。
+        force_one = bool(data.get("force_temperature_one", False))
+        overrides = data.get("param_overrides") or {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+        if force_one and "temperature" not in overrides:
+            overrides = dict(overrides)
+            overrides["temperature"] = 1.0
+            data["param_overrides"] = overrides
         return cls(**data)
 
 

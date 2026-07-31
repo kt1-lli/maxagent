@@ -258,14 +258,14 @@ def _run_dispatch_loop(prompt, profile, max_rounds, timeout_sec,
                 'dispatch_task round=%d tool=%s ok=%s elapsed=%dms',
                 rounds, tool_name, ok, int(elapsed_ms),
             )
-            content_payload = result.get('result') if ok else result
+            content_payload = result.get('data') if ok else result
 
             try:
                 content_str = json.dumps(
                     result, ensure_ascii=False, default=repr,
                 )
             except (TypeError, ValueError):
-                content_str = json.dumps({'ok': ok, 'result': repr(result)})
+                content_str = json.dumps({'ok': ok, 'data': repr(result)})
 
             conv.add_tool_result(
                 tool_call_id=tc_id,
