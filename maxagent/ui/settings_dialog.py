@@ -3846,7 +3846,8 @@ class SettingsDialog(QtWidgets.QDialog):
             '描述：{}\n'
             '代码实现：{}\n'
             '成功/失败：{}/{}\n'
-            '使用次数：{}\n\n'
+            '使用次数：{}\n'
+            '待审核补丁：{}\n\n'
             '--- 流程 ---\n{}'
         ).format(
             sk.name,
@@ -3856,6 +3857,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '是' if sk.has_impl() else '否',
             sk.success_count, sk.fail_count,
             sk.use_count,
+            len([p for p in sk.patches if not p.get('applied')]),
             sk.instructions,
         )
         dlg = QtWidgets.QDialog(self)
