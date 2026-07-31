@@ -3699,6 +3699,10 @@ class SettingsDialog(QtWidgets.QDialog):
         toggle_btn.setToolTip('切换当前选中技能的启用状态（与左侧勾选框等价）')
         toggle_btn.clicked.connect(self._on_skill_toggle_enabled)
         btn_row.addWidget(toggle_btn)
+        status_btn = QtWidgets.QPushButton(_btn_label('🏷', '切换状态'))
+        status_btn.setToolTip('切换技能生命周期：stable / beta / draft / deprecated')
+        status_btn.clicked.connect(self._on_skill_cycle_status)
+        btn_row.addWidget(status_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_skill_delete)
@@ -3736,9 +3740,21 @@ class SettingsDialog(QtWidgets.QDialog):
                 label = sk.name + (
                     '  —  ' + desc if desc else ''
                 )
+                status_tag = ''
+                if sk.status == 'draft':
+                    status_tag = ' [草案]'
+                elif sk.status == 'beta':
+                    status_tag = ' [内测]'
+                elif sk.status == 'deprecated':
+                    status_tag = ' [已弃用]'
+                if sk.has_impl():
+                    status_tag += ' [code]'
+                label = sk.name + status_tag + (
+                    '  —  ' + desc if desc else ''
+                )
                 item = QtWidgets.QListWidgetItem(label)
                 item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
-                if sk.name in disabled:
+                if sk.name in disabled or sk.status == 'deprecated':
                     item.setCheckState(QtCore.Qt.Unchecked)
                     item.setForeground(QtGui.QBrush(QtGui.QColor('#888')))
                 else:
@@ -3747,6 +3763,7 @@ class SettingsDialog(QtWidgets.QDialog):
                         QtGui.QBrush(QtGui.QColor('#a8e6a8')),
                     )
                 item.setData(QtCore.Qt.UserRole, sk.name)
+                item.setData(QtCore.Qt.UserRole + 1, sk.status)
                 self._skills_list.addItem(item)
             if not all_skills:
                 placeholder = QtWidgets.QListWidgetItem('（暂无技能）')
@@ -3822,10 +3839,23 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '不存在', '该技能可能已被删除，请刷新列表。',
             )
             return
-        text = '名称：{}\n触发词：{}\n描述：{}\n\n--- 流程 ---\n{}'.format(
+        text = (
+            '名称：{}\n'
+            '状态：{}\n'
+            '触发词：{}\n'
+            '描述：{}\n'
+            '代码实现：{}\n'
+            '成功/失败：{}/{}\n'
+            '使用次数：{}\n\n'
+            '--- 流程 ---\n{}'
+        ).format(
             sk.name,
+            sk.status,
             ' / '.join(sk.trigger_keywords) or '（无）',
             sk.description or '（无）',
+            '是' if sk.has_impl() else '否',
+            sk.success_count, sk.fail_count,
+            sk.use_count,
             sk.instructions,
         )
         dlg = QtWidgets.QDialog(self)
@@ -3840,6 +3870,46 @@ class SettingsDialog(QtWidgets.QDialog):
         close.clicked.connect(dlg.accept)
         v.addWidget(close, 0, QtCore.Qt.AlignRight)
         dlg.exec_()
+
+    def _on_skill_cycle_status(self):
+        """循环切换 skill 生命周期状态。"""
+        item = self._skills_list.currentItem()
+        if not item or not (item.flags() & QtCore.Qt.ItemIsUserCheckable):
+            QtWidgets.QMessageBox.information(
+                self, '请选择', '请先在列表中选择一个技能。',
+            )
+            return
+        name = item.data(QtCore.Qt.UserRole)
+        if not name:
+            return
+        try:
+            from .. import skills as skills_mod
+            from .. import disabled_registry as dr
+            sk = skills_mod.SkillManager().get(name)
+            if sk is None:
+                for s in skills_mod.SkillManager().list_all_skills():
+                    if s.name == name:
+                        sk = s
+                        break
+            if sk is None:
+                return
+            cycle = ['draft', 'beta', 'stable', 'deprecated']
+            idx = cycle.index(sk.status) if sk.status in cycle else 0
+            new_status = cycle[(idx + 1) % len(cycle)]
+            sk.status = new_status
+            skills_mod.SkillManager().save(sk, overwrite=True)
+            # deprecated 自动禁用，stable 自动启用
+            if new_status == 'deprecated':
+                dr.set_skill_disabled(name, True)
+            elif new_status == 'stable':
+                dr.set_skill_disabled(name, False)
+            logger.info('技能状态切换: %s → %s', name, new_status)
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                self, '失败', '切换状态失败：{}'.format(exc),
+            )
+            return
+        self._refresh_skills_list()
 
     def _on_skill_delete(self):
         item = self._skills_list.currentItem()

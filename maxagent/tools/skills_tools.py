@@ -22,12 +22,37 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import time
+
+from typing import Any
+from typing import Dict
 from typing import List
 from typing import Optional
 
 from ..skills import Skill
 from ..skills import SkillManager
 from .registry import tool
+
+
+# run_skill_code 需要的运行时上下文工厂
+def _make_skill_ctx():
+    # type: () -> Dict[str, Any]
+    """为 impl.py 中的 run(ctx, **kwargs) 提供基础上下文。
+
+    ctx 暴露当前代码可安全访问的能力：
+    - dispatcher: ToolDispatcher 单例，用于调用其他工具
+    - skill_manager: SkillManager 单例，用于读写 skill
+    - skill: 当前被执行的 skill 实例（注入时由调用方替换）
+    """
+    ctx = {
+        'skill_manager': _mgr(),
+    }
+    try:
+        from ..tools.dispatcher import ToolDispatcher
+        ctx['dispatcher'] = ToolDispatcher.get_instance()
+    except Exception:  # pylint: disable=broad-except
+        ctx['dispatcher'] = None
+    return ctx
 
 
 # 模块级单例 manager，避免每次工具调用都重新扫盘
@@ -55,14 +80,16 @@ def reset_manager_for_test(base_dir=None):
         '"学会一个新技能"等长期保留意图时调用此工具。'
         '技能本质是一段自然语言流程描述，用户下次提到 trigger_keywords 中的'
         '任一关键词时，会自动把 instructions 注入给你参考执行。'
+        '如果同目录存在同名 .impl.py 文件，则该技能可被 run_skill_code 调用。'
     ),
     category='skills',
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
 )
-def save_skill(name, description, instructions, trigger_keywords=None):
-    # type: (str, str, str, Optional[List[str]]) -> dict
+def save_skill(name, description, instructions, trigger_keywords=None,
+               status='stable'):
+    # type: (str, str, str, Optional[List[str]], str) -> dict
     """保存技能。
 
     :param name: 技能名（中英文/数字/下划线/短横线/空格，1-32 字符），
@@ -72,12 +99,14 @@ def save_skill(name, description, instructions, trigger_keywords=None):
         被注入给你阅读，所以请写得清晰可执行（步骤、参数、检查点等）
     :param trigger_keywords: 触发关键词列表（用户输入命中其中任一时
         会激活本技能的详细 instructions）。例如 ["标准导出", "export fbx"]
+    :param status: 生命周期状态，可选 draft / beta / stable / deprecated
     """
     skill = Skill(
         name=name,
         description=description,
         trigger_keywords=trigger_keywords or [],
         instructions=instructions,
+        status=status,
     )
     saved = _mgr().save(skill, overwrite=True)
     return {
@@ -86,6 +115,8 @@ def save_skill(name, description, instructions, trigger_keywords=None):
         'description': saved.description,
         'trigger_keywords': saved.trigger_keywords,
         'instructions_chars': len(saved.instructions),
+        'status': saved.status,
+        'has_impl': saved.has_impl(),
     }
 
 
@@ -110,6 +141,8 @@ def list_skills():
             'description': s.description,
             'trigger_keywords': s.trigger_keywords,
             'use_count': s.use_count,
+            'status': s.status,
+            'has_impl': s.has_impl(),
         })
     return {'count': len(out), 'skills': out}
 
@@ -140,6 +173,10 @@ def show_skill(name):
         'trigger_keywords': s.trigger_keywords,
         'instructions': s.instructions,
         'use_count': s.use_count,
+        'status': s.status,
+        'has_impl': s.has_impl(),
+        'success_count': s.success_count,
+        'fail_count': s.fail_count,
     }
 
 
@@ -163,10 +200,77 @@ def delete_skill(name):
     return {'deleted': ok, 'name': name}
 
 
+@tool(
+    name='run_skill_code',
+    description=(
+        '执行某个技能的代码实现（impl.py）。'
+        '仅当技能包含 .impl.py 代码文件且当前处于专家模式时调用。'
+        '普通 instructions 技能不要调用此工具，继续按 prompt 执行即可。'
+        '调用前必须通过 expert_confirm 或 UI 获得用户明确授权。'
+    ),
+    category='skills',
+    dangerous=True,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def run_skill_code(name, params=None):
+    # type: (str, Optional[Dict[str, Any]]) -> dict
+    """执行 Skill 的代码实现。
+
+    :param name: 技能名
+    :param params: 传给 impl.py 中 run(ctx, **params) 的关键字参数
+    """
+    s = _mgr().get(name)
+    if s is None:
+        return {'ok': False, 'error': '技能不存在: {}'.format(name)}
+    if not s.has_impl():
+        return {
+            'ok': False,
+            'error': '技能 {} 没有代码实现'.format(name),
+        }
+    try:
+        run = s.load_impl()
+    except Exception as exc:  # pylint: disable=broad-except
+        return {
+            'ok': False,
+            'error': '加载 impl.py 失败: {}'.format(exc),
+        }
+
+    ctx = _make_skill_ctx()
+    ctx['skill'] = s
+    params = dict(params) if params else {}
+    try:
+        result = run(ctx, **params)
+        s.success_count += 1
+        s.updated_at = time.time()
+        try:
+            _mgr().save(s, overwrite=True)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {
+            'ok': True,
+            'result': result,
+            'skill': s.name,
+        }
+    except Exception as exc:  # pylint: disable=broad-except
+        s.fail_count += 1
+        s.updated_at = time.time()
+        try:
+            _mgr().save(s, overwrite=True)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {
+            'ok': False,
+            'error': '执行失败: {}'.format(exc),
+            'skill': s.name,
+        }
+
+
 __all__ = [
     'save_skill',
     'list_skills',
     'show_skill',
     'delete_skill',
+    'run_skill_code',
     'reset_manager_for_test',
 ]
