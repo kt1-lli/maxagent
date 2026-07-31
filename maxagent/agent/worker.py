@@ -1455,7 +1455,10 @@ class AgentWorker(QObject):
             # 7. 尝试解析 JSON；如果解析失败，按整段文本作为 summary
             reflection = self._parse_reflection(reflection_text)
 
-            # 8. 写入事件日志
+            # 8. 更新本轮命中 Skill 的 telemetry
+            self._update_skill_telemetry(tool_stats)
+
+            # 9. 写入事件日志
             if self._event_logger is not None:
                 self._event_logger.log(
                     'session_reflection',
@@ -1549,6 +1552,52 @@ class AgentWorker(QObject):
             except Exception:  # pylint: disable=broad-except
                 pass
         return False
+
+    def _update_skill_telemetry(self, tool_stats):
+        # type: (Dict[str, Any]) -> None
+        """根据本轮会话更新命中 Skill 的运行统计。
+
+        命中规则：任意 user 消息包含某 enabled skill 的 trigger_keyword。
+        会话成功结束则 success_count +1；存在工具失败则 fail_count +1。
+        仅更新已有 skill，不创建新 skill。
+        """
+        try:
+            from ..skills import SkillManager
+            mgr = SkillManager()
+            skills = mgr.list_skills()
+            if not skills:
+                return
+            user_texts = [
+                (m.content or '').lower()
+                for m in self._conv.messages if m.role == 'user'
+            ]
+            matched = []
+            for sk in skills:
+                for kw in (sk.trigger_keywords or []):
+                    kw_lower = kw.lower()
+                    if any(kw_lower in t for t in user_texts):
+                        matched.append(sk)
+                        break
+            if not matched:
+                return
+            failed = tool_stats.get('failed', 0) > 0
+            for sk in matched:
+                sk.use_count += 1
+                if failed:
+                    sk.fail_count += 1
+                else:
+                    sk.success_count += 1
+                sk.updated_at = time.time()
+                try:
+                    mgr.save(sk, overwrite=True)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+            logger.debug(
+                '更新 Skill telemetry: matched=%d failed=%s',
+                len(matched), failed,
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     def _detect_user_correction(self):
         # type: () -> bool
