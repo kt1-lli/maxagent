@@ -369,6 +369,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.temperature_spin.setValue(0.7)
         right.addRow('温度:', self.temperature_spin)
 
+        self.force_temp_one_chk = QtWidgets.QCheckBox()
+        self.force_temp_one_chk.setToolTip(
+            '部分模型/网关（如 Moonshot kimi-k3）服务端只接受 temperature=1，\n'
+            '开启后会向 param_overrides["temperature"] 写入 1.0，\n'
+            '所有请求（含 reasoning 轮次和自动摘要）最终都会以 1.0 发送。',
+        )
+        right.addRow('强制 temperature=1:', self.force_temp_one_chk)
+
         self.max_tokens_spin = QtWidgets.QSpinBox()
         self.max_tokens_spin.setRange(0, 200000)
         self.max_tokens_spin.setSingleStep(256)
@@ -2518,6 +2526,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.api_key_edit.setText(prof.api_key or '')
         self.model_edit.setText(prof.model)
         self.temperature_spin.setValue(float(prof.temperature))
+        # 强制 temperature=1 的 UI 状态从 param_overrides 中读取，
+        # 兼容老配置 force_temperature_one 已在 config.from_dict 中迁移。
+        overrides = getattr(prof, 'param_overrides', None)
+        force_one_checked = (
+            isinstance(overrides, dict)
+            and overrides.get("temperature") == 1.0
+        )
+        self.force_temp_one_chk.setChecked(force_one_checked)
         self.max_tokens_spin.setValue(int(prof.max_tokens or 0))
         self.timeout_spin.setValue(int(prof.timeout))
         self.max_loops_spin.setValue(int(getattr(prof, 'max_tool_loops', 40) or 40))
@@ -2604,6 +2620,7 @@ class SettingsDialog(QtWidgets.QDialog):
         # 数值控件：用 setValue 而不是 setText，避免 QSpinBox 触发
         # 类型转换异常
         self.temperature_spin.setValue(float(tpl['temperature']))
+        self.force_temp_one_chk.setChecked(False)
         self.max_tokens_spin.setValue(int(tpl['max_tokens']))
         self.timeout_spin.setValue(int(tpl['timeout']))
         self.max_loops_spin.setValue(int(tpl['max_tool_loops']))
@@ -2978,6 +2995,16 @@ class SettingsDialog(QtWidgets.QDialog):
             new_prof.api_key = self.api_key_edit.text()
             new_prof.model = self.model_edit.text().strip()
             new_prof.temperature = float(self.temperature_spin.value())
+            new_prof.force_temperature_one = bool(
+                self.force_temp_one_chk.isChecked(),
+            )
+            # 强制 temperature=1 复选框现在通过 param_overrides 生效
+            overrides = dict(getattr(base, 'param_overrides', None) or {})
+            if self.force_temp_one_chk.isChecked():
+                overrides["temperature"] = 1.0
+            else:
+                overrides.pop("temperature", None)
+            new_prof.param_overrides = overrides
             new_prof.max_tokens = max_tokens_value
             new_prof.timeout = int(self.timeout_spin.value())
             new_prof.max_tool_loops = int(self.max_loops_spin.value())
@@ -2996,6 +3023,12 @@ class SettingsDialog(QtWidgets.QDialog):
             api_key=self.api_key_edit.text(),
             model=self.model_edit.text().strip(),
             temperature=float(self.temperature_spin.value()),
+            force_temperature_one=bool(self.force_temp_one_chk.isChecked()),
+            param_overrides=(
+                {"temperature": 1.0}
+                if self.force_temp_one_chk.isChecked()
+                else {}
+            ),
             max_tokens=max_tokens_value,
             timeout=int(self.timeout_spin.value()),
             max_tool_loops=int(self.max_loops_spin.value()),

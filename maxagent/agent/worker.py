@@ -917,6 +917,8 @@ class AgentWorker(QObject):
                         )
                     except Exception:  # pylint: disable=broad-except
                         pass
+                # 会话正常结束：做一次最佳努力的自动反思
+                self._reflect_session()
                 self.finished.emit()
                 return
 
@@ -1046,19 +1048,28 @@ class AgentWorker(QObject):
         ok = True
         try:
             result = self._sync_tool_runner(name, args)
-            result_dict = {'ok': True, 'result': result}
+            result_dict = {
+                'ok': True,
+                'data': result,
+                'error': None,
+                'suggestion': None,
+            }
         except ToolExecutionError as exc:
             ok = False
             result_dict = {
                 'ok': False,
+                'data': None,
                 'error': str(exc),
+                'suggestion': '请检查工具参数与当前场景状态，修正后重试。',
                 'tool': name,
             }
         except Exception as exc:  # pylint: disable=broad-except
             ok = False
             result_dict = {
                 'ok': False,
+                'data': None,
                 'error': '{}: {}'.format(type(exc).__name__, exc),
+                'suggestion': '工具执行异常，请检查参数合法性及场景状态后重试。',
                 'tool': name,
             }
 
@@ -1087,7 +1098,7 @@ class AgentWorker(QObject):
                         'name': name,
                         'ok': ok,
                         'call_id': call_id,
-                        'result': result_dict,
+                        'data': result_dict,
                     },
                     session_id=getattr(self, '_session_id', '') or '',
                 )
@@ -1150,7 +1161,7 @@ class AgentWorker(QObject):
 
         # 处理结果
         if isinstance(verify_result, dict) and verify_result.get('ok'):
-            info = verify_result.get('result', {})
+            info = verify_result.get('data', {})
             if info.get('found'):
                 return {
                     'target': target_name,
@@ -1349,6 +1360,227 @@ class AgentWorker(QObject):
             'removed': removed,
             'summary': summary,
             'error': '' if ok else '可压缩内容不足',
+        }
+
+    def _reflect_session(self):
+        # type: () -> None
+        """会话结束时的最佳努力自动反思。
+
+        收集本轮会话的关键信息，调用 LLM 生成反思建议，并将结果写入
+        事件日志。不直接写入长期记忆，而是作为 memory_proposal 等待
+        用户确认。所有异常都会被吞掉，不能影响主路径关闭会话。
+        """
+        session_id = getattr(self, '_session_id', '') or ''
+        try:
+            # 1. 判断是否有必要反思：过短且无工具调用则跳过
+            user_msgs = [
+                m for m in self._conv.messages if m.role == 'user'
+            ]
+            tool_calls = [
+                m for m in self._conv.messages
+                if m.role == 'assistant' and m.tool_calls
+            ]
+            if len(user_msgs) <= 1 and not tool_calls:
+                logger.debug('会话过短且无工具调用，跳过自动反思')
+                return
+
+            # 2. 收集最近 3 条用户输入
+            recent_user_inputs = [
+                (m.content or '') for m in user_msgs[-3:]
+            ]
+
+            # 3. 统计工具调用成功/失败比例
+            tool_stats = self._collect_tool_stats()
+
+            # 4. 检测是否使用了 Skill 或收到用户纠正
+            has_skill = self._detect_skill_usage()
+            has_correction = self._detect_user_correction()
+
+            # 5. 构造反思 prompt
+            reflection_prompt = self._build_reflection_prompt(
+                recent_user_inputs=recent_user_inputs,
+                tool_stats=tool_stats,
+                has_skill=has_skill,
+                has_correction=has_correction,
+            )
+
+            # 6. 调用 LLM 生成反思结果（子线程调用，不阻塞主线程）
+            resp = self._llm.chat(
+                messages=reflection_prompt,
+                tools=None,
+                stream=False,
+                temperature=0.3,
+            )
+            reflection_text = ''
+            if isinstance(resp, dict):
+                reflection_text = resp.get('content', '') or ''
+            elif isinstance(resp, str):
+                reflection_text = resp
+
+            if not reflection_text:
+                return
+
+            # 7. 尝试解析 JSON；如果解析失败，按整段文本作为 summary
+            reflection = self._parse_reflection(reflection_text)
+
+            # 8. 写入事件日志
+            if self._event_logger is not None:
+                self._event_logger.log(
+                    'session_reflection',
+                    payload=reflection,
+                    session_id=session_id,
+                )
+            logger.info(
+                '会话反思完成: summary=%s confidence=%s topic=%s',
+                reflection.get('summary', '')[:30],
+                reflection.get('confidence', 0),
+                reflection.get('topic', ''),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('自动反思失败（已忽略）: %s', exc)
+
+    def _collect_tool_stats(self):
+        # type: () -> Dict[str, Any]
+        """统计本轮会话中的工具调用成功/失败情况。"""
+        total = 0
+        success = 0
+        failed = 0
+        tool_names = []
+        for m in self._conv.messages:
+            if m.role != 'tool':
+                continue
+            total += 1
+            tool_names.append(m.name or '')
+            try:
+                payload = json.loads(m.content or '{}')
+                if payload.get('ok'):
+                    success += 1
+                else:
+                    failed += 1
+            except (TypeError, ValueError):
+                failed += 1
+        return {
+            'total': total,
+            'success': success,
+            'failed': failed,
+            'tool_names': tool_names,
+        }
+
+    def _detect_skill_usage(self):
+        # type: () -> bool
+        """检测本轮会话是否涉及 Skill 调用或学习。"""
+        for m in self._conv.messages:
+            if m.role != 'user':
+                continue
+            text = (m.content or '').lower()
+            if any(kw in text for kw in ['skill', '技能', '学习', '记住']):
+                return True
+        # 检查事件日志中是否有 skill 相关事件
+        if self._event_logger is not None:
+            try:
+                events = self._event_logger.search(
+                    kind='skill_call', topk=1,
+                    start_ts=time.time() - 3600,
+                )
+                if events:
+                    return True
+            except Exception:  # pylint: disable=broad-except
+                pass
+        return False
+
+    def _detect_user_correction(self):
+        # type: () -> bool
+        """检测本轮是否有用户纠正助手的迹象。"""
+        correction_keywords = [
+            '不对', '错了', '不是', '重新', '改一下', '不是这样',
+            '不要', '别', '撤销', '不是这样的', '请重新',
+        ]
+        for m in self._conv.messages:
+            if m.role != 'user':
+                continue
+            text = (m.content or '').lower()
+            if any(kw in text for kw in correction_keywords):
+                return True
+        return False
+
+    def _build_reflection_prompt(self, recent_user_inputs, tool_stats,
+                                 has_skill, has_correction):
+        # type: (List[str], Dict[str, Any], bool, bool) -> List[Dict[str, str]]
+        """构造生成反思建议的 LLM prompt。"""
+        user_inputs_text = '\n'.join(
+            '{}. {}'.format(i + 1, t)
+            for i, t in enumerate(recent_user_inputs)
+        )
+        tool_summary = (
+            '工具调用总数: {total}，成功: {success}，失败: {failed}，'
+            '涉及工具: {tools}'.format(
+                total=tool_stats.get('total', 0),
+                success=tool_stats.get('success', 0),
+                failed=tool_stats.get('failed', 0),
+                tools=', '.join(tool_stats.get('tool_names', [])),
+            )
+        )
+        system_msg = (
+            '你是一名会话分析助手。请基于以下本轮 3ds Max AI 助手与'
+            '用户的交互信息，生成一段结构化的反思建议，用于决定是否'
+            '更新长期记忆。\n'
+            '请严格按以下 JSON 格式输出（不要包含 markdown 代码块标记）：\n'
+            '{\n'
+            '  "summary": "用一句话概括本轮用户的核心需求",\n'
+            '  "memory_proposal": "如果观察到值得写入长期记忆的偏好、'
+            '习惯或模式，请具体描述；否则写空字符串",\n'
+            '  "confidence": 0.0到1.0之间的数字，表示这个建议的可信度,\n'
+            '  "topic": "建议写入的 topic 名，如 user-preferences；'
+            '若无可写则写空字符串"\n'
+            '}\n'
+            '注意：只有稳定、跨会话可复用的偏好或工作模式才值得写入'
+            '长期记忆；一次性请求或临时表达请返回空 memory_proposal。'
+        )
+        user_msg = (
+            '最近用户输入（由新到旧）：\n{}\n\n{}\n\n'
+            '是否使用了 Skill/学习相关表达: {}\n'
+            '是否检测到用户纠正: {}\n\n'
+            '请生成反思建议。'
+        ).format(
+            user_inputs_text,
+            tool_summary,
+            '是' if has_skill else '否',
+            '是' if has_correction else '否',
+        )
+        return [
+            {'role': 'system', 'content': system_msg},
+            {'role': 'user', 'content': user_msg},
+        ]
+
+    def _parse_reflection(self, text):
+        # type: (str) -> Dict[str, Any]
+        """解析 LLM 返回的反思文本，失败时降级为简单结构。"""
+        cleaned = text.strip()
+        # 去掉可能的 markdown 代码块
+        if cleaned.startswith('```'):
+            lines = cleaned.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines and lines[-1].startswith('```'):
+                lines = lines[:-1]
+            cleaned = '\n'.join(lines).strip()
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return {
+                    'summary': str(parsed.get('summary', '')),
+                    'memory_proposal': str(parsed.get('memory_proposal', '')),
+                    'confidence': float(parsed.get('confidence', 0.0) or 0.0),
+                    'topic': str(parsed.get('topic', '')),
+                }
+        except (TypeError, ValueError):
+            pass
+        # 兜底：把整段文本作为 summary
+        return {
+            'summary': cleaned,
+            'memory_proposal': '',
+            'confidence': 0.0,
+            'topic': '',
         }
 
     def _dump_history_for_summary(self):
