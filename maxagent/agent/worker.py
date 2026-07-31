@@ -45,6 +45,7 @@ from .scene_snapshot import build_scene_snapshot
 from .scene_snapshot import snapshot_to_prompt_text
 from .task_context import get_task_prompt
 from .task_context import TaskContextManager
+from ..learning.skill_generator import propose_skill_from_recorder
 from ..macro_recorder import MacroRecorder
 from ..session_memory import get_session_memory_mgr
 from ..summarization_checkpoint import ContextCompressor
@@ -89,6 +90,8 @@ class AgentWorker(QObject):
     finished = Signal()
     # 失败: (error_message)
     failed = Signal(str)
+    # 建议保存 Skill: (skill_manifest_dict, impl_code_str)
+    skill_proposed = Signal(dict, str)
     # 状态文本: (status_text) - 用于 UI 显示"思考中..."等
     status_changed = Signal(str)
     # 历史被裁剪: (removed_count, current_tokens, budget_tokens)
@@ -946,6 +949,8 @@ class AgentWorker(QObject):
                         pass
                 # 会话正常结束：做一次最佳努力的自动反思
                 self._reflect_session()
+                # 如果本轮有成功修改场景的操作，提议沉淀为 Skill
+                self._propose_skill_from_session()
                 self.finished.emit()
                 return
 
@@ -1492,6 +1497,36 @@ class AgentWorker(QObject):
             'failed': failed,
             'tool_names': tool_names,
         }
+
+    def _propose_skill_from_session(self):
+        # type: () -> None
+        """从本轮 Macro Recorder 生成 Skill 建议并发射信号。
+
+        仅在以下情况触发：
+        - Macro Recorder 中有成功修改场景的操作
+        - 会话不是被取消或失败
+        生成结果通过 skill_proposed 信号交给 UI 层确认保存。
+        """
+        try:
+            if self._macro_recorder is None or self._macro_recorder.is_empty():
+                return
+            session_id = getattr(self, '_session_id', '') or ''
+            proposal = propose_skill_from_recorder(
+                self._macro_recorder,
+                user_input=self._current_user_input or '',
+                session_id=session_id,
+            )
+            if not proposal:
+                return
+            manifest = proposal.get('manifest')
+            impl_code = proposal.get('impl_code', '')
+            if manifest and manifest.get('instructions'):
+                logger.info(
+                    '生成 Skill 建议: %s', manifest.get('name'),
+                )
+                self.skill_proposed.emit(manifest, impl_code)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('生成 Skill 建议失败（已忽略）: %s', exc)
 
     def _detect_skill_usage(self):
         # type: () -> bool

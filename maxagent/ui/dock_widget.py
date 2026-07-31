@@ -1777,6 +1777,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.usage_received.connect(self._on_usage_received)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
+        self._worker.skill_proposed.connect(self._on_skill_proposed)
         # 已经手动 add_user 了，告诉 worker 不要再 add
         self._worker.run_in_thread(text, skip_add_user=True)
 
@@ -1993,6 +1994,47 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 失败也保存：用户能在历史里看到失败原因
         self._save_current_session()
         self._refresh_context_label()
+
+    def _on_skill_proposed(self, manifest, impl_code):
+        # type: (dict, str) -> None
+        """worker 提议把本轮操作沉淀为 Skill，弹出确认对话框。"""
+        name = manifest.get('name', '未命名')
+        text = (
+            '检测到本次会话执行了一系列成功操作。\n'
+            '是否把该流程保存为可复用 Skill？\n\n'
+            '名称：{}\n'
+            '状态：draft\n'
+            '触发词：{}\n\n'
+            '保存后可在设置面板的技能管理中查看和编辑。'
+        ).format(
+            name,
+            ' / '.join(manifest.get('trigger_keywords', []) or ['（无）']),
+        )
+        ret = QtWidgets.QMessageBox.question(
+            self, '保存为 Skill？', text,
+            QtWidgets.QMessageBox.Save
+            | QtWidgets.QMessageBox.Discard,
+            QtWidgets.QMessageBox.Discard,
+        )
+        if ret != QtWidgets.QMessageBox.Save:
+            return
+        try:
+            from ..skills import Skill, SkillManager
+            skill = Skill.from_dict(manifest)
+            mgr = SkillManager()
+            mgr.save(skill, overwrite=True)
+            if impl_code:
+                impl_path = mgr._impl_path_for(skill)
+                with open(impl_path, 'w', encoding='utf-8') as fh:
+                    fh.write(impl_code)
+            self._renderer.add_status(
+                '已保存 Skill 草案：{}'.format(name),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.critical(
+                self, '保存失败',
+                '保存 Skill 失败：{}'.format(exc),
+            )
 
     # ------------------------------------------------------------------ #
     # 主线程同步工具执行
