@@ -127,6 +127,10 @@ class LLMProfile:
     #   - 本地小模型 (Qwen 7B/14B 32K): 8000~16000
     #   - 长上下文专家模型 (200K+): 64000
     max_history_tokens: int = 32000
+    # 当前模型是否支持视觉输入（image_url / image content part）。
+    # True 时 Agent 会自动在需要视觉验证的节点发送 viewport 截图。
+    # False 时使用文本降级描述。
+    vision_supported: bool = False
     # 长会话自动摘要触发阈值（token）。超过该阈值时，系统会在下一轮
     # LLM 调用前后台请求模型生成摘要替换早期消息。0 表示禁用自动摘要。
     auto_summarize_threshold: int = 0
