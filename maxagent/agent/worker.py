@@ -43,6 +43,7 @@ from ..tools import ToolExecutionError
 from .conversation import Conversation
 from .scene_snapshot import build_scene_snapshot
 from .scene_snapshot import snapshot_to_prompt_text
+from .planner import TaskPlanner
 from .task_context import get_task_prompt
 from .task_context import TaskContextManager
 from ..learning.skill_generator import propose_skill_from_recorder
@@ -92,6 +93,10 @@ class AgentWorker(QObject):
     failed = Signal(str)
     # 建议保存 Skill: (skill_manifest_dict, impl_code_str)
     skill_proposed = Signal(dict, str)
+    # 任务计划变更信号：UI 可据此刷新任务树
+    plan_changed = Signal()
+    # 子步骤状态报告信号：(step_description, status)
+    step_status_changed = Signal(str, str)
     # 状态文本: (status_text) - 用于 UI 显示"思考中..."等
     status_changed = Signal(str)
     # 历史被裁剪: (removed_count, current_tokens, budget_tokens)
@@ -143,6 +148,9 @@ class AgentWorker(QObject):
         # 任务情景记忆：跨轮次持久化用户核心意图，防止 LLM 在工具调用
         # 间隙丢失上下文或偏离主线。纯内存，会话结束自动清空。
         self._task_ctx = TaskContextManager()  # type: TaskContextManager
+
+        # 任务规划器：把用户请求拆成可跟踪、可干预的子目标序列。
+        self._planner = TaskPlanner()  # type: TaskPlanner
 
         # ---------- 会话级操作回放 (Macro Recorder) ----------
         self._macro_recorder = MacroRecorder()  # type: MacroRecorder
@@ -507,14 +515,18 @@ class AgentWorker(QObject):
         # type: (str) -> None
         """基于用户输入解析任务意图，自动创建/更新 MissionCard。
 
-        解析规则（覆盖常见场景）：
-        - 创建 + 空间定位 → mission="create_and_place"
-        - 仅创建（无位置词）→ mission="create"
-        - 修改属性 → mission="modify"
-        - 查询信息 → mission="query"
-        - 布局/排列 → mission="layout"
+        同时生成任务规划（TaskPlanner），并在每次 user 输入后刷新计划。
         """
         text = (user_input or '').strip()
+
+        # 规划器：为新请求生成计划
+        if text:
+            self._planner.create_plan(text)
+            try:
+                self.plan_changed.emit()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
         if not text:
             return
 
@@ -773,6 +785,20 @@ class AgentWorker(QObject):
                                 'content': task_prompt + '\n\n---\n\n' + orig,
                             }
                         break
+            # 注入任务计划到 system prompt（在 sys_addon 之前，优先级高）
+            plan_prompt = self._planner.to_prompt_text()
+            if plan_prompt:
+                if messages and messages[0].get('role') == 'system':
+                    base = messages[0].get('content') or ''
+                    messages[0] = {
+                        'role': 'system',
+                        'content': base + '\n' + plan_prompt,
+                    }
+                else:
+                    messages.insert(
+                        0, {'role': 'system', 'content': plan_prompt},
+                    )
+
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
                 try:
@@ -830,6 +856,20 @@ class AgentWorker(QObject):
                         len(messages),
                         len(tools_schema or []),
                     )
+                # 设置当前规划步骤为 in_progress 并通知 UI
+                if self._planner.is_active():
+                    cur = self._planner.current_step()
+                    if cur is not None and cur.status == 'pending':
+                        cur.status = 'in_progress'
+                        cur.started_at = time.time()
+                        try:
+                            self.plan_changed.emit()
+                            self.step_status_changed.emit(
+                                cur.description, cur.status,
+                            )
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+
                 # reasoning_mode=True：工具调用/规划轮次锁定低温度 0.1，
                 # 减少参数幻觉和过度联想；最终回复轮次（无 tools）保持原温度
                 resp = self._llm.chat(
@@ -967,6 +1007,21 @@ class AgentWorker(QObject):
                 # 若任务已完成，清空任务卡避免残留
                 if not self._task_ctx.is_active():
                     self._task_ctx.complete()
+
+            # 规划器步骤推进（仅当当前步骤已完成时）
+            if self._planner.is_active():
+                cur = self._planner.current_step()
+                if cur is not None and cur.status == 'in_progress':
+                    self._planner.advance()
+                    try:
+                        self.plan_changed.emit()
+                        next_step = self._planner.current_step()
+                        if next_step is not None:
+                            self.step_status_changed.emit(
+                                next_step.description, next_step.status,
+                            )
+                    except Exception:  # pylint: disable=broad-except
+                        pass
 
             # 第一批工具执行完成后注入"完成即停"软提示（每轮对话仅一次）：
             # 防止 LLM 看到工具成功结果后产生"既然能创建球，那再顺便
@@ -1458,7 +1513,18 @@ class AgentWorker(QObject):
             # 8. 更新本轮命中 Skill 的 telemetry
             self._update_skill_telemetry(tool_stats)
 
-            # 9. 写入事件日志
+            # 9. 完成任务计划（如果有）
+            if self._planner.is_active():
+                self._planner.advance()
+                try:
+                    self.plan_changed.emit()
+                    cur = self._planner.current_step()
+                    if cur is not None:
+                        self.step_status_changed.emit(cur.description, cur.status)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+            # 10. 写入事件日志
             if self._event_logger is not None:
                 self._event_logger.log(
                     'session_reflection',
