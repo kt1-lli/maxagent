@@ -621,6 +621,35 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         ctx_row.addWidget(self.compress_btn)
         outer.addLayout(ctx_row)
 
+        # === 中部：任务计划面板（可折叠）===
+        self._plan_widget = QtWidgets.QWidget()
+        plan_layout = QtWidgets.QVBoxLayout(self._plan_widget)
+        plan_layout.setContentsMargins(8, 4, 8, 4)
+        plan_layout.setSpacing(4)
+        plan_header = QtWidgets.QHBoxLayout()
+        plan_header.setSpacing(6)
+        plan_title = QtWidgets.QLabel(_ee('📋') + ' 任务计划')
+        plan_title.setStyleSheet('color:#d4d4d4;font-weight:bold;')
+        plan_header.addWidget(plan_title)
+        plan_header.addStretch(1)
+        self._plan_toggle_btn = QtWidgets.QPushButton('折叠')
+        self._plan_toggle_btn.setFixedWidth(50)
+        self._plan_toggle_btn.setProperty('class', 'miniBtn')
+        self._plan_toggle_btn.clicked.connect(self._on_toggle_plan_panel)
+        plan_header.addWidget(self._plan_toggle_btn)
+        plan_layout.addLayout(plan_header)
+        self._plan_tree = QtWidgets.QTreeWidget()
+        self._plan_tree.setHeaderHidden(True)
+        self._plan_tree.setMaximumHeight(140)
+        self._plan_tree.setMinimumHeight(60)
+        self._plan_tree.setStyleSheet(
+            'QTreeWidget { background-color:#252526; border:1px solid #3c3c3c;'
+            ' color:#d4d4d4; }'
+            'QTreeWidget::item { padding:2px 0; }'
+        )
+        plan_layout.addWidget(self._plan_tree)
+        outer.addWidget(self._plan_widget)
+
         # === 中部：QSplitter (聊天区 | 输入区) ===
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         self.splitter.setChildrenCollapsible(False)
@@ -1778,6 +1807,10 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.skill_proposed.connect(self._on_skill_proposed)
+        self._worker.plan_changed.connect(self._refresh_plan_tree)
+        self._worker.step_status_changed.connect(
+            self._on_plan_step_status_changed,
+        )
         # 已经手动 add_user 了，告诉 worker 不要再 add
         self._worker.run_in_thread(text, skip_add_user=True)
 
@@ -1994,6 +2027,59 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 失败也保存：用户能在历史里看到失败原因
         self._save_current_session()
         self._refresh_context_label()
+        # 任务计划标记当前步骤失败
+        if self._worker is not None:
+            try:
+                self._worker._planner.mark_current_failed(err)
+                self._refresh_plan_tree()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    def _on_toggle_plan_panel(self):
+        """折叠/展开任务计划面板。"""
+        if self._plan_tree.isVisible():
+            self._plan_tree.hide()
+            self._plan_toggle_btn.setText('展开')
+        else:
+            self._plan_tree.show()
+            self._plan_toggle_btn.setText('折叠')
+
+    def _refresh_plan_tree(self):
+        """根据 worker 的 planner 刷新任务树。"""
+        if self._worker is None:
+            return
+        planner = self._worker._planner
+        if not planner.is_active():
+            self._plan_tree.clear()
+            return
+        self._plan_tree.clear()
+        root = QtWidgets.QTreeWidgetItem(self._plan_tree)
+        root.setText(0, planner.title or '当前任务')
+        root.setExpanded(True)
+        icon_map = {
+            'pending': '⬜',
+            'in_progress': '🔄',
+            'done': '✅',
+            'failed': '❌',
+            'skipped': '⏭️',
+            'need_help': '⚠️',
+        }
+        for step in planner.steps:
+            item = QtWidgets.QTreeWidgetItem(root)
+            icon = icon_map.get(step.status, '⬜')
+            item.setText(0, '{} {}'.format(icon, step.description))
+            item.setData(0, QtCore.Qt.UserRole, step.id)
+            if step.status == 'in_progress':
+                item.setBackground(0, QtGui.QBrush(QtGui.QColor('#3a3a00')))
+        self._plan_tree.addTopLevelItem(root)
+
+    def _on_plan_step_status_changed(self, description, status):
+        """worker 报告当前步骤状态变化。"""
+        # 主要刷新由 plan_changed 负责，这里只做状态条提示
+        if status == 'in_progress':
+            self.status_label.setText(
+                _ee('🔄') + ' 步骤：{}'.format(description),
+            )
 
     def _on_skill_proposed(self, manifest, impl_code):
         # type: (dict, str) -> None
