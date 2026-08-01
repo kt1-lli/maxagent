@@ -393,6 +393,52 @@ class AgentWorker(QObject):
             )
         return out
 
+    def _maybe_attach_viewport(self):
+        # type: () -> None
+        """自动触发视口截图并追加到当前 user 消息。
+
+        触发条件：
+        - 任务规划器存在当前步骤且 steps.needs_vision=True
+        - 当前 LLMProfile 显式声明 vision_supported=True
+        - 同一规划步骤最多只触发一次（避免循环中重复截图）
+
+        实现注意：截图函数内部通过 run_on_main 投递到 Max 主线程，
+        但本方法仍由 worker 子线程调用，因此是安全的。
+        """
+        if not self._planner.is_active():
+            return
+        cur = self._planner.current_step()
+        if cur is None or not cur.needs_vision:
+            return
+        # 同一 step 只截一次，避免多轮工具调用间重复截图
+        if getattr(cur, '_vision_attached', False):
+            return
+        profile = getattr(self._llm, '_profile', None)
+        if profile is None:
+            return
+        if not bool(getattr(profile, 'vision_supported', False)):
+            return
+        try:
+            from ..tools.viewport_capture import capture_viewport_attachment
+            att = capture_viewport_attachment(name='auto_viewport.png')
+            if att is None:
+                logger.debug('自动视口截图返回空，跳过')
+                return
+            # 把附件追加到本轮最后一条 user 消息（即当前用户输入）
+            for msg in reversed(self._conv.messages):
+                if msg.role == 'user':
+                    if msg.attachments is None:
+                        msg.attachments = []
+                    msg.attachments.append(att)
+                    cur._vision_attached = True
+                    logger.info(
+                        '自动追加视口截图: step=%s model=%s',
+                        cur.description, getattr(profile, 'model', '')
+                    )
+                    return
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('自动视口截图失败（已忽略）: %s', exc)
+
     def cancel(self):
         """请求取消当前对话轮（下一次工具结束/LLM 流式分块时生效）。"""
         self._cancel_event.set()
@@ -740,6 +786,14 @@ class AgentWorker(QObject):
                             )
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.warning('自动压缩检查异常: %s', exc)
+
+            # 视觉感知自动触发：若当前规划步骤需要视觉验证，且当前
+            # profile 声明支持视觉输入，则自动截取视口并追加到本轮
+            # user 消息。截图发生在 _apply_attachments 之前，确保附件
+            # 能随消息一起进入 OpenAI 视觉协议。
+            self._maybe_attach_viewport()
+            # 附件追加后必须重新生成 messages，否则图片不会进入请求体
+            messages = self._conv.to_openai_messages()
 
             # 多模态附件合并：把 user 消息的图片附件按视觉协议拼进
             # content（不支持视觉时降级为纯文本提示）。必须在 token

@@ -433,6 +433,16 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         right.addRow('', self.tools_chk)
 
+        self.vision_supported_chk = QtWidgets.QCheckBox('模型支持视觉输入')
+        self.vision_supported_chk.setChecked(False)
+        self.vision_supported_chk.setToolTip(
+            '勾选后，Agent 在「需要视觉验证」的步骤会自动截取 3ds Max\n'
+            '当前视口并作为 image_url 发送给该模型。\n'
+            '只有真正支持 OpenAI 多模态协议的模型才应勾选，否则可能\n'
+            '触发 400 / token 浪费。',
+        )
+        right.addRow('', self.vision_supported_chk)
+
         # 高级：自定义 header
         self.headers_edit = QtWidgets.QPlainTextEdit()
         self.headers_edit.setPlaceholderText(
@@ -2542,6 +2552,9 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         self.stream_chk.setChecked(bool(prof.stream))
         self.tools_chk.setChecked(bool(prof.supports_tools))
+        self.vision_supported_chk.setChecked(
+            bool(getattr(prof, 'vision_supported', False)),
+        )
         if prof.extra_headers:
             text = '\n'.join(
                 '{}={}'.format(k, v)
@@ -2629,6 +2642,7 @@ class SettingsDialog(QtWidgets.QDialog):
         # 复选框
         self.stream_chk.setChecked(bool(tpl['stream']))
         self.tools_chk.setChecked(bool(tpl['supports_tools']))
+        self.vision_supported_chk.setChecked(False)
 
         # 自定义 Header 清空
         self.headers_edit.setPlainText(tpl['extra_headers'])
@@ -3013,6 +3027,9 @@ class SettingsDialog(QtWidgets.QDialog):
             )
             new_prof.stream = bool(self.stream_chk.isChecked())
             new_prof.supports_tools = bool(self.tools_chk.isChecked())
+            new_prof.vision_supported = bool(
+                self.vision_supported_chk.isChecked(),
+            )
             new_prof.extra_headers = headers
             return new_prof
 
@@ -3035,6 +3052,7 @@ class SettingsDialog(QtWidgets.QDialog):
             max_history_tokens=int(self.max_history_tokens_spin.value()),
             stream=bool(self.stream_chk.isChecked()),
             supports_tools=bool(self.tools_chk.isChecked()),
+            vision_supported=bool(self.vision_supported_chk.isChecked()),
             extra_headers=headers,
         )
 

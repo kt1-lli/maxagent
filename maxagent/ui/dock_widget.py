@@ -1765,12 +1765,23 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # 当前 profile 决定是否走视觉协议
         whitelist = list(getattr(self._config.config,
                                  'vision_model_whitelist', []))
-        vision_on = bool(getattr(self._config.config,
-                                 'vision_enabled', True))
+        cfg_vision_on = bool(getattr(self._config.config,
+                                     'vision_enabled', True))
+        active_prof = self._config.get_active_profile()
+        prof_vision_supported = bool(
+            getattr(active_prof, 'vision_supported', False)
+        ) if active_prof is not None else False
+        # 视觉真正生效 = 全局开关打开 AND 当前模型在视觉白名单内
+        # AND profile 自身声明支持视觉输入。三个条件缺一不可。
+        model_name = getattr(active_prof, 'model', '') or ''
+        vision_on = (
+            cfg_vision_on
+            and model_supports_vision(model_name, whitelist)
+            and prof_vision_supported
+        )
         # 当前 profile 的 Function Calling 总开关（profile.supports_tools）。
         # 这个值在 UI"启用 Function Calling"复选框里维护，过去版本里只写
         # 不读 → 用户关掉对话仍然带 tools，对 vita 这类视觉网关是致命的。
-        active_prof = self._config.get_active_profile()
         tools_enabled = bool(
             getattr(active_prof, 'supports_tools', True)
         ) if active_prof is not None else True
@@ -1783,6 +1794,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             max_history_tokens=self._get_active_max_history_tokens(),
             price_input_per_1m=self._get_active_prices()[0],
             price_output_per_1m=self._get_active_prices()[1],
+            # 视觉协议是否启用：这里只决定"能不能把图片塞进 user content"，
+            # 自动截图触发在 worker 内部再根据 profile.vision_supported 判断。
             vision_enabled=vision_on,
             vision_whitelist=whitelist,
             tools_enabled=tools_enabled,
@@ -1922,9 +1935,16 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             whitelist = list(getattr(cfg, 'vision_model_whitelist', []))
             prof = self._config.get_active_profile()
             model_name = ''
+            prof_vision_supported = False
             if prof is not None:
                 model_name = getattr(prof, 'model', '') or ''
-            supported = model_supports_vision(model_name, whitelist)
+                prof_vision_supported = bool(
+                    getattr(prof, 'vision_supported', False)
+                )
+            supported = (
+                model_supports_vision(model_name, whitelist)
+                and prof_vision_supported
+            )
             self.vision_hint.set_state(
                 has_attachments=has_atts,
                 vision_enabled=vision_on,
