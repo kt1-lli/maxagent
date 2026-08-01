@@ -32,8 +32,9 @@ _NEED_HELP = 'need_help'
 class PlanStep(object):
     """单个规划步骤。"""
 
-    def __init__(self, description, step_id=None, depends_on=None):
-        # type: (str, Optional[str], Optional[List[str]]) -> None
+    def __init__(self, description, step_id=None, depends_on=None,
+                 needs_vision=False):
+        # type: (str, Optional[str], Optional[List[str]], bool) -> None
         self.id = step_id or 'step_{}'.format(uuid.uuid4().hex[:6])
         self.description = description
         self.status = _PENDING  # type: str
@@ -41,6 +42,7 @@ class PlanStep(object):
         self.result_summary = ''  # type: str
         self.started_at = 0.0
         self.finished_at = 0.0
+        self.needs_vision = bool(needs_vision)  # type: bool
 
     def to_dict(self):
         # type: () -> Dict[str, Any]
@@ -52,6 +54,7 @@ class PlanStep(object):
             'result_summary': self.result_summary,
             'started_at': self.started_at,
             'finished_at': self.finished_at,
+            'needs_vision': self.needs_vision,
         }
 
     @classmethod
@@ -61,6 +64,7 @@ class PlanStep(object):
             description=data.get('description', ''),
             step_id=data.get('id'),
             depends_on=data.get('depends_on') or [],
+            needs_vision=bool(data.get('needs_vision', False)),
         )
         s.status = data.get('status', _PENDING)
         s.result_summary = data.get('result_summary', '')
@@ -216,7 +220,7 @@ class TaskPlanner(object):
 
         query_keywords = ['查', '列出', '多少', '看看', '显示', '统计']
         if any(kw in text for kw in query_keywords):
-            return [PlanStep('查询：{}'.format(text))]
+            return [PlanStep('查询：{}'.format(text), needs_vision='看看' in text)]
 
         # 创建 + 空间定位
         if any(kw in text for kw in ['创建', '新建', '生成', '添加']) \
@@ -225,14 +229,14 @@ class TaskPlanner(object):
             steps.append(PlanStep('确认参考对象存在并记录其位置/边界'))
             steps.append(PlanStep('创建目标对象'))
             steps.append(PlanStep('将目标对象摆放到指定位置'))
-            steps.append(PlanStep('复核结果是否符合预期'))
+            steps.append(PlanStep('复核结果是否符合预期', needs_vision=True))
             return steps
 
         # 创建无空间
         if any(kw in text for kw in ['创建', '新建', '生成', '添加', '做', '画']):
             return [
                 PlanStep('创建目标对象'),
-                PlanStep('复核结果'),
+                PlanStep('复核结果', needs_vision=True),
             ]
 
         # 修改
@@ -241,7 +245,7 @@ class TaskPlanner(object):
             return [
                 PlanStep('定位需要修改的对象'),
                 PlanStep('执行修改'),
-                PlanStep('复核修改结果'),
+                PlanStep('复核修改结果', needs_vision=True),
             ]
 
         # 布局
@@ -250,7 +254,16 @@ class TaskPlanner(object):
             return [
                 PlanStep('确定布局中心和基准对象'),
                 PlanStep('按规则计算目标位置'),
-                PlanStep('摆放对象并复核'),
+                PlanStep('摆放对象并复核', needs_vision=True),
+            ]
+
+        # 视觉/效果/渲染相关触发词：直接进视觉复核流程
+        vision_keywords = ['截图', '截屏', '看看', '效果', '渲染', '材质',
+                           '灯光', '相机', '视图', '截图看看', '截个图']
+        if any(kw in text for kw in vision_keywords):
+            return [
+                PlanStep('执行用户请求：{}'.format(text)),
+                PlanStep('截取视口复核结果', needs_vision=True),
             ]
 
         # 默认：两步
