@@ -32,14 +32,47 @@ fn _maxagent_resolve_root = (
     rootDir
 )
 
--- 安全调用 Python：捕获 MaxScript 与 Python 端异常并弹窗
-fn _maxagent_safe_call_python pycode = (
+-- 安全调用 Python：捕获 MaxScript 与 Python 端异常，并把完整 traceback
+-- 输出到 Max Listener，方便用户按 F11 查看。
+fn _maxagent_safe_call_python pycode titleStr = (
+    local _wrapper = ""
+    _wrapper += "import sys, traceback\n"
+    _wrapper += "_maxagent_err = None\n"
+    _wrapper += "try:\n"
+    _wrapper += "    " + pycode + "\n"
+    _wrapper += "    _maxagent_err = ('OK', None)\n"
+    _wrapper += "except Exception as _e:\n"
+    _wrapper += "    _tb = traceback.format_exc()\n"
+    _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
+    _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
+    _wrapper += "    print(_tb)\n"
+    _wrapper += "    _maxagent_err = ('ERR', _msg + '\\n' + _tb)\n"
+    _wrapper += "_maxagent_err\n"
+
+    local _result = undefined
     try (
-        python.execute pycode
+        _result = python.execute _wrapper
     ) catch (
-        local err = getCurrentException()
-        messagebox ("MaxAgent 调用 Python 失败:\n\n" + err) title:"MaxAgent"
+        local _err = "MaxScript python.execute 失败: " + (getCurrentException() as string)
+        format "%\n" _err to:listener
+        messagebox _err title:titleStr
+        return false
     )
+
+    if _result == undefined do (
+        messagebox "python.execute 未返回结果" title:titleStr
+        return false
+    )
+    if _result[1] == "OK" do return true
+
+    local _msg = "MaxAgent 调用 Python 失败。完整异常已输出到 Max Listener（F11）。\n\n"
+    _msg += "常见原因:\n"
+    _msg += "  • 安装不完整或更新后未重新打包/重新安装 mzp\n"
+    _msg += "  • Python 代码存在导入/语法错误\n\n"
+    _msg += "异常摘要:\n" + _result[2]
+    format "%\n" _msg to:listener
+    messagebox _msg title:titleStr
+    false
 )
 
 -- 确保 maxagent 包路径已加入 sys.path（重复注入是无害的，幂等）
@@ -58,31 +91,38 @@ fn _maxagent_ensure_path = (
     pycode += "_root = r'" + g_max_agent_root + "'\n"
     pycode += "if _root not in sys.path:\n"
     pycode += "    sys.path.insert(0, _root)\n"
-    _maxagent_safe_call_python pycode
+    pycode += "print('[MaxAgent] python path injected from install.ms: ' + _root)\n"
+    try (
+        python.execute pycode
+    ) catch (
+        local err = getCurrentException()
+        messagebox ("MaxAgent 注入 sys.path 失败:\n\n" + err) title:"MaxAgent"
+        return false
+    )
     true
 )
 
 fn g_show_max_agent = (
     if not _maxagent_ensure_path() do return false
     -- 用户主动触发（拖入、菜单、宏脚本），强制显示
-    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=True)"
+    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=True)" "MaxAgent 显示失败"
 )
 
 fn g_hide_max_agent = (
     if not _maxagent_ensure_path() do return false
-    _maxagent_safe_call_python "import maxagent; maxagent.hide()"
+    _maxagent_safe_call_python "import maxagent; maxagent.hide()" "MaxAgent 隐藏失败"
 )
 
 fn g_toggle_max_agent = (
     if not _maxagent_ensure_path() do return false
-    _maxagent_safe_call_python "import maxagent; maxagent.toggle()"
+    _maxagent_safe_call_python "import maxagent; maxagent.toggle()" "MaxAgent 切换失败"
 )
 
 -- 自动启动入口（脚本被拖到视口或 Run Script 加载时执行）
 -- 走 force=False，由 AppConfig.auto_show_on_startup 决定是否显示
 fn g_autostart_max_agent = (
     if not _maxagent_ensure_path() do return false
-    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=False)"
+    _maxagent_safe_call_python "import maxagent.startup as _s; _s.show_panel(force=False)" "MaxAgent 启动失败"
 )
 
 -- 注册菜单项 / 宏脚本（出现在 Customize > Action 列表中）

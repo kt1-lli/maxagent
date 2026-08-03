@@ -25,25 +25,79 @@
 --   fn 定义的跨会话可见性。
 -- ----------------------------------------------------------------------
 
+fn _maxagent_ensure_python_path = (
+    -- 兜底注入 sys.path（幂等，重启后必跑）。
+    -- MaxAgent 包安装在 getDir #userScripts\maxagent\，因此父目录 userScripts
+    -- 必须出现在 sys.path 中。
+    local _userScripts = getDir #userScripts
+    _userScripts = trimRight _userScripts "\\"
+    local _pyInit = ""
+    _pyInit += "import sys, os\n"
+    _pyInit += "_root = r'" + _userScripts + "'\n"
+    _pyInit += "if _root not in sys.path:\n"
+    _pyInit += "    sys.path.insert(0, _root)\n"
+    _pyInit += "_pkg = os.path.join(_root, 'maxagent')\n"
+    _pyInit += "print('[MaxAgent] python path injected, package dir: ' + _pkg)\n"
+    python.execute _pyInit
+    true
+)
+
+-- 安全执行 Python 代码，并把完整 Python 异常回显到 Max Listener 与弹窗。
+-- 返回值 #(true, result) 或 #(false, tracebackString)
+fn _maxagent_safe_python code = (
+    local _wrapper = ""
+    _wrapper += "import sys, traceback, os\n"
+    _wrapper += "_maxagent_err = None\n"
+    _wrapper += "try:\n"
+    _wrapper += "    " + code + "\n"
+    _wrapper += "    _maxagent_err = ('OK', None)\n"
+    _wrapper += "except Exception as _e:\n"
+    _wrapper += "    _tb = traceback.format_exc()\n"
+    _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
+    _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
+    _wrapper += "    print(_tb)\n"
+    _wrapper += "    _maxagent_err = ('ERR', _msg + '\\n' + _tb)\n"
+    _wrapper += "_maxagent_err\n"
+
+    local _result = undefined
+    try (
+        _result = python.execute _wrapper
+    ) catch (
+        local _msErr = "MaxScript python.execute 失败: " + (getCurrentException() as string)
+        format "%\n" _msErr to:listener
+        return #(false, _msErr)
+    )
+
+    -- _result 是 Python tuple ('OK', None) 或 ('ERR', msg)
+    if _result == undefined do return #(false, "python.execute 未返回结果")
+    local _status = _result[1]
+    if _status == "OK" then (
+        #(true, undefined)
+    ) else (
+        #(false, _result[2])
+    )
+)
+
+fn _maxagent_report_error title msg = (
+    format "%\n" msg to:listener
+    messagebox msg title:title
+)
+
 macroScript MaxAgent_Show
     category:"MaxAgent"
     tooltip:"显示 MaxAgent 面板"
     buttontext:"MaxAgent"
 (
-    try (
-        -- 兜底注入 sys.path（幂等，重启后必跑）
-        local _userScripts = getDir #userScripts
-        _userScripts = trimRight _userScripts "\\"
-        local _pyInit = ""
-        _pyInit += "import sys\n"
-        _pyInit += "_root = r'" + _userScripts + "'\n"
-        _pyInit += "if _root not in sys.path:\n"
-        _pyInit += "    sys.path.insert(0, _root)\n"
-        python.execute _pyInit
-
-        python.execute "import maxagent.startup as _s; _s.show_panel(force=True)"
-    ) catch (
-        messagebox ("启动失败: " + getCurrentException()) title:"MaxAgent"
+    _maxagent_ensure_python_path()
+    local _r = _maxagent_safe_python "import maxagent.startup as _s; _s.show_panel(force=True)"
+    if not _r[1] do (
+        local _msg = "MaxAgent 启动失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
+        _msg += "常见原因:\n"
+        _msg += "  • 安装不完整（缺少 maxagent 包文件）\n"
+        _msg += "  • 上次更新后未重新打包/重新安装 mzp\n"
+        _msg += "  • Python 代码存在语法/导入错误\n\n"
+        _msg += "异常摘要:\n" + _r[2]
+        _maxagent_report_error "MaxAgent 启动失败" _msg
     )
 )
 
@@ -52,20 +106,12 @@ macroScript MaxAgent_Toggle
     tooltip:"切换 MaxAgent 面板"
     buttontext:"切换面板"
 (
-    try (
-        -- 兜底注入 sys.path（幂等，重启后必跑）
-        local _userScripts = getDir #userScripts
-        _userScripts = trimRight _userScripts "\\"
-        local _pyInit = ""
-        _pyInit += "import sys\n"
-        _pyInit += "_root = r'" + _userScripts + "'\n"
-        _pyInit += "if _root not in sys.path:\n"
-        _pyInit += "    sys.path.insert(0, _root)\n"
-        python.execute _pyInit
-
-        python.execute "import maxagent; maxagent.toggle()"
-    ) catch (
-        messagebox ("切换失败: " + getCurrentException()) title:"MaxAgent"
+    _maxagent_ensure_python_path()
+    local _r = _maxagent_safe_python "import maxagent; maxagent.toggle()"
+    if not _r[1] do (
+        local _msg = "MaxAgent 切换失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
+        _msg += "异常摘要:\n" + _r[2]
+        _maxagent_report_error "MaxAgent 切换失败" _msg
     )
 )
 
