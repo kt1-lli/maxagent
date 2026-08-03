@@ -164,6 +164,16 @@ OLLAMA_DEFAULT_CTX = 8192
 # 推断失败时的兜底值
 FALLBACK_CONTEXT = 0
 
+# 部分模型/网关强制要求 payload.temperature 必须为 1.0，否则会返回
+# 400 "invalid temperature: only 1 is allowed for this model"。
+# 这里维护模型名前缀/包含匹配表，命中时自动强制 temperature=1，且允许
+# param_overrides 中用户显式覆盖。
+_TEMPERATURE_ONE_MODELS = [
+    'kimi-k3',
+    'moonshot-v1',
+    'moonshot',
+]
+
 
 def _is_ollama_endpoint(base_url):
     # type: (str) -> bool
@@ -214,6 +224,22 @@ def infer_context_window(model_id, base_url=''):
     return matched
 
 
+def requires_temperature_one(model_id):
+    # type: (str) -> bool
+    """判断模型是否强制要求 temperature 必须为 1.0。
+
+    :param model_id: 原始 model 字符串。
+    :return: 命中已知模型表时返回 True。
+    """
+    if not model_id:
+        return False
+    norm = _normalize_model_id(model_id)
+    for candidate in _TEMPERATURE_ONE_MODELS:
+        if candidate in norm or norm.startswith(candidate):
+            return True
+    return False
+
+
 def recommend_history_budget(ctx_window):
     # type: (int) -> int
     """把 context window 换算为推荐的 ``max_history_tokens``。
@@ -238,20 +264,25 @@ def describe_model(model_id, base_url=''):
     """返回结构化推断结果，便于 UI 展示与日志记录。
 
     :return: ``{'context_window': int, 'history_budget': int,
-        'source': 'inferred' | 'unknown', 'is_ollama': bool}``
+        'source': 'inferred' | 'unknown', 'is_ollama': bool,
+        'requires_temperature_one': bool}``
     """
     is_ollama = _is_ollama_endpoint(base_url)
     ctx = infer_context_window(model_id, base_url)
-    if ctx <= 0:
-        return {
-            'context_window': 0,
-            'history_budget': 0,
-            'source': 'unknown',
-            'is_ollama': is_ollama,
-        }
-    return {
-        'context_window': ctx,
-        'history_budget': recommend_history_budget(ctx),
-        'source': 'inferred',
+    common = {
         'is_ollama': is_ollama,
+        'requires_temperature_one': requires_temperature_one(model_id),
     }
+    if ctx <= 0:
+        return dict(
+            context_window=0,
+            history_budget=0,
+            source='unknown',
+            **common,
+        )
+    return dict(
+        context_window=ctx,
+        history_budget=recommend_history_budget(ctx),
+        source='inferred',
+        **common,
+    )
