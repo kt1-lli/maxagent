@@ -32,6 +32,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ..attachments import build_user_content
+from ..attachments import model_supports_vision
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
 from ..logger import get_logger
@@ -302,10 +304,6 @@ class AgentWorker(QObject):
             getattr(m, 'attachments', None) and m.role == 'user'
             for m in msgs
         )
-
-        # 延迟 import：避免 worker 在不需要附件时也加载 attachments 模块
-        from ..attachments import build_user_content
-        from ..attachments import model_supports_vision
 
         model_name = getattr(self._llm, '_model', '') or ''
         can_vision = (
