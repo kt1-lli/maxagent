@@ -1,4 +1,4 @@
-﻿-- ----------------------------------------------------------------------
+-- ----------------------------------------------------------------------
 -- MaxAgent macroScript 集合（手写 .mcr，UTF-8 with BOM 编码）
 --
 -- 设计原因：
@@ -25,38 +25,18 @@
 --   fn 定义的跨会话可见性。
 -- ----------------------------------------------------------------------
 
-fn _maxagent_ensure_python_path = (
-    -- 兜底注入 sys.path（幂等，重启后必跑）。
-    -- MaxAgent 包安装在 getDir #userScripts\maxagent\，因此父目录 userScripts
-    -- 必须出现在 sys.path 中。
-    local _userScripts = getDir #userScripts
-    _userScripts = trimRight _userScripts "\\"
-    local _pyInit = ""
-    _pyInit += "import sys, os\n"
-    _pyInit += "_root = r'" + _userScripts + "'\n"
-    _pyInit += "if _root not in sys.path:\n"
-    _pyInit += "    sys.path.insert(0, _root)\n"
-    _pyInit += "_pkg = os.path.join(_root, 'maxagent')\n"
-    _pyInit += "print('[MaxAgent] python path injected, package dir: ' + _pkg)\n"
-    python.execute _pyInit
-    true
-)
-
 -- 安全执行 Python 代码，并把完整 Python 异常回显到 Max Listener 与弹窗。
--- 返回值 #(true, result) 或 #(false, tracebackString)
+-- 返回 #(true, undefined) 或 #(false, tracebackString)
 fn _maxagent_safe_python code = (
-    local _wrapper = ""
-    _wrapper += "import sys, traceback, os\n"
+    local _wrapper = "import sys, traceback\n"
     _wrapper += "_maxagent_err = None\n"
     _wrapper += "try:\n"
     _wrapper += "    " + code + "\n"
-    _wrapper += "    _maxagent_err = ('OK', None)\n"
+    _wrapper += "    _maxagent_err = ['OK', None]\n"
     _wrapper += "except Exception as _e:\n"
     _wrapper += "    _tb = traceback.format_exc()\n"
     _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
-    _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
-    _wrapper += "    print(_tb)\n"
-    _wrapper += "    _maxagent_err = ('ERR', _msg + '\\n' + _tb)\n"
+    _wrapper += "    _maxagent_err = ['ERR', _msg + '\\n' + _tb]\n"
     _wrapper += "_maxagent_err\n"
 
     local _result = undefined
@@ -68,13 +48,18 @@ fn _maxagent_safe_python code = (
         return #(false, _msErr)
     )
 
-    -- _result 是 Python tuple ('OK', None) 或 ('ERR', msg)
     if _result == undefined do return #(false, "python.execute 未返回结果")
+    if classOf _result != Array do (
+        return #(false, ("python.execute 返回类型异常: " + (classOf _result as string)))
+    )
+    if _result.count < 1 do return #(false, "python.execute 返回数组为空")
+
     local _status = _result[1]
     if _status == "OK" then (
         #(true, undefined)
     ) else (
-        #(false, _result[2])
+        if _result.count < 2 do return #(false, "python.execute 返回错误但缺少详情")
+        #(false, (_result[2] as string))
     )
 )
 
@@ -88,7 +73,24 @@ macroScript MaxAgent_Show
     tooltip:"显示 MaxAgent 面板"
     buttontext:"MaxAgent"
 (
-    _maxagent_ensure_python_path()
+    -- 1) 注入 sys.path（不输出任何内容，避免污染 python.execute 返回值）
+    local _userScripts = getDir #userScripts
+    _userScripts = trimRight _userScripts "\\"
+    local _pyInit = ""
+    _pyInit += "import sys, os\n"
+    _pyInit += "_root = r'" + _userScripts + "'\n"
+    _pyInit += "if _root not in sys.path:\n"
+    _pyInit += "    sys.path.insert(0, _root)\n"
+    try (
+        python.execute _pyInit
+    ) catch (
+        local _err = "注入 sys.path 失败: " + (getCurrentException() as string)
+        format "%\n" _err to:listener
+        messagebox _err title:"MaxAgent 启动失败"
+        return false
+    )
+
+    -- 2) 调用 Python 显示面板
     local _r = _maxagent_safe_python "import maxagent.startup as _s; _s.show_panel(force=True)"
     if not _r[1] do (
         local _msg = "MaxAgent 启动失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
@@ -106,7 +108,22 @@ macroScript MaxAgent_Toggle
     tooltip:"切换 MaxAgent 面板"
     buttontext:"切换面板"
 (
-    _maxagent_ensure_python_path()
+    local _userScripts = getDir #userScripts
+    _userScripts = trimRight _userScripts "\\"
+    local _pyInit = ""
+    _pyInit += "import sys, os\n"
+    _pyInit += "_root = r'" + _userScripts + "'\n"
+    _pyInit += "if _root not in sys.path:\n"
+    _pyInit += "    sys.path.insert(0, _root)\n"
+    try (
+        python.execute _pyInit
+    ) catch (
+        local _err = "注入 sys.path 失败: " + (getCurrentException() as string)
+        format "%\n" _err to:listener
+        messagebox _err title:"MaxAgent 切换失败"
+        return false
+    )
+
     local _r = _maxagent_safe_python "import maxagent; maxagent.toggle()"
     if not _r[1] do (
         local _msg = "MaxAgent 切换失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
@@ -139,96 +156,40 @@ macroScript MaxAgent_Uninstall
     -- getDir #userScripts 自带语言识别，中文版返回 \zh-CN\，英文版返回 \ENU\
     local _userScripts = getDir #userScripts
     _userScripts = trimRight _userScripts "\\"
-    local _dir = _userScripts + "\\maxagent"
+    local _pkgDir = _userScripts + "\\maxagent"
+    local _macroDir = getDir #userMacros
+    _macroDir = trimRight _macroDir "\\"
+    local _mcrFile = _macroDir + "\\MaxAgent-Macros.mcr"
 
-    if not (doesDirectoryExist _dir) then (
-        messagebox ("未找到 MaxAgent 安装目录:\n" + _dir + "\n\n可能已卸载或安装在其它位置。") title:"MaxAgent 卸载"
-    ) else (
-        if (queryBox ("确认卸载 MaxAgent？\n\n安装目录:\n" + _dir + "\n\n（仅删除程序文件，保留用户数据 _userdata/）") title:"MaxAgent 卸载") then (
-            -- 1) 删除 maxagent 包，保留 _userdata
-            local _py = ""
-            _py += "import os, shutil\n"
-            _py += "_dir = r'" + _dir + "'\n"
-            _py += "if os.path.isdir(_dir):\n"
-            _py += "    for _name in os.listdir(_dir):\n"
-            _py += "        if _name == '_userdata':\n"
-            _py += "            continue\n"
-            _py += "        _p = os.path.join(_dir, _name)\n"
-            _py += "        if os.path.isdir(_p):\n"
-            _py += "            shutil.rmtree(_p, ignore_errors=True)\n"
-            _py += "        else:\n"
-            _py += "            try:\n"
-            _py += "                os.remove(_p)\n"
-            _py += "            except Exception:\n"
-            _py += "                pass\n"
-            _py += "    if not os.path.isdir(os.path.join(_dir, '_userdata')):\n"
-            _py += "        try: os.rmdir(_dir)\n"
-            _py += "        except Exception: pass\n"
-
-            -- 2) 同步移除 MaxAgent 主菜单
-            -- Max 2025+ 必须做三件事，缺一不可：
-            --   a) 移除 cuiRegisterMenus 回调（本会话不再重建菜单）
-            --   b) 删除 startup 目录下的 MaxAgent_Menu.ms（下次启动不再注册回调）
-            --   c) 移除当前主菜单条上的 MaxAgent 子菜单（界面立即生效）
-            -- 三步缺任意一步都会留下"幽灵菜单"或"重启复活"。
+    local _msg = "确定要卸载 MaxAgent 吗？\n\n"
+    _msg += "将删除以下目录/文件:\n"
+    _msg += _pkgDir + "\n"
+    _msg += _mcrFile + "\n\n"
+    _msg += "卸载后请重启 3ds Max。"
+    local _ans = queryBox _msg title:"卸载 MaxAgent" beep:false
+    if _ans == true then (
+        local _ok = true
+        if doesDirectoryExist _pkgDir do (
             try (
-                callbacks.removeScripts id:#MaxAgentMenu
-            ) catch ()
-
-            -- 2a) 删除 startup 注册脚本（关键：阻止 Max 下次启动重新注册回调）
-            try (
-                local _startup = getDir #userStartupScripts
-                _startup = trimRight _startup "\\"
-                local _msPath = _startup + "\\MaxAgent_Menu.ms"
-                if doesFileExist _msPath do deleteFile _msPath
-            ) catch ()
-
-            try (
-                local _mainMenu = menuMan.getMainMenuBar()
-                if _mainMenu != undefined do (
-                    local _idx = -1
-                    for i = 1 to _mainMenu.numItems() while _idx == -1 do (
-                        local _item = _mainMenu.getItem i
-                        if _item != undefined and _item.getTitle() == "MaxAgent" do _idx = i
-                    )
-                    if _idx > 0 do (
-                        _mainMenu.removeItemByPosition _idx
-                        menuMan.updateMenuBar()
-                    )
-                )
-            ) catch ()
-
-            -- 2b) Max 2025+ 触发一次菜单重建，让本会话立即看到 MaxAgent 消失
-            --     注意：不调 SaveConfiguration——回调创建的菜单是动态菜单，
-            --     不属于 schema 层；用户的 cui 配置文件本就不该被卸载流程改动。
-            --     真正的持久化"消失"由步骤 2a 删除 startup 脚本来保证：下次启动
-            --     时 Max 不再 fileIn MaxAgent_Menu.ms，cuiRegisterMenus 回调
-            --     不被注册，MaxAgent 子菜单自然不会出现。
-            try (
-                local _mgr = maxOps.GetICuiMenuMgr()
-                if _mgr != undefined do (
-                    local _curCfg = _mgr.GetCurrentConfiguration()
-                    if _curCfg != undefined and _curCfg != "" do (
-                        _mgr.LoadConfiguration _curCfg
-                    )
-                )
-            ) catch ()
-
-            -- 3) 同步删除自身 .mcr 文件（避免 ActionTable 残留）
-            --    Max 会在重启后忽略找不到的 ActionTable 项
-            try (
-                local _userMacros = getDir #userMacros
-                _userMacros = trimRight _userMacros "\\"
-                local _mcr = _userMacros + "\\MaxAgent-Macros.mcr"
-                if doesFileExist _mcr do deleteFile _mcr
-            ) catch ()
-
-            try (
-                python.execute _py
-                messagebox ("✅ MaxAgent 已卸载\n\n保留位置: " + _dir + "\\_userdata\n（如不需要可手动删除）\n\n请重启 3ds Max") title:"MaxAgent"
+                -- HWnd 占位：removeDir 在较新 Max 中可能不存在，用系统命令兜底
+                shellLaunch "cmd.exe" ("/c rmdir /s /q \"" + _pkgDir + "\"")
             ) catch (
-                messagebox ("卸载失败: " + getCurrentException()) title:"MaxAgent"
+                _ok = false
+                format "删除目录失败: %\n" (getCurrentException() as string) to:listener
             )
+        )
+        if doesFileExist _mcrFile do (
+            try (
+                deleteFile _mcrFile
+            ) catch (
+                _ok = false
+                format "删除宏文件失败: %\n" (getCurrentException() as string) to:listener
+            )
+        )
+        if _ok then (
+            messagebox "MaxAgent 已卸载，请重启 3ds Max。" title:"MaxAgent"
+        ) else (
+            messagebox "卸载过程中发生错误，部分文件可能未删除，请手动清理。" title:"MaxAgent"
         )
     )
 )
