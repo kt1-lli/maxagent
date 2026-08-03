@@ -39,6 +39,7 @@ from typing import Optional
 from ..agent import AgentWorker
 from ..agent import Conversation
 from ..agent import build_default_system_prompt
+from ..attachments import model_supports_vision
 from ..config import ConfigManager
 from ..llm_client import build_client_from_profile
 from ..logger import get_logger
@@ -1928,7 +1929,6 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         让 LLM 端拿到"[图片] N 张"占位提示，与现有降级行为保持一致。
         """
         try:
-            from ..attachments import model_supports_vision
             cfg = self._config.config
             has_atts = bool(self.attachment_strip.attachments())
             vision_on = bool(getattr(cfg, 'vision_enabled', True))

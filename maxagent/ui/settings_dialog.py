@@ -29,6 +29,7 @@ import time
 from typing import Any
 from typing import Optional
 
+from ..attachments import model_supports_vision
 from ..config import ConfigManager
 from ..config import LLMProfile
 from ..llm_client import build_client_from_profile
@@ -3358,14 +3359,9 @@ class SettingsDialog(QtWidgets.QDialog):
         :param prof: 当前编辑中的 profile（_read_form 的结果）
         :returns: True 表示需要按多模态协议构造测试请求体
         """
-        try:
-            from ..attachments import model_supports_vision
-            cfg = self._config.config
-            wl = list(getattr(cfg, 'vision_model_whitelist', []) or [])
-            return model_supports_vision(prof.model or '', wl)
-        except Exception:  # pylint: disable=broad-except
-            # 视觉判定失败时按"非视觉"处理，避免阻塞普通模型测试
-            return False
+        cfg = self._config.config
+        wl = list(getattr(cfg, 'vision_model_whitelist', []) or [])
+        return model_supports_vision(prof.model or '', wl)
 
     def _build_test_user_message(self, prof, ask_text):
         """根据 profile 的视觉能力构造 messages[].content。
