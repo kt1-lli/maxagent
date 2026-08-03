@@ -310,6 +310,17 @@ class LLMClient(object):
         # Temperature 分层：reasoning / 工具调用轮次用更低温度
         # 减少参数幻觉和过度联想；最终回复轮次保持用户设定温度
         effective_temp = 0.1 if reasoning_mode else temperature
+
+        # 部分模型/网关（如 Moonshot kimi-k3）服务端强制 temperature=1，
+        # 与 reasoning_mode 无关。先在此强制修正，后续 param_overrides
+        # 仍可让用户显式覆盖。
+        try:
+            from .model_capabilities import requires_temperature_one
+            if requires_temperature_one(self._model):
+                effective_temp = 1.0
+        except Exception:  # pylint: disable=broad-except
+            pass
+
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
