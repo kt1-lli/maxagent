@@ -154,6 +154,23 @@ fn _maxagent_register_macros mzpRoot = (
     _userMacros = trimRight _userMacros "\\"
     local _dst = _userMacros + "\\MaxAgent-Macros.mcr"
 
+    -- 清理旧版自动生成的 .mcr 文件（旧版安装会生成 MaxAgent-MaxAgent_Show.mcr
+    -- 等文件，新版改为统一的手写 MaxAgent-Macros.mcr）。
+    -- 如果旧文件残留，Max 启动时会加载它们，里面引用的 g_show_max_agent 等
+    -- 全局函数已不存在，导致"Call needs function or class, got: undefined"错误。
+    local _legacyFiles = #("MaxAgent-MaxAgent_Show.mcr", "MaxAgent-MaxAgent_Toggle.mcr")
+    for _legacy in _legacyFiles do (
+        local _legacyPath = _userMacros + "\\" + _legacy
+        if doesFileExist _legacyPath do (
+            try (
+                deleteFile _legacyPath
+                format "[MaxAgent] 已清理旧版宏脚本: %\n" _legacyPath to:listener
+            ) catch (
+                format "[MaxAgent] ⚠️ 无法删除旧版宏脚本: %\n" _legacyPath to:listener
+            )
+        )
+    )
+
     -- 用 Python copy 而不是 copyFile：copyFile 在某些 Max 版本对 BOM 文件
     -- 会做编码转换，破坏 UTF-8 BOM；shutil.copy 是字节级拷贝，绝对安全。
     local _py = ""
