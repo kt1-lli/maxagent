@@ -1202,34 +1202,48 @@ class AgentWorker(QObject):
                         rate, compress,
                     )
             except LLMRateLimitError as exc:
-                # 触发速率限制/服务过载：尝试切换到备用 profile 后重试
+                # 触发速率限制/服务过载 或 账户级不可用（欠费/Key 无效等）：
+                # 都尝试切换到备用 profile 后重试
                 self._flush_chunk_buf()
+                kind = getattr(exc, 'kind', 'rate_limit')
+                if kind == 'account':
+                    scenario = '账户级不可用（HTTP {}）'.format(exc.status_code)
+                    status_prefix = '⚠ 账户不可用，已切换到备用 Profile: '
+                else:
+                    scenario = '上游速率限制（HTTP {}）'.format(exc.status_code)
+                    status_prefix = '⚠ 触发速率限制，已切换到备用 Profile: '
                 new_name, exhausted = self._try_switch_to_fallback()
                 if new_name is not None:
                     notice_msg = (
-                        '触发上游速率限制（HTTP {}），已切换到备用 Profile: {}'
-                        '，将继续本次对话。'.format(exc.status_code, new_name)
+                        '{}，已切换到备用 Profile: {}，将继续本次对话。'
+                        '\n原始错误：{}'.format(scenario, new_name, exc)
                     )
-                    self.status_changed.emit(
-                        '⚠ 触发速率限制，已切换到备用 Profile: '
-                        + new_name,
-                    )
+                    self.status_changed.emit(status_prefix + new_name)
                     # 同时发一条持久气泡，避免用户只在状态栏看到瞬时提示
                     self.system_notice.emit('warn', notice_msg)
                     logger.warning(
-                        'LLMRateLimit hit (status=%s), fallback to %s',
-                        exc.status_code, new_name,
+                        'LLM fallback triggered kind=%s status=%s to=%s',
+                        kind, exc.status_code, new_name,
                     )
                     continue
                 # 备用链耗尽或未配置：视为不可恢复
-                self.system_notice.emit(
-                    'error',
-                    '上游速率限制且备用 Profile 链已耗尽或未配置，本次对话中断。'
-                    '请到设置中为当前 Profile 配置备用链，或稍后重试。',
-                )
+                if kind == 'account':
+                    err_reason = (
+                        '当前 Profile 账户不可用（欠费/Key 无效/权限/模型缺失），'
+                        '且备用 Profile 链已耗尽或未配置。'
+                        '请到设置中检查 Key/余额，或为当前 Profile 配置备用链。'
+                    )
+                else:
+                    err_reason = (
+                        '上游速率限制且备用 Profile 链已耗尽或未配置，'
+                        '本次对话中断。请到设置中为当前 Profile 配置备用链，'
+                        '或稍后重试。'
+                    )
+                self.system_notice.emit('error', err_reason)
                 self.failed.emit(
-                    'LLM 调用失败（速率限制/服务过载，无可用备用 Profile）: '
-                    + str(exc),
+                    'LLM 调用失败（{}，无可用备用 Profile）: {}'.format(
+                        scenario, exc,
+                    ),
                 )
                 return
             except LLMError as exc:

@@ -30,6 +30,10 @@ logger = get_logger(__name__)
 # 默认触发指数退避重试的 HTTP 状态码：429 rate limit / 502 / 503 / 504 服务端过载。
 _DEFAULT_RETRYABLE_STATUS_CODES = frozenset((429, 502, 503, 504))
 
+# 账户级不可用（不重试但应 fallback）：欠费/Key 无效/权限拒绝/模型缺失。
+# 这些错误重试无意义（换个账号才能解决），但换到备用 Profile 就能继续对话。
+_ACCOUNT_LEVEL_STATUS_CODES = frozenset((401, 402, 403, 404))
+
 # Windows 网络错误码 → 用户友好提示映射。
 # 这些都是用户系统层面引发的 socket 中断，不是 LLM 服务端问题。
 # winerror 在 ConnectionAbortedError / ConnectionResetError / OSError 上
@@ -53,12 +57,19 @@ class LLMRateLimitError(LLMError):
     :param message: 人类可读错误信息
     :param should_fallback: 是否应尝试备用 provider
     :param status_code: 原始 HTTP 状态码（若有）
+    :param kind: 错误子类，可选 'rate_limit'（速率限制/服务过载，默认）
+                 或 'account'（账户级不可用：欠费/Key 无效/权限拒绝/模型缺失）。
+                 kind 只影响 UI 文案，不影响 fallback 分发逻辑。
     """
 
-    def __init__(self, message, should_fallback=True, status_code=None):
+    def __init__(
+        self, message, should_fallback=True, status_code=None,
+        kind='rate_limit',
+    ):
         super(LLMRateLimitError, self).__init__(message)
         self.should_fallback = bool(should_fallback)
         self.status_code = status_code
+        self.kind = kind
 
 
 def _winerror_of(exc: BaseException) -> Optional[int]:
@@ -228,6 +239,34 @@ def _humanize_rate_limit_error(status_code, detailed_msg):
     return "HTTP {} · {}，请配置备用 Profile 或稍后重试".format(
         status_code, hint,
     )
+
+
+def _humanize_account_error(status_code, detailed_msg):
+    """把账户级错误（402/401/403/404）压成人类友好文案。
+
+    典型触发场景：
+      - 402 Insufficient Balance（DeepSeek 欠费）
+      - 401 Invalid API Key（Key 填错或过期）
+      - 403 Access Denied / 组织被封禁
+      - 404 Model not found（模型名拼错或该 Key 无权访问该模型）
+
+    :param status_code: HTTP 状态码
+    :param detailed_msg: 已由 _format_http_error 抽取的详细消息
+    :returns: UI 用简讯，包含 fallback 提示
+    """
+    lower = (detailed_msg or "").lower()
+    if status_code == 402 or "insufficient" in lower or "balance" in lower:
+        hint = "账户余额不足（HTTP 402）"
+    elif status_code == 401 or "invalid" in lower and "key" in lower \
+            or "unauthorized" in lower:
+        hint = "API Key 无效或已过期（HTTP 401）"
+    elif status_code == 403:
+        hint = "账户被拒绝访问（HTTP 403，可能被封禁或无该模型权限）"
+    elif status_code == 404 or "not found" in lower or "not_found" in lower:
+        hint = "模型或接口不存在（HTTP 404，请检查模型名/base_url）"
+    else:
+        hint = "账户级不可用（HTTP {}）".format(status_code)
+    return "{}，已尝试切换到备用 Profile".format(hint)
 
 
 # 已知路径误填模式 -> 自动剥除的尾部
@@ -516,6 +555,18 @@ class LLMClient(object):
                         _humanize_rate_limit_error(exc.code, detailed),
                         should_fallback=True,
                         status_code=exc.code,
+                        kind='rate_limit',
+                    )
+                if exc.code in _ACCOUNT_LEVEL_STATUS_CODES:
+                    # 账户级错误（欠费/Key 无效/权限拒绝/模型缺失）：
+                    # 不重试（换个账号才能解决），但走 fallback 链
+                    detailed = _format_http_error(exc, req.full_url)
+                    logger.warning('account_level_detailed: %s', detailed)
+                    raise LLMRateLimitError(
+                        _humanize_account_error(exc.code, detailed),
+                        should_fallback=True,
+                        status_code=exc.code,
+                        kind='account',
                     )
                 # 不可重试 HTTP 错误直接抛 LLMError
                 raise LLMError(_format_http_error(exc, req.full_url))
@@ -538,6 +589,7 @@ class LLMClient(object):
                 _humanize_rate_limit_error(last_http_exc.code, detailed),
                 should_fallback=True,
                 status_code=last_http_exc.code,
+                kind='rate_limit',
             )
         raise LLMError('网络错误: 未能建立连接')
 

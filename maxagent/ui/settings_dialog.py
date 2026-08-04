@@ -444,7 +444,8 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         right.addRow('', self.vision_supported_chk)
 
-        # 备用 Profile 链：触发速率限制或服务不可用时按顺序切换
+        # 备用 Profile 链：触发速率限制、账户不可用（欠费/Key 无效/权限
+        # 拒绝/模型缺失）或上游服务过载时按顺序切换
         self.fallback_list = QtWidgets.QListWidget()
         # SingleSelection：拖拽重排要求 item 可被选中，否则拖动无效
         self.fallback_list.setSelectionMode(
