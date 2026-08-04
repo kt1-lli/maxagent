@@ -295,13 +295,6 @@ class AppConfig:
         429, 502, 503, 504
     ])
 
-    # ---------- 任务规划器 ---------- #
-    # 是否启用 LLM 任务规划器（默认关闭）
-    # 启用后每轮对话会额外发一次快速 LLM 调用生成结构化 JSON 计划，
-    # 换取更精准的步骤拆分。关闭时仅使用内置规则版规划器。
-    # 成本：每轮多约 200~500 tokens，建议在主 profile 稳定后再启用。
-    enable_llm_planner: bool = False
-
     # ---------- Skill 自动提议 ---------- #
     # 是否在会话结束时自动弹出"是否记为 Skill"提议（默认关闭）
     # 关闭时用户仍可通过对话或工具主动保存 Skill；开启时按下方门槛
@@ -350,7 +343,6 @@ class AppConfig:
             "llm_retry_base_delay": self.llm_retry_base_delay,
             "llm_retry_max_delay": self.llm_retry_max_delay,
             "llm_retryable_status_codes": list(self.llm_retryable_status_codes),
-            "enable_llm_planner": self.enable_llm_planner,
             "enable_skill_proposal": self.enable_skill_proposal,
             "skill_proposal_min_actions": self.skill_proposal_min_actions,
         }
@@ -480,8 +472,6 @@ class AppConfig:
             cfg.llm_retryable_status_codes = [
                 int(x) for x in raw_codes if isinstance(x, int)
             ]
-        # ---- 任务规划器 ---- #
-        cfg.enable_llm_planner = bool(data.get("enable_llm_planner", False))
         # ---- Skill 自动提议 ---- #
         cfg.enable_skill_proposal = bool(data.get("enable_skill_proposal", False))
         cfg.skill_proposal_min_actions = int(data.get("skill_proposal_min_actions", 3))
