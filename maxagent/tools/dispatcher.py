@@ -75,8 +75,8 @@ class ToolDispatcher(object):
         :param tool_name: 工具名
         :param arguments: 参数字典（已是 dict，由 LLMClient 解析过 JSON）
         :returns: 标准化结果 dict：
-                  成功: {"ok": True, "result": <任意可序列化对象>}
-                  失败: {"ok": False, "error": "...", "type": "..."}
+                  成功: {"ok": True, "data": <任意可序列化对象>, "error": None, "suggestion": None}
+                  失败: {"ok": False, "error": "...", "type": "...", "suggestion": "..."}
         """
         spec = get_tool(tool_name)
         if spec is None:
@@ -623,11 +623,11 @@ def _safe_serialize(obj):
 
 def _maybe_truncate_result(out, max_bytes, tool_name=""):
     # type: (Dict[str, Any], int, str) -> Dict[str, Any]
-    """如果序列化后超出 max_bytes，把 result 字段替换为截断版本。
+    """如果序列化后超出 max_bytes，把 data 字段替换为截断版本。
 
     策略：
     - 整体 dump 一次估算大小；不超就原样返回
-    - 超出时根据 result 的形状裁剪：
+    - 超出时根据 data 的形状裁剪：
         * list/tuple：保留前 N 项，N 自适应到不超 max_bytes
         * dict：用前 N 个 key（按字典顺序，保证可重现）
         * str：直接按字节截断
