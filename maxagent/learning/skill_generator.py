@@ -131,11 +131,35 @@ def generate_skill_draft(actions, user_input='', session_id=''):
     # 生成 impl.py 代码草稿：基于 MacroRecorder 的 Python 脚本映射
     impl_code = _build_impl_code(success_actions)
 
+    # 语义化描述：把 actions 聚合成一句中文摘要作为 description 兜底/增强
+    try:
+        from ..macro_recorder import summarize_actions, RecordedAction
+        _ras = [
+            RecordedAction(
+                tool_name=(a or {}).get('tool', ''),
+                arguments=(a or {}).get('args') or {},
+                success=(a or {}).get('ok', True),
+                order=(a or {}).get('order', 0),
+            )
+            for a in success_actions
+        ]
+        _summary = summarize_actions(_ras)
+    except Exception:  # pylint: disable=broad-except
+        _summary = ''
+
+    _desc_head = user_input or '无标题'
+    if _summary:
+        _description = '从会话自动生成的流程：{}（{}）'.format(
+            _desc_head, _summary,
+        )
+    else:
+        _description = '从会话自动生成的流程：' + _desc_head
+
     return {
         'suggested_name': name,
         'manifest': {
             'name': name,
-            'description': '从会话自动生成的流程：' + (user_input or '无标题'),
+            'description': _description,
             'trigger_keywords': kws,
             'instructions': instructions,
             'status': 'draft',

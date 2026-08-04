@@ -609,6 +609,296 @@ _QUERY_TOOL_PREFIXES = (
 )
 
 
+# ---------------------------------------------------------------------- #
+# 语义化描述器：把 (tool_name, args) 翻译成一句中文自然语言
+# ---------------------------------------------------------------------- #
+
+_GEOM_KIND_ZH = {
+    'create_box': '立方体',
+    'create_sphere': '球体',
+    'create_cylinder': '圆柱',
+    'create_cone': '圆锥',
+    'create_torus': '圆环',
+    'create_plane': '平面',
+    'create_teapot': '茶壶',
+    'create_tube': '管道',
+    'create_pyramid': '金字塔',
+    'create_text': '文本',
+    'create_circle': '圆形样条',
+    'create_rectangle': '矩形样条',
+    'create_ellipse': '椭圆样条',
+    'create_star': '星形样条',
+    'create_arc': '弧形样条',
+    'create_helix': '螺旋线',
+}
+
+_LIGHT_KIND_ZH = {
+    'create_omni_light': '泛光灯',
+    'create_target_spot': '目标聚光灯',
+    'create_target_direct': '目标平行光',
+    'create_area_light': '面光源',
+    'create_sun_light': '日光',
+    'create_light': '灯光',
+}
+
+
+def _pos_txt(args):
+    """把 [x,y,z] 参数格式化为紧凑的中文位置描述，参数缺失返回空串。"""
+    pos = args.get('position') or args.get('pos') or args.get('location')
+    if not pos:
+        return ''
+    try:
+        x, y, z = pos[0], pos[1], pos[2]
+        return '(位于 {:g},{:g},{:g})'.format(float(x), float(y), float(z))
+    except Exception:  # pylint: disable=broad-except
+        return ''
+
+
+def _name_txt(args, key='name'):
+    n = args.get(key)
+    if not n:
+        return ''
+    return '「{}」'.format(str(n))
+
+
+def describe_action(tool_name, args):
+    # type: (str, Dict[str, Any]) -> str
+    """把一次工具调用翻译成一句中文自然语言描述。
+
+    覆盖不到的工具会返回泛化描述，永远不抛异常，永远不返回空串。
+    这是导出脚本注释、Skill 描述、UI 步骤列表的公共语义层。
+    """
+    if not tool_name:
+        return '（未知操作）'
+    args = args or {}
+
+    # 几何创建
+    if tool_name in _GEOM_KIND_ZH:
+        kind = _GEOM_KIND_ZH[tool_name]
+        name = _name_txt(args)
+        pos = _pos_txt(args)
+        size_parts = []
+        for k, zh in (
+            ('length', '长'),
+            ('width', '宽'),
+            ('height', '高'),
+            ('radius', '半径'),
+            ('radius1', '外径'),
+            ('radius2', '内径'),
+        ):
+            v = args.get(k)
+            if v not in (None, ''):
+                try:
+                    size_parts.append('{}={:g}'.format(zh, float(v)))
+                except Exception:  # pylint: disable=broad-except
+                    pass
+        size = ('（{}）'.format('，'.join(size_parts))) if size_parts else ''
+        return '创建{}{}{}{}'.format(kind, name, size, pos).strip()
+
+    # 灯光
+    if tool_name in _LIGHT_KIND_ZH:
+        return '放置{}{}{}'.format(
+            _LIGHT_KIND_ZH[tool_name], _name_txt(args), _pos_txt(args),
+        ).strip()
+
+    # 相机
+    if tool_name in ('create_camera', 'create_target_camera',
+                     'create_free_camera'):
+        return '添加相机{}{}'.format(_name_txt(args), _pos_txt(args)).strip()
+
+    # 变换
+    if tool_name == 'move_object':
+        mode = args.get('mode') or 'set'
+        prefix = '平移' if mode == 'add' else '移动到'
+        return '{}{}{}'.format(
+            prefix, _name_txt(args), _pos_txt(args),
+        ).strip()
+    if tool_name == 'rotate_object':
+        return '旋转{}'.format(_name_txt(args)).strip()
+    if tool_name == 'scale_object':
+        return '缩放{}'.format(_name_txt(args)).strip()
+    if tool_name == 'align_to':
+        target = args.get('target') or args.get('to')
+        return '对齐{} → {}'.format(
+            _name_txt(args), '「{}」'.format(target) if target else '目标',
+        )
+    if tool_name == 'reset_pivot':
+        return '重置{}的轴心'.format(_name_txt(args)).strip()
+
+    # 修改器
+    if tool_name == 'add_modifier':
+        mod = args.get('modifier') or args.get('type') or '修改器'
+        return '给{}添加 {} 修改器'.format(
+            _name_txt(args) or '对象', mod,
+        )
+    if tool_name == 'remove_modifier':
+        return '移除{}上的修改器'.format(_name_txt(args) or '对象')
+    if tool_name == 'set_modifier_param':
+        p = args.get('param') or args.get('name') or ''
+        v = args.get('value')
+        return '设置{}的修改器参数 {}={}'.format(
+            _name_txt(args) or '对象', p, v,
+        )
+    if tool_name == 'collapse_stack':
+        return '塌陷{}的修改器堆栈'.format(_name_txt(args) or '对象')
+
+    # 材质
+    if tool_name == 'create_standard_material':
+        return '创建标准材质{}'.format(_name_txt(args))
+    if tool_name == 'create_physical_material':
+        return '创建物理材质{}'.format(_name_txt(args))
+    if tool_name == 'set_material_color':
+        return '设置材质{}颜色'.format(_name_txt(args))
+    if tool_name == 'assign_material':
+        return '把材质赋给{}'.format(_name_txt(args) or '对象')
+    if tool_name == 'add_diffuse_map':
+        return '给材质{}添加漫反射贴图'.format(_name_txt(args))
+    if tool_name == 'generate_material_variants':
+        return '生成材质变体'
+
+    # 选择 / 显示
+    if tool_name == 'select_objects':
+        names = args.get('names') or []
+        return '选中 {} 个对象'.format(len(names)) if names else '选中对象'
+    if tool_name == 'clear_selection':
+        return '清空选择'
+    if tool_name == 'set_object_visibility':
+        vis = args.get('visible')
+        return '{}对象{}'.format(
+            '显示' if vis else '隐藏', _name_txt(args) or '',
+        )
+    if tool_name == 'set_object_frozen':
+        return '{}对象{}'.format(
+            '冻结' if args.get('frozen') else '解冻',
+            _name_txt(args) or '',
+        )
+
+    # 组织 / 命名
+    if tool_name == 'group_objects':
+        return '编组 {}'.format(args.get('group_name') or '对象')
+    if tool_name == 'rename_object':
+        return '重命名{} → {}'.format(
+            _name_txt(args, 'old_name') or '对象',
+            args.get('new_name') or args.get('name') or '',
+        )
+
+    # 视口 / 渲染
+    if tool_name == 'set_viewport_camera':
+        return '视口切换到相机 {}'.format(args.get('camera') or '')
+    if tool_name == 'set_viewport_view':
+        return '切换视图 {}'.format(args.get('view') or '')
+    if tool_name == 'set_render_resolution':
+        return '设置渲染分辨率 {}×{}'.format(
+            args.get('width') or '?', args.get('height') or '?',
+        )
+    if tool_name == 'render_current_frame':
+        return '渲染当前帧'
+    if tool_name == 'render_animation':
+        return '渲染动画序列'
+
+    # 场景 IO
+    if tool_name == 'save_max_file':
+        return '保存 max 文件'
+    if tool_name == 'load_max_file':
+        return '打开 max 文件'
+    if tool_name == 'merge_max_file':
+        return '合并 max 文件'
+    if tool_name == 'import_file':
+        return '导入外部文件'
+    if tool_name == 'export_file':
+        return '导出场景'
+    if tool_name == 'delete_objects':
+        names = args.get('names') or []
+        return '删除 {} 个对象'.format(len(names)) if names else '删除对象'
+
+    # 自由脚本
+    if tool_name == 'run_python':
+        code = str(args.get('code') or '')
+        head = code.strip().splitlines()[0] if code.strip() else ''
+        head = head[:40] + ('…' if len(head) > 40 else '')
+        return '执行 Python 片段：{}'.format(head) if head else '执行 Python 片段'
+    if tool_name == 'run_maxscript':
+        code = str(args.get('code') or '')
+        head = code.strip().splitlines()[0] if code.strip() else ''
+        head = head[:40] + ('…' if len(head) > 40 else '')
+        return '执行 MaxScript 片段：{}'.format(head) if head else '执行 MaxScript 片段'
+
+    # 泛化兜底：把 tool_name 前缀翻成动词
+    if tool_name.startswith('create_'):
+        return '创建 {}'.format(tool_name[7:].replace('_', ' '))
+    if tool_name.startswith('set_'):
+        return '设置 {}'.format(tool_name[4:].replace('_', ' '))
+    if tool_name.startswith('add_'):
+        return '添加 {}'.format(tool_name[4:].replace('_', ' '))
+    if tool_name.startswith('delete_') or tool_name.startswith('remove_'):
+        return '删除 {}'.format(
+            tool_name.split('_', 1)[1].replace('_', ' '),
+        )
+    return '执行 {}'.format(tool_name)
+
+
+def summarize_actions(actions):
+    # type: (List[RecordedAction]) -> str
+    """把整段动作序列聚合成一句中文摘要，用于 Skill 描述 / UI 标题。
+
+    策略：按语义类别（创建 / 变换 / 材质 / 修改器 / 其他）分组计数，
+    产生形如「创建 3 个几何体 + 添加 2 个修改器 + 赋 1 个材质」的
+    紧凑描述。空列表返回空串。
+    """
+    if not actions:
+        return ''
+    buckets = {
+        '创建几何体': 0,
+        '放置灯光': 0,
+        '添加相机': 0,
+        '变换对象': 0,
+        '添加修改器': 0,
+        '处理材质': 0,
+        '视口/渲染': 0,
+        '场景 IO': 0,
+        '脚本片段': 0,
+        '其他': 0,
+    }
+    for a in actions:
+        n = a.tool_name
+        if n in _GEOM_KIND_ZH:
+            buckets['创建几何体'] += 1
+        elif n in _LIGHT_KIND_ZH:
+            buckets['放置灯光'] += 1
+        elif n in ('create_camera', 'create_target_camera',
+                   'create_free_camera'):
+            buckets['添加相机'] += 1
+        elif n in ('move_object', 'rotate_object', 'scale_object',
+                   'align_to', 'reset_pivot'):
+            buckets['变换对象'] += 1
+        elif n in ('add_modifier', 'remove_modifier',
+                   'set_modifier_param', 'collapse_stack'):
+            buckets['添加修改器'] += 1
+        elif n in ('assign_material', 'create_standard_material',
+                   'create_physical_material', 'set_material_color',
+                   'add_diffuse_map', 'generate_material_variants'):
+            buckets['处理材质'] += 1
+        elif n in ('set_viewport_camera', 'set_viewport_view',
+                   'set_render_resolution', 'render_current_frame',
+                   'render_animation'):
+            buckets['视口/渲染'] += 1
+        elif n in ('save_max_file', 'load_max_file', 'merge_max_file',
+                   'import_file', 'export_file'):
+            buckets['场景 IO'] += 1
+        elif n in ('run_python', 'run_maxscript'):
+            buckets['脚本片段'] += 1
+        else:
+            buckets['其他'] += 1
+
+    parts = []
+    for label, cnt in buckets.items():
+        if cnt > 0:
+            parts.append('{} {}'.format(label, cnt))
+    if not parts:
+        return ''
+    return ' + '.join(parts)
+
+
 class MacroRecorder(object):
     """会话级操作记录器。
 
@@ -672,6 +962,7 @@ class MacroRecorder(object):
 
         :returns: 可直接在 Max 的 Python 环境中执行的脚本字符串。
         """
+        summary = summarize_actions(self._session.actions)
         lines = [
             '# -*- coding: utf-8 -*-',
             '# Auto-generated by MaxAgent Macro Recorder',
@@ -679,29 +970,42 @@ class MacroRecorder(object):
                 time.strftime('%Y-%m-%d %H:%M:%S'),
             ),
             '# Session: {}'.format(self._session.session_id),
+        ]
+        if self._session.title:
+            lines.append('# Title  : {}'.format(self._session.title))
+        if summary:
+            lines.append('# 摘要   : {}'.format(summary))
+        # 语义化步骤大纲：让用户一眼看清脚本做了什么，无需读代码
+        if self._session.actions:
+            lines.append('#')
+            lines.append('# 步骤大纲：')
+            for act in self._session.actions:
+                mark = '✓' if act.success else '✗'
+                try:
+                    desc = describe_action(act.tool_name, act.arguments)
+                except Exception:  # pylint: disable=broad-except
+                    desc = act.tool_name
+                lines.append('#  {} {}. {}'.format(mark, act.order, desc))
+        lines.extend([
             '',
             'import pymxs',
             'rt = pymxs.runtime',
             '',
-        ]
+        ])
         for act in self._session.actions:
+            try:
+                desc = describe_action(act.tool_name, act.arguments)
+            except Exception:  # pylint: disable=broad-except
+                desc = ''
+            step_header = '# ---- step {}: {}{} ----'.format(
+                act.order, desc or act.tool_name,
+                (' [{}]'.format(act.tool_name)) if desc else '',
+            )
             if not act.success:
                 lines.append(
-                    '# ---- [FAIL] step {}: {} ----'.format(
-                        act.order, act.tool_name,
-                    ),
-                )
-                lines.append(
-                    '# args = {}'.format(json.dumps(act.arguments, ensure_ascii=False)),
-                )
-                lines.append('')
-                continue
-
-            builder = _PYMXS_TOOL_MAP.get(act.tool_name)
-            if builder is None:
-                lines.append(
-                    '# ---- [UNMAPPED] step {}: {} ----'.format(
-                        act.order, act.tool_name,
+                    '# ---- [FAIL] step {}: {}{} ----'.format(
+                        act.order, desc or act.tool_name,
+                        (' [{}]'.format(act.tool_name)) if desc else '',
                     ),
                 )
                 lines.append(
@@ -712,11 +1016,23 @@ class MacroRecorder(object):
                 lines.append('')
                 continue
 
-            lines.append(
-                '# ---- step {}: {} ----'.format(
-                    act.order, act.tool_name,
-                ),
-            )
+            builder = _PYMXS_TOOL_MAP.get(act.tool_name)
+            if builder is None:
+                lines.append(
+                    '# ---- [UNMAPPED] step {}: {}{} ----'.format(
+                        act.order, desc or act.tool_name,
+                        (' [{}]'.format(act.tool_name)) if desc else '',
+                    ),
+                )
+                lines.append(
+                    '# args = {}'.format(
+                        json.dumps(act.arguments, ensure_ascii=False),
+                    ),
+                )
+                lines.append('')
+                continue
+
+            lines.append(step_header)
             try:
                 snippet = builder(act.arguments)
                 lines.append(snippet)
@@ -731,19 +1047,44 @@ class MacroRecorder(object):
     def to_maxscript(self):
         # type: () -> str
         """导出为 MaxScript 脚本。"""
+        summary = summarize_actions(self._session.actions)
         lines = [
             '/* Auto-generated by MaxAgent Macro Recorder */',
             '/* Timestamp: {} */'.format(
                 time.strftime('%Y-%m-%d %H:%M:%S'),
             ),
             '/* Session: {} */'.format(self._session.session_id),
-            '',
         ]
+        if self._session.title:
+            lines.append('/* Title  : {} */'.format(self._session.title))
+        if summary:
+            lines.append('/* 摘要   : {} */'.format(summary))
+        if self._session.actions:
+            lines.append('/*')
+            lines.append(' * 步骤大纲：')
+            for act in self._session.actions:
+                mark = '✓' if act.success else '✗'
+                try:
+                    desc = describe_action(act.tool_name, act.arguments)
+                except Exception:  # pylint: disable=broad-except
+                    desc = act.tool_name
+                lines.append(' *  {} {}. {}'.format(mark, act.order, desc))
+            lines.append(' */')
+        lines.append('')
         for act in self._session.actions:
+            try:
+                desc = describe_action(act.tool_name, act.arguments)
+            except Exception:  # pylint: disable=broad-except
+                desc = ''
+            step_header = '/* step {}: {}{} */'.format(
+                act.order, desc or act.tool_name,
+                (' [{}]'.format(act.tool_name)) if desc else '',
+            )
             if not act.success:
                 lines.append(
-                    '/* [FAIL] step {}: {} */'.format(
-                        act.order, act.tool_name,
+                    '/* [FAIL] step {}: {}{} */'.format(
+                        act.order, desc or act.tool_name,
+                        (' [{}]'.format(act.tool_name)) if desc else '',
                     ),
                 )
                 lines.append('')
@@ -763,11 +1104,7 @@ class MacroRecorder(object):
                 ).format(act.arguments.get('name', ''))
 
             if snippet:
-                lines.append(
-                    '/* step {}: {} */'.format(
-                        act.order, act.tool_name,
-                    ),
-                )
+                lines.append(step_header)
                 lines.append(snippet)
                 lines.append('')
 
@@ -781,6 +1118,30 @@ class MacroRecorder(object):
             ensure_ascii=False,
             indent=2,
         )
+
+    def to_semantic_summary(self):
+        # type: () -> str
+        """返回整段宏的一句中文摘要，用作 Skill 描述兜底。
+
+        形如「创建几何体 3 + 添加修改器 2 + 处理材质 1」，无操作返回空串。
+        """
+        return summarize_actions(self._session.actions)
+
+    def to_semantic_outline(self):
+        # type: () -> List[str]
+        """返回每步的中文语义描述列表，供 UI 步骤面板直接渲染。
+
+        每项形如 "3. 创建立方体「Box01」（长=50，宽=30）(位于 0,0,0)"。
+        """
+        outline = []
+        for act in self._session.actions:
+            try:
+                desc = describe_action(act.tool_name, act.arguments)
+            except Exception:  # pylint: disable=broad-except
+                desc = act.tool_name
+            mark = '' if act.success else '（失败）'
+            outline.append('{}. {}{}'.format(act.order, desc, mark))
+        return outline
 
     # ------------------------------------------------------------------ #
     # 元数据 / 状态
