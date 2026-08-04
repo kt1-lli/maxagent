@@ -147,7 +147,170 @@ def snapshot_to_prompt_text(snapshot):
     return '\n'.join(lines)
 
 
+def diff_snapshots(before, after):
+    # type: (Optional[Dict[str, Any]], Optional[Dict[str, Any]]) -> Dict[str, Any]
+    """对比两个快照，返回结构化 diff。
+
+    只关心用户能感知的变化：
+    - added: after 有 before 没有的对象
+    - removed: before 有 after 没有的对象
+    - moved: 同名对象位置变化超过阈值
+    - selection_changed: 选择集变化
+    - count_delta: 对象总数变化
+
+    :param before: 执行前的快照
+    :param after: 执行后的快照
+    :returns: diff dict；若两侧任一为空，返回带 ``empty=True`` 的空 diff
+    """
+    empty = {
+        'empty': True,
+        'added': [],
+        'removed': [],
+        'moved': [],
+        'selection_changed': False,
+        'count_delta': 0,
+    }
+    if not before or not after:
+        return empty
+
+    before_objs = {
+        o.get('name', ''): o for o in before.get('objects', []) if o.get('name')
+    }
+    after_objs = {
+        o.get('name', ''): o for o in after.get('objects', []) if o.get('name')
+    }
+
+    added = []
+    for name, obj in after_objs.items():
+        if name not in before_objs:
+            added.append({
+                'name': name,
+                'class': obj.get('class', ''),
+                'position': obj.get('position'),
+            })
+
+    removed = []
+    for name, obj in before_objs.items():
+        if name not in after_objs:
+            removed.append({
+                'name': name,
+                'class': obj.get('class', ''),
+            })
+
+    moved = []
+    for name, obj in after_objs.items():
+        if name not in before_objs:
+            continue
+        old_pos = before_objs[name].get('position')
+        new_pos = obj.get('position')
+        if not _pos_equal(old_pos, new_pos):
+            moved.append({
+                'name': name,
+                'from': old_pos,
+                'to': new_pos,
+            })
+
+    sel_changed = (
+        set(before.get('selection', []) or []) !=
+        set(after.get('selection', []) or [])
+    )
+    count_delta = int(after.get('object_count', 0)) - int(
+        before.get('object_count', 0)
+    )
+
+    return {
+        'empty': not (added or removed or moved or sel_changed),
+        'added': added,
+        'removed': removed,
+        'moved': moved,
+        'selection_changed': sel_changed,
+        'count_delta': count_delta,
+    }
+
+
+def _pos_equal(a, b, tol=0.01):
+    """判断两个位置是否近似相等（tol 单位，Max 默认单位）。"""
+    if not isinstance(a, (list, tuple)) or not isinstance(b, (list, tuple)):
+        return a == b
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        try:
+            if abs(float(x) - float(y)) > tol:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def diff_to_prompt_text(diff):
+    # type: (Optional[Dict[str, Any]]) -> str
+    """把 diff 转为 LLM 友好的短文本，用于批次结束后的 verify 注入。
+
+    只在真正有变化时返回文本；空 diff 返回空串，避免上下文污染。
+    """
+    if not diff or diff.get('empty'):
+        return ''
+    lines = ['【🔎 批次复核 · 场景实际变化】']
+
+    added = diff.get('added') or []
+    if added:
+        lines.append('新增对象 ({}):'.format(len(added)))
+        for obj in added[:10]:
+            pos = obj.get('position')
+            pos_str = (
+                '({:.2f}, {:.2f}, {:.2f})'.format(*pos)
+                if isinstance(pos, (list, tuple)) and len(pos) == 3
+                else '未知位置'
+            )
+            lines.append('  + {}[{}] {}'.format(
+                obj.get('name', ''), obj.get('class', ''), pos_str,
+            ))
+        if len(added) > 10:
+            lines.append('  … 另有 {} 项省略'.format(len(added) - 10))
+
+    removed = diff.get('removed') or []
+    if removed:
+        lines.append('删除对象 ({}):'.format(len(removed)))
+        for obj in removed[:10]:
+            lines.append('  - {}[{}]'.format(
+                obj.get('name', ''), obj.get('class', ''),
+            ))
+        if len(removed) > 10:
+            lines.append('  … 另有 {} 项省略'.format(len(removed) - 10))
+
+    moved = diff.get('moved') or []
+    if moved:
+        lines.append('位置变化 ({}):'.format(len(moved)))
+        for m in moved[:10]:
+            from_pos = m.get('from')
+            to_pos = m.get('to')
+
+            def _fmt(p):
+                if isinstance(p, (list, tuple)) and len(p) == 3:
+                    return '({:.2f}, {:.2f}, {:.2f})'.format(*p)
+                return '?'
+
+            lines.append('  ~ {}: {} → {}'.format(
+                m.get('name', ''), _fmt(from_pos), _fmt(to_pos),
+            ))
+        if len(moved) > 10:
+            lines.append('  … 另有 {} 项省略'.format(len(moved) - 10))
+
+    if diff.get('selection_changed'):
+        lines.append('选择集已变更')
+
+    lines.append(
+        '→ 请对照你本轮的预期，判断上述变化是否符合任务要求。'
+        '如果发现遗漏或错误（例如对象未按预期落位），请立即修正；'
+        '如果一切符合预期，直接给出最终回复即可。'
+    )
+    return '\n'.join(lines)
+
+
 __all__ = [
     'build_scene_snapshot',
     'snapshot_to_prompt_text',
+    'diff_snapshots',
+    'diff_to_prompt_text',
 ]

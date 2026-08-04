@@ -59,6 +59,7 @@ from .bubbles import ErrorBubble as _ErrorBubble
 from .bubbles import StatusLine as _StatusLine
 from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
 from .bubbles import SystemNoticeBubble as _SystemNoticeBubble
+from .bubbles import TodoListBubble as _TodoListBubble
 from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
@@ -429,9 +430,40 @@ class _ChatRenderer(QtCore.QObject):
         self._close_streaming_if_any()
         self._append(_SystemNoticeBubble(message, level=level))
 
+    def add_or_update_todo_bubble(self, session_id, snapshot):
+        """维持"每会话一张任务清单卡"策略：首次创建，之后就地更新。
+
+        session_id 为空或未在缓存中出现时新建气泡；已有时直接调用
+        update_snapshot 刷新，不重复追加，避免把整轮对话历史被
+        checklist 淹没。
+        """
+        if not hasattr(self, '_todo_bubbles') or self._todo_bubbles is None:
+            self._todo_bubbles = {}  # type: dict
+        sid = session_id or '__default__'
+        bubble = self._todo_bubbles.get(sid)
+        if bubble is None:
+            self._close_streaming_if_any()
+            bubble = _TodoListBubble()
+            self._todo_bubbles[sid] = bubble
+            self._append(bubble)
+        try:
+            bubble.update_snapshot(session_id, snapshot or {})
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('TodoListBubble 更新异常（已忽略）')
+        # 立即应用宽度限制
+        vw = self._viewport_width()
+        if vw > 0:
+            try:
+                bubble.apply_max_width(vw)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
     def clear(self):
         """清空全部消息，但保留末尾 stretch。"""
         self._streaming = None
+        # 清 todo 卡缓存：会话切换/清空对话时不再复用旧气泡引用
+        if hasattr(self, '_todo_bubbles'):
+            self._todo_bubbles = {}
         # 倒序删，留最后一个 stretch
         while self._layout.count() > 1:
             item = self._layout.takeAt(0)
@@ -1820,6 +1852,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.history_trimmed.connect(self._on_history_trimmed)
         self._worker.usage_received.connect(self._on_usage_received)
         self._worker.system_notice.connect(self._on_system_notice)
+        self._worker.todo_updated.connect(self._on_todo_updated)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.skill_proposed.connect(self._on_skill_proposed)
@@ -2040,6 +2073,17 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             self._renderer.add_system_notice(level, message)
         except Exception:  # pylint: disable=broad-except
             # 通知渲染失败不应中断主流程
+            pass
+
+    def _on_todo_updated(self, session_id, snapshot):
+        """LLM 通过 todo_write/update_status 修改清单后触发此槽。
+
+        每会话保持一张任务卡：首次出现时插入气泡，后续更新就地刷新，
+        避免把整段对话历史被 checklist 占满。
+        """
+        try:
+            self._renderer.add_or_update_todo_bubble(session_id, snapshot)
+        except Exception:  # pylint: disable=broad-except
             pass
 
     def _on_finished(self):

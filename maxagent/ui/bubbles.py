@@ -970,3 +970,156 @@ class SystemNoticeBubble(QtWidgets.QWidget):
         max_w = max(300, int(viewport_width * 0.70))
         if self._frame is not None:
             self._frame.setMaximumWidth(max_w)
+
+
+# ---------------------------------------------------------------------- #
+class TodoListBubble(QtWidgets.QWidget):
+    """任务清单气泡，展示 LLM 自主维护的 Todo 列表。
+
+    - 与 SystemNoticeBubble 类似的居中卡片视觉，但内容是分行的 checklist；
+    - 通过 :meth:`update_snapshot` 就地刷新，无需重建组件；
+    - 状态图标：○ pending / ⏵ in_progress / ✓ done / ⊘ skipped / ✗ failed；
+    - 支持折叠：点击标题栏切换只显示未完成项。
+    """
+
+    _STATUS_ICON = {
+        'pending': '○',
+        'in_progress': '⏵',
+        'done': '✓',
+        'skipped': '⊘',
+        'failed': '✗',
+    }
+
+    _STATUS_COLOR = {
+        'pending': '#8ea0b8',
+        'in_progress': '#f5c46b',
+        'done': '#7ed07e',
+        'skipped': '#8a8a8a',
+        'failed': '#f57c7c',
+    }
+
+    def __init__(self, parent=None):
+        super(TodoListBubble, self).__init__(parent)
+        self._session_id = ''
+        self._items = []
+        self._collapsed = False
+
+        outer = QtWidgets.QHBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.addStretch(1)
+
+        frame = QtWidgets.QFrame()
+        frame.setStyleSheet(
+            'QFrame { background:#1f2b3d; color:#cfd8e8; '
+            'border:1px solid #2c3f5c; border-radius:8px; }'
+        )
+        frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        vbox = QtWidgets.QVBoxLayout(frame)
+        vbox.setContentsMargins(12, 8, 12, 8)
+        vbox.setSpacing(4)
+
+        # 标题栏（可点击切换折叠）
+        self._header = QtWidgets.QLabel()
+        self._header.setStyleSheet(
+            'background:transparent; color:#7cc0ff; '
+            'font-size:9pt; font-weight:bold;'
+        )
+        self._header.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._header.mousePressEvent = self._on_header_click  # type: ignore
+        vbox.addWidget(self._header)
+
+        # 列表容器
+        self._list_label = QtWidgets.QLabel()
+        self._list_label.setStyleSheet(
+            'background:transparent; color:#cfd8e8; font-size:9pt;'
+        )
+        self._list_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._list_label.setWordWrap(True)
+        vbox.addWidget(self._list_label)
+
+        outer.addWidget(frame, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        outer.addStretch(1)
+        self._frame = frame
+        self._render()
+
+    # ------------------------------------------------------------------ #
+    def _on_header_click(self, _event):
+        self._collapsed = not self._collapsed
+        self._render()
+
+    def update_snapshot(self, session_id, snapshot):
+        # type: (str, dict) -> None
+        """接收 todo_tools 的最新快照并刷新显示。"""
+        self._session_id = session_id or ''
+        self._items = list((snapshot or {}).get('items') or [])
+        self._render()
+
+    def _render(self):
+        total = len(self._items)
+        done = sum(1 for it in self._items if it.get('status') == 'done')
+        in_prog = sum(
+            1 for it in self._items if it.get('status') == 'in_progress'
+        )
+        arrow = '▶' if self._collapsed else '▼'
+        self._header.setText(
+            '{arrow} 📋 任务清单 · {done}/{total} 完成'
+            '{ip}'.format(
+                arrow=arrow,
+                done=done,
+                total=total,
+                ip=('（进行中 {}）'.format(in_prog)) if in_prog else '',
+            )
+        )
+
+        if total == 0:
+            self._list_label.setText(
+                '<span style="color:#8ea0b8;">（暂无任务，等待 LLM 创建）</span>'
+            )
+            return
+
+        lines = []
+        for it in self._items:
+            status = it.get('status') or 'pending'
+            if self._collapsed and status in ('done', 'skipped'):
+                continue
+            icon = self._STATUS_ICON.get(status, '○')
+            color = self._STATUS_COLOR.get(status, '#cfd8e8')
+            content = html_escape(str(it.get('content') or ''))
+            note = it.get('note') or ''
+            note_html = ''
+            if note:
+                note_html = (
+                    '<br/><span style="color:#8ea0b8; font-size:8pt;">'
+                    '&nbsp;&nbsp;&nbsp;&nbsp;· {}</span>'.format(
+                        html_escape(str(note)),
+                    )
+                )
+            # 已完成项加删除线
+            if status == 'done':
+                content = (
+                    '<span style="text-decoration:line-through; '
+                    'color:#7a8a9a;">{}</span>'.format(content)
+                )
+            lines.append(
+                '<span style="color:{c};">{icon}</span>&nbsp;{txt}{note}'.format(
+                    c=color, icon=icon, txt=content, note=note_html,
+                )
+            )
+
+        if not lines:
+            lines.append(
+                '<span style="color:#8ea0b8;">（已全部完成，'
+                '点击标题展开查看）</span>'
+            )
+        self._list_label.setText('<br/>'.join(lines))
+
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        if viewport_width <= 0:
+            return
+        max_w = max(360, int(viewport_width * 0.75))
+        if self._frame is not None:
+            self._frame.setMaximumWidth(max_w)

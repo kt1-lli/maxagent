@@ -56,6 +56,7 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     from . import creative           # noqa: F401
     from . import viewport_capture   # noqa: F401
     from . import scene_awareness    # noqa: F401
+    from . import todo_tools         # noqa: F401
 
     if include_escape_hatch:
         from . import escape_hatch  # noqa: F401

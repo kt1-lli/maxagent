@@ -46,6 +46,8 @@ from ..tools import ToolDispatcher
 from ..tools import ToolExecutionError
 from .conversation import Conversation
 from .scene_snapshot import build_scene_snapshot
+from .scene_snapshot import diff_snapshots
+from .scene_snapshot import diff_to_prompt_text
 from .scene_snapshot import snapshot_to_prompt_text
 from .task_context import get_task_prompt
 from .task_context import TaskContextManager
@@ -109,6 +111,10 @@ class AgentWorker(QObject):
     # 长期知晓的事件。与 status_changed 的区别：status_changed 是短暂
     # 的状态栏文本，system_notice 是永久留在对话历史里的气泡。
     system_notice = Signal(str, str)
+    # Todo 清单更新：(session_id, snapshot_dict)
+    # 由 tools.todo_tools 的变更回调触发；snapshot_dict 含 items/revision/counts
+    # UI 侧维持"每会话单张 Todo 卡"的策略，接到通知就地更新，不新增气泡。
+    todo_updated = Signal(str, dict)
 
     def __init__(self, llm_client, conversation, dispatcher,
                  max_tool_loops=MAX_TOOL_LOOPS,
@@ -230,6 +236,16 @@ class AgentWorker(QObject):
         self._chunk_emit_count = 0
         self._chunk_first_ts = 0.0
         self._llm_call_started_ts = 0.0
+
+        # ---------- Todo 清单集成 ----------
+        # tools/todo_tools.py 里的 _STORE 是模块级单例，通过 change
+        # callback 把变更推送给 worker，再由 worker 发 Qt signal 给 UI。
+        # 注册全程 best-effort：即使 tools 模块尚未加载，也不影响主流程。
+        try:
+            from ..tools import todo_tools as _todo
+            _todo.set_change_callback(self._on_todo_change)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('todo_tools 注册回调失败（已忽略）')
 
     # ------------------------------------------------------------------ #
     # 主线程辅助
@@ -649,6 +665,18 @@ class AgentWorker(QObject):
         """
         self.reset_cancel()
         self._current_user_input = user_input or ''
+        # Todo 会话初始化：让 tools/todo_tools 的单例知道当前活跃会话
+        # id，并清空上一轮遗留清单（避免"上一轮的 done 项"串到新任务里
+        # 干扰 LLM）。使用 session_id 或 id(self) 作为 key，保证唯一。
+        try:
+            from ..tools import todo_tools as _todo
+            sid = getattr(self, '_session_id', '') or 'sess_{}'.format(
+                id(self),
+            )
+            _todo.set_active_session(sid)
+            _todo.reset_todo(sid)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('todo_tools 会话切换失败（已忽略）')
         # fallback 冷却：距上次 fallback 触发超过 _FALLBACK_COOLDOWN_SEC 时，
         # 清空 visited 集合，让主 profile 有机会被再次尝试。这样偶发 429
         # 过去后能自动回归高质量 provider，不必让整个 worker 生命周期都锁在
@@ -1207,12 +1235,55 @@ class AgentWorker(QObject):
                 self._propose_skill_from_session()
                 return
 
+            # 批次级 Verify：仅对含状态变更工具的批次做前后场景快照对比
+            _mutating_prefixes = (
+                'create_', 'modify_', 'set_', 'move_', 'delete_',
+                'apply_', 'rotate_', 'scale_', 'add_', 'assign_',
+                'rename_', 'group_', 'collapse_',
+            )
+            _has_mutation = False
+            for _tc in tool_calls:
+                try:
+                    _tname = (_tc.get('function') or {}).get('name') or ''
+                except Exception:  # pylint: disable=broad-except
+                    _tname = ''
+                if _tname.startswith(_mutating_prefixes):
+                    _has_mutation = True
+                    break
+
+            _before_snap = None
+            if _has_mutation:
+                try:
+                    _before_snap = build_scene_snapshot(self._sync_tool_runner)
+                except Exception as _exc:  # pylint: disable=broad-except
+                    logger.debug('批次前快照采集失败（已忽略）: %s', _exc)
+                    _before_snap = None
+
             # 有工具调用 → 逐个执行，结果写回历史
             for tc in tool_calls:
                 if self._cancel_event.is_set():
                     self.failed.emit('用户取消')
                     return
                 self._exec_one_tool_call(tc)
+
+            # 批次执行完后采集 after 快照并 diff，非空则注入 system note
+            if _has_mutation and _before_snap is not None:
+                try:
+                    _after_snap = build_scene_snapshot(self._sync_tool_runner)
+                    _diff = diff_snapshots(_before_snap, _after_snap)
+                    if _diff and not _diff.get('empty', True):
+                        _diff_text = diff_to_prompt_text(_diff)
+                        if _diff_text:
+                            self._conv.add_system_note(_diff_text)
+                            logger.info(
+                                'batch verify diff injected '
+                                '(added=%d removed=%d moved=%d)',
+                                len(_diff.get('added') or []),
+                                len(_diff.get('removed') or []),
+                                len(_diff.get('moved') or []),
+                            )
+                except Exception as _exc:  # pylint: disable=broad-except
+                    logger.debug('批次后快照/diff 失败（已忽略）: %s', _exc)
 
             # 任务卡推进：每完成一批工具调用，推进任务步骤
             if self._task_ctx.is_active():
@@ -1389,6 +1460,22 @@ class AgentWorker(QObject):
                 )
             except Exception:  # pylint: disable=broad-except
                 pass
+
+    # ------------------------------------------------------------------ #
+    # Todo 回调（tools/todo_tools.py 变更时触发）
+    # ------------------------------------------------------------------ #
+    def _on_todo_change(self, session_id, snapshot):
+        # type: (str, Dict[str, Any]) -> None
+        """Todo 单例内部变更时的回调，转发为 Qt signal。
+
+        运行线程：调用发生在执行 todo_write/todo_update_status 的线程里，
+        与本 worker 的 dispatcher 线程相同。Signal 走 QueuedConnection
+        到 UI 主线程处理，无跨线程安全问题。
+        """
+        try:
+            self.todo_updated.emit(session_id or '', snapshot or {})
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('todo_updated emit 失败（已忽略）')
 
     # ------------------------------------------------------------------ #
     # 自动状态复核
