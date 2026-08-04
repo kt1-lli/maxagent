@@ -1832,14 +1832,56 @@ class AgentWorker(QObject):
         # type: () -> None
         """从本轮 Macro Recorder 生成 Skill 建议并发射信号。
 
-        仅在以下情况触发：
-        - Macro Recorder 中有成功修改场景的操作
-        - 会话不是被取消或失败
+        触发门槛（满足任一即跳过）：
+        1. 全局开关 ``enable_skill_proposal`` 未启用（默认关闭）
+        2. Macro Recorder 为空
+        3. 成功动作数 < ``skill_proposal_min_actions``（默认 3）
+        4. 所有动作都是只读/查询类工具（get_* / list_* / find_* 等）
+        5. 已存在同名 Skill，或触发词与已有 Skill 高度重叠
         生成结果通过 skill_proposed 信号交给 UI 层确认保存。
         """
         try:
+            # 门槛 1：全局开关
+            cfg = None
+            if self._config_manager is not None:
+                cfg = getattr(self._config_manager, 'config', None)
+            if cfg is None or not getattr(cfg, 'enable_skill_proposal', False):
+                return
+
+            # 门槛 2：recorder 非空
             if self._macro_recorder is None or self._macro_recorder.is_empty():
                 return
+
+            # 门槛 3+4：提前统计成功动作，过滤纯查询会话
+            try:
+                actions = self._macro_recorder.session.to_dict().get(
+                    'actions', [],
+                )
+            except Exception:  # pylint: disable=broad-except
+                actions = []
+            success_actions = [
+                a for a in actions
+                if a.get('ok', True) and a.get('tool')
+            ]
+            min_actions = int(
+                getattr(cfg, 'skill_proposal_min_actions', 3) or 3,
+            )
+            if len(success_actions) < max(1, min_actions):
+                return
+            # 只读工具前缀：查询类操作不算"值得沉淀的流程"
+            readonly_prefixes = (
+                'get_', 'list_', 'find_', 'check_', 'query_',
+                'build_scene_semantic_graph', 'diff_scene_snapshots',
+            )
+            has_write = False
+            for a in success_actions:
+                tool = (a.get('tool') or '')
+                if not tool.startswith(readonly_prefixes):
+                    has_write = True
+                    break
+            if not has_write:
+                return
+
             session_id = getattr(self, '_session_id', '') or ''
             proposal = propose_skill_from_recorder(
                 self._macro_recorder,
@@ -1850,11 +1892,42 @@ class AgentWorker(QObject):
                 return
             manifest = proposal.get('manifest')
             impl_code = proposal.get('impl_code', '')
-            if manifest and manifest.get('instructions'):
-                logger.info(
-                    '生成 Skill 建议: %s', manifest.get('name'),
+            if not (manifest and manifest.get('instructions')):
+                return
+
+            # 门槛 5：与已有 Skill 去重（同名或触发词交集）
+            try:
+                from ..skills import SkillManager
+                existing = SkillManager().list_all_skills()
+            except Exception:  # pylint: disable=broad-except
+                existing = []
+            new_name = (manifest.get('name') or '').strip().lower()
+            new_kws = set(
+                (kw or '').strip().lower()
+                for kw in (manifest.get('trigger_keywords') or [])
+                if kw
+            )
+            for sk in existing:
+                if new_name and new_name == (sk.name or '').strip().lower():
+                    logger.debug('Skill 提议已存在同名，跳过: %s', new_name)
+                    return
+                old_kws = set(
+                    (kw or '').strip().lower()
+                    for kw in (sk.trigger_keywords or [])
+                    if kw
                 )
-                self.skill_proposed.emit(manifest, impl_code)
+                if new_kws and old_kws and (new_kws & old_kws):
+                    logger.debug(
+                        'Skill 提议触发词与已有 Skill 重叠，跳过: %s',
+                        new_kws & old_kws,
+                    )
+                    return
+
+            logger.info(
+                '生成 Skill 建议: %s (动作数=%d)',
+                manifest.get('name'), len(success_actions),
+            )
+            self.skill_proposed.emit(manifest, impl_code)
         except Exception as exc:  # pylint: disable=broad-except
             logger.debug('生成 Skill 建议失败（已忽略）: %s', exc)
 

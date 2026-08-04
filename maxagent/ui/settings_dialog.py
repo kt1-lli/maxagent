@@ -827,6 +827,38 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         form.addRow('', self.enable_llm_planner_chk)
 
+        # ---- Skill 自动提议开关 ---- #
+        self.enable_skill_proposal_chk = QtWidgets.QCheckBox(
+            '会话结束时自动提议记为 Skill（默认关闭，避免打扰）',
+        )
+        self.enable_skill_proposal_chk.setToolTip(
+            '关闭时永不弹出"是否记为 Skill"对话框；\n'
+            '开启后仍需满足以下条件才会提议：\n'
+            '  · 本轮成功动作数 ≥ 门槛（下方数值）\n'
+            '  · 至少含一个写入类工具（纯查询会话不算流程）\n'
+            '  · 不与已有 Skill 同名或触发词重叠\n'
+            '你也可以随时在对话里说"把刚才的流程记为 Skill"主动保存。',
+        )
+        self.enable_skill_proposal_chk.toggled.connect(
+            self._on_app_setting_changed,
+        )
+        form.addRow('', self.enable_skill_proposal_chk)
+
+        self.skill_proposal_min_actions_spin = QtWidgets.QSpinBox()
+        self.skill_proposal_min_actions_spin.setRange(1, 50)
+        self.skill_proposal_min_actions_spin.setValue(3)
+        self.skill_proposal_min_actions_spin.setToolTip(
+            '触发 Skill 提议所需的最少成功动作数。\n'
+            '值越大越不容易弹窗（默认 3：单次 create_box 不会打扰）。',
+        )
+        self.skill_proposal_min_actions_spin.valueChanged.connect(
+            self._on_app_setting_changed,
+        )
+        form.addRow(
+            'Skill 提议门槛（最少动作数）',
+            self.skill_proposal_min_actions_spin,
+        )
+
         # ---- 视觉白名单（每行一个，子串匹配，不区分大小写） ---- #
         self.vision_whitelist_edit = QtWidgets.QPlainTextEdit()
         self.vision_whitelist_edit.setPlaceholderText(
@@ -2163,10 +2195,24 @@ class SettingsDialog(QtWidgets.QDialog):
                 self.enable_llm_planner_chk,
                 getattr(cfg, 'enable_llm_planner', False),
             ),
+            (
+                self.enable_skill_proposal_chk,
+                getattr(cfg, 'enable_skill_proposal', False),
+            ),
         ):
             chk.blockSignals(True)
             chk.setChecked(bool(val))
             chk.blockSignals(False)
+
+        # 数值控件单独同步（不在上面的复选框循环里）
+        try:
+            self.skill_proposal_min_actions_spin.blockSignals(True)
+            self.skill_proposal_min_actions_spin.setValue(
+                int(getattr(cfg, 'skill_proposal_min_actions', 3) or 3),
+            )
+            self.skill_proposal_min_actions_spin.blockSignals(False)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
         level_text = str(getattr(cfg, 'log_level', 'INFO') or 'INFO').upper()
         # 三态归一化：老的 WARNING / ERROR 折算成 INFO
@@ -2206,6 +2252,15 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.enable_llm_planner = bool(
             self.enable_llm_planner_chk.isChecked(),
         )
+        cfg.enable_skill_proposal = bool(
+            self.enable_skill_proposal_chk.isChecked(),
+        )
+        try:
+            cfg.skill_proposal_min_actions = int(
+                self.skill_proposal_min_actions_spin.value(),
+            )
+        except Exception:  # pylint: disable=broad-except
+            cfg.skill_proposal_min_actions = 3
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except
