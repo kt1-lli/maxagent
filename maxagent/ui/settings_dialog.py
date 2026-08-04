@@ -446,8 +446,16 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # 备用 Profile 链：触发速率限制或服务不可用时按顺序切换
         self.fallback_list = QtWidgets.QListWidget()
+        # SingleSelection：拖拽重排要求 item 可被选中，否则拖动无效
         self.fallback_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.NoSelection,
+            QtWidgets.QAbstractItemView.SingleSelection,
+        )
+        # 拖拽内部重排：用户可以按住 item 上下拖动调整备用链优先级
+        self.fallback_list.setDragDropMode(
+            QtWidgets.QAbstractItemView.InternalMove,
+        )
+        self.fallback_list.setDefaultDropAction(
+            QtCore.Qt.DropAction.MoveAction,
         )
         self.fallback_list.setMinimumHeight(80)
         self.fallback_list.setMaximumHeight(120)
@@ -456,7 +464,8 @@ class SettingsDialog(QtWidgets.QDialog):
             'Profile 继续调用。\n'
             '典型场景：主 Profile 用 Kimi/Moonshot（高质量但配额有限），\n'
             '备用配 DeepSeek 或本地 Ollama 保底。\n'
-            '⚠ 只能选择已存在的其他 Profile；当前 Profile 不会出现在列表中。',
+            '⚠ 只能选择已存在的其他 Profile；当前 Profile 不会出现在列表中。\n'
+            '💡 可长按并上下拖动 item 来调整备用链的优先级顺序。',
         )
         right.addRow('备用 Profile:', self.fallback_list)
 
@@ -801,6 +810,22 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         self.vision_enabled_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.vision_enabled_chk)
+
+        # ---- 任务规划器：LLM 规划开关 ---- #
+        self.enable_llm_planner_chk = QtWidgets.QCheckBox(
+            '启用 LLM 任务规划器（每轮多一次快速调用）',
+        )
+        self.enable_llm_planner_chk.setToolTip(
+            '开启后：每次收到用户请求先用 LLM 生成结构化 JSON 计划，'
+            '再由 Agent 逐步执行，比默认的规则版规划更精准。\n'
+            '成本：每轮对话多约 200~500 tokens。\n'
+            '关闭时使用内置规则版规划（默认，零成本但覆盖场景有限）。\n'
+            '⚠ 触发 429 限流的用户建议先保持关闭。',
+        )
+        self.enable_llm_planner_chk.toggled.connect(
+            self._on_app_setting_changed,
+        )
+        form.addRow('', self.enable_llm_planner_chk)
 
         # ---- 视觉白名单（每行一个，子串匹配，不区分大小写） ---- #
         self.vision_whitelist_edit = QtWidgets.QPlainTextEdit()
@@ -2134,6 +2159,10 @@ class SettingsDialog(QtWidgets.QDialog):
             (self.confirm_exec_chk, cfg.confirm_before_exec),
             (self.wrap_undo_chk, cfg.wrap_undo),
             (self.vision_enabled_chk, getattr(cfg, 'vision_enabled', True)),
+            (
+                self.enable_llm_planner_chk,
+                getattr(cfg, 'enable_llm_planner', False),
+            ),
         ):
             chk.blockSignals(True)
             chk.setChecked(bool(val))
@@ -2174,6 +2203,9 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.confirm_before_exec = bool(self.confirm_exec_chk.isChecked())
         cfg.wrap_undo = bool(self.wrap_undo_chk.isChecked())
         cfg.vision_enabled = bool(self.vision_enabled_chk.isChecked())
+        cfg.enable_llm_planner = bool(
+            self.enable_llm_planner_chk.isChecked(),
+        )
         try:
             self._config.save()
         except Exception as exc:  # pylint: disable=broad-except

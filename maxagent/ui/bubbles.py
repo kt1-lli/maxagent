@@ -862,3 +862,88 @@ class WelcomeBlock(QtWidgets.QWidget):
                 lambda _checked=False, t=ex: self.example_picked.emit(t)
             )
             v.addWidget(btn)
+
+
+# ---------------------------------------------------------------------- #
+# 系统通知气泡（居中，用于 fallback 切换 / 配额告警等重要提示）
+# ---------------------------------------------------------------------- #
+class SystemNoticeBubble(QtWidgets.QWidget):
+    """系统级通知气泡，居中显示，带视觉级别（info / warn / error）。
+
+    与 status_bar 提示不同，本气泡是对话流内的一条持久消息，用户滚动
+    历史时依然能看到。适用于：LLM Provider 切换、配额告警、备用链耗尽、
+    工具禁用等需要用户长期知晓的事件。
+    """
+
+    _STYLES = {
+        'info': {
+            'bg': '#1f2d3d',
+            'fg': '#7cc0ff',
+            'border': '#2a4560',
+            'icon': 'ℹ',
+        },
+        'warn': {
+            'bg': '#3d331f',
+            'fg': '#f5c46b',
+            'border': '#604d2a',
+            'icon': '⚠',
+        },
+        'error': {
+            'bg': '#3d1f1f',
+            'fg': '#f57c7c',
+            'border': '#602a2a',
+            'icon': '⛔',
+        },
+    }
+
+    def __init__(self, message, level='info', parent=None):
+        super(SystemNoticeBubble, self).__init__(parent)
+        style = self._STYLES.get(level, self._STYLES['info'])
+        outer = QtWidgets.QHBoxLayout(self)
+        outer.setContentsMargins(0, 4, 0, 4)
+        outer.addStretch(1)
+
+        frame = QtWidgets.QFrame()
+        frame.setStyleSheet(
+            'QFrame {{ background:{bg}; color:{fg}; '
+            'border:1px solid {border}; border-radius:8px; }}'.format(**style)
+        )
+        frame.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        h = QtWidgets.QHBoxLayout(frame)
+        h.setContentsMargins(12, 6, 12, 6)
+        h.setSpacing(8)
+
+        icon_label = QtWidgets.QLabel(style['icon'])
+        icon_label.setStyleSheet(
+            'background:transparent; color:{}; font-size:11pt;'.format(
+                style['fg'],
+            )
+        )
+        h.addWidget(icon_label)
+
+        text_label = QtWidgets.QLabel(html_escape(message))
+        text_label.setStyleSheet(
+            'background:transparent; color:{}; font-size:9pt;'.format(
+                style['fg'],
+            )
+        )
+        text_label.setWordWrap(True)
+        text_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        h.addWidget(text_label, 1)
+
+        outer.addWidget(frame, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        outer.addStretch(1)
+        # 记录 frame 供外层裁剪最大宽度使用
+        self._frame = frame
+
+    def apply_max_width(self, viewport_width):
+        # type: (int) -> None
+        """限制通知宽度不超过视区的 70%，避免长消息横跨全屏。"""
+        if viewport_width <= 0:
+            return
+        max_w = max(300, int(viewport_width * 0.70))
+        if self._frame is not None:
+            self._frame.setMaximumWidth(max_w)

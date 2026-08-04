@@ -109,6 +109,122 @@ class TaskPlanner(object):
         self.created_at = time.time()
         self.steps = self._build_steps(text)
 
+    def upgrade_plan_with_llm(self, user_input, llm_client, max_tokens=512):
+        # type: (str, Any, int) -> bool
+        """用 LLM 生成更精准的结构化任务计划，替换当前规则版计划。
+
+        :param user_input: 用户请求原文
+        :param llm_client: 已构建好的 LLMClient 实例
+        :param max_tokens: 生成 plan 允许的 max_tokens 上限
+        :returns: True 表示 LLM 规划成功替换，False 表示失败并保留原计划
+
+        LLM 严格输出 JSON schema：
+        {
+          "steps": [
+            {"description": "...", "needs_vision": false},
+            ...
+          ]
+        }
+        任何解析异常都会静默降级到规则版计划，不抛出。
+        """
+        text = (user_input or '').strip()
+        if not text or llm_client is None:
+            return False
+
+        system_prompt = (
+            '你是一个 3ds Max 内嵌 AI Agent 的任务规划助手。'
+            '把用户的自然语言请求拆解成 2~6 个具体、可独立执行的步骤，'
+            '每一步都是一个明确的动作或验证。\n'
+            '规则：\n'
+            '1. 严格输出 JSON，不含任何解释文字或 markdown 围栏。\n'
+            '2. schema：{"steps": [{"description": "...", "needs_vision": bool}]}\n'
+            '3. description 使用中文，动词开头，说明要做什么。\n'
+            '4. 涉及"看看/复核/效果/截图/渲染"等视觉验证时 needs_vision=true。\n'
+            '5. 简单查询类请求可只返回 1~2 步；复杂多阶段请求最多 6 步。\n'
+            '6. 步骤应按执行顺序线性排列，后一步默认依赖前一步。\n'
+            '示例输入："在茶壶上放一个红色球体，看看效果"\n'
+            '示例输出：'
+            '{"steps": ['
+            '{"description": "定位茶壶对象并读取其位置/边界", "needs_vision": false},'
+            '{"description": "创建红色球体材质", "needs_vision": false},'
+            '{"description": "创建球体并摆放到茶壶顶部", "needs_vision": false},'
+            '{"description": "截取视口复核效果", "needs_vision": true}'
+            ']}'
+        )
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': text},
+        ]
+        try:
+            # 尝试用 llm_client 的 chat 接口（非流式，快速返回）
+            resp = llm_client.chat(
+                messages,
+                stream=False,
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
+        except Exception:  # pylint: disable=broad-except
+            return False
+
+        # 抽取生成的文本
+        raw = ''
+        try:
+            if isinstance(resp, dict):
+                choices = resp.get('choices') or []
+                if choices and isinstance(choices, list):
+                    msg = choices[0].get('message') or {}
+                    raw = msg.get('content') or ''
+            elif isinstance(resp, str):
+                raw = resp
+        except Exception:  # pylint: disable=broad-except
+            return False
+        raw = (raw or '').strip()
+        if not raw:
+            return False
+
+        # 去掉可能的 markdown 围栏
+        if raw.startswith('```'):
+            # 剥离 ```json / ```
+            raw = re.sub(r'^```[a-zA-Z]*\n', '', raw)
+            if raw.endswith('```'):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+        # 解析 JSON
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        raw_steps = data.get('steps') or []
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return False
+
+        # 构造新 steps 列表；每步都做 schema 兼容处理
+        new_steps = []  # type: List[PlanStep]
+        for item in raw_steps[:6]:  # 上限 6 步防止 LLM 幻觉爆炸
+            if isinstance(item, dict):
+                desc = str(item.get('description') or '').strip()
+                needs_vision = bool(item.get('needs_vision', False))
+            elif isinstance(item, str):
+                desc = item.strip()
+                needs_vision = False
+            else:
+                continue
+            if not desc:
+                continue
+            new_steps.append(
+                PlanStep(desc, needs_vision=needs_vision)
+            )
+
+        # LLM 什么都没给出有效步骤时保留规则版
+        if not new_steps:
+            return False
+
+        self.steps = new_steps
+        return True
+
     def current_step(self):
         # type: () -> Optional[PlanStep]
         """找到当前应该执行的步骤。"""
