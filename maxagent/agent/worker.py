@@ -1227,13 +1227,12 @@ class AgentWorker(QObject):
 
             # 没有工具调用 → 整轮结束
             if not tool_calls:
-                try:
-                    self._session_memory_mgr.learn_from_session(
-                        self._conv, session_id=getattr(self, '_session_id', '') or '',
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.warning('Session memory 学习异常: %s', exc)
-                # 记录本轮最终 assistant 回复到事件日志
+                # ⚡ 立即通知 UI 恢复"发送"按钮状态，避免用户感知到后台
+                # 学习/反思/技能提议带来的 2~5 秒延迟。这些是"最佳努力"
+                # 的收尾任务，用户不需要等它们完成才能进行下一轮对话。
+                self.finished.emit()
+
+                # 记录本轮最终 assistant 回复到事件日志（轻量本地 IO）
                 if self._event_logger is not None and content:
                     try:
                         self._event_logger.log(
@@ -1243,11 +1242,17 @@ class AgentWorker(QObject):
                         )
                     except Exception:  # pylint: disable=broad-except
                         pass
-                # 会话正常结束：做一次最佳努力的自动反思
+                # 会话记忆学习（可能触发 LLM 摘要调用，耗时）
+                try:
+                    self._session_memory_mgr.learn_from_session(
+                        self._conv, session_id=getattr(self, '_session_id', '') or '',
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    logger.warning('Session memory 学习异常: %s', exc)
+                # 自动反思（同步 LLM 调用，主要延迟源）
                 self._reflect_session()
-                # 如果本轮有成功修改场景的操作，提议沉淀为 Skill
+                # 技能提议（可能扫描历史 + LLM 判断）
                 self._propose_skill_from_session()
-                self.finished.emit()
                 return
 
             # 有工具调用 → 逐个执行，结果写回历史
