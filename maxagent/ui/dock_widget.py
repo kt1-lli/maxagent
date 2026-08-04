@@ -345,12 +345,30 @@ class _ChatRenderer(QtCore.QObject):
         if self._streaming is None:
             self.add_assistant_start()
         self._streaming.append_chunk(chunk)
-        # 流式期间的滚动节流：避免每个 chunk 都派一个 0ms timer，
-        # 否则一秒 ~10 次 chunk = 10 个 timer + 10 次 layout 重算，
-        # 是新的卡顿源。改为合并到下一帧只触发一次。
-        if self._is_at_bottom() and not self._scroll_pending:
-            self._scroll_pending = True
-            QtCore.QTimer.singleShot(0, self._scroll_to_bottom_pending)
+        # 流式期间强化滚动策略（用户反馈：够不到底）：
+        # - 放宽底部粘性判断：只要不在明显往上翻的位置就跟随
+        # - 每 chunk 无条件调度一次 0ms 滚动（Qt 会合并多次 timer 到一帧）
+        # - 用 ensureWidgetVisible 让 QScrollArea 主动把 bubble 拉进视区，
+        #   不依赖 verticalScrollBar.maximum() 的滞后更新
+        if self._is_sticky_bottom():
+            if not self._scroll_pending:
+                self._scroll_pending = True
+                QtCore.QTimer.singleShot(0, self._scroll_to_bottom_pending)
+            # 让滚动区主动跟随 streaming bubble
+            try:
+                self._scroll.ensureWidgetVisible(self._streaming, 0, 0)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    def _is_sticky_bottom(self):
+        """比 _is_at_bottom 更宽松：底部 200px 范围内都算贴底。
+
+        流式期间用户可能因为 chunk 抖动被"挤"离底部一两屏，只要意图
+        还是在跟随最新回复，就应该继续滚。真正想翻历史的用户会滚到
+        200px 之外，此时不再自动跟随。
+        """
+        bar = self._scroll.verticalScrollBar()
+        return bar.value() >= bar.maximum() - 200
 
     def end_turn(self):
         """一次流式段落结束：把 streaming bubble 替换成 markdown 渲染版本。"""

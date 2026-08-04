@@ -402,31 +402,28 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         outer.addStretch(1)
         self._buffer = ''
         self._closed = False
-        # 已应用的行数；只在行数发生变化时才 setFixedHeight，
-        # 避免每个 chunk 都触发外层 QScrollArea 重新 layout（卡顿主因）
-        self._last_lines = 1
-        # 60Hz 节流定时器：合并多个 chunk 内的高度调整请求
-        self._height_timer = QtCore.QTimer()
-        self._height_timer.setSingleShot(True)
-        self._height_timer.setInterval(33)  # 约 30Hz，足够流畅
-        self._height_timer.timeout.connect(self._grow_height)
+        # 已应用的高度像素值；只在实际变化时才 setFixedHeight，
+        # 避免每个 chunk 都触发外层 QScrollArea 重新 layout
+        self._last_height = 28
+        # 上次评估高度用的 buffer 长度快照，短 chunk 合并触发
+        self._last_eval_len = 0
 
     def append_chunk(self, chunk):
         # type: (str) -> None
-        """O(chunk_len) 增量追加，不在主线程做 layout 计算。
+        """O(chunk_len) 增量追加，同步刷新可见高度。
 
-        关键优化：
-        - 高度调整通过 33ms 定时器节流，不每 chunk 一次
-        - 用行数估算高度，不调用 documentLayout().documentSize()
-          （后者会强制同步 layout，是卡顿主因）
-        - ensureCursorVisible 让 editor 内部处理光标跟随，
-          外层不需要每 chunk 滚一次
+        关键修复（用户反馈：流式期间气泡不实时显示 + 无法滚到底）：
+        - 去掉了 33ms 高度节流：以往纯文本段落（无换行）在节流窗口内
+          不换行就不长高度，用户视觉上"卡住不显示"。
+        - 每 chunk 立刻按字符数估算新高度；若像素值真的变了才 setFixedHeight，
+          Qt 内部对同值 setFixedHeight 是 O(1)，无 layout 抖动。
+        - 用 documentLayout().documentSize() 太重（触发同步 layout），
+          改用行数 + 字符估算：文档宽度按 editor.viewport().width() 估算
+          每行字符数。
         """
         if not chunk or self._closed:
             return
         # 流式同样要避开 keycap emoji 渲染陷阱：把"1️⃣"提前换成"①"。
-        # 注意：跨 chunk 切片不会切到组合序列中间——LLM 的 SSE 切片
-        # 在码点边界，但保险起见调用方传完整 chunk 即可。
         from .markdown_render import _normalize_text_for_qt
         chunk = _normalize_text_for_qt(chunk)
         self._buffer += chunk
@@ -437,28 +434,44 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         self._editor.setTextCursor(cursor)
         # 让 editor 自己保证光标可见（不影响外层滚动条）
         self._editor.ensureCursorVisible()
-        # 节流触发高度调整
-        if not self._height_timer.isActive():
-            self._height_timer.start()
+        # 同步更新高度（每 chunk 都算，但只在真变化时 setFixedHeight）
+        self._grow_height()
 
     def _grow_height(self):
-        """根据行数估算 editor 高度。
+        """按字符数 + 换行数估算 editor 高度。
 
-        用行数 * 行高估算，避免触发 documentLayout 同步 layout。
-        只在行数变化时才 setFixedHeight，最大限度减少外层 relayout。
+        估算模型（无需触发 documentLayout()）：
+        - 显式换行：buffer.count('\\n') + 1 条硬行
+        - 软换行：按 viewport 宽度 / 平均字符宽 得每行字符数上限，
+          最长硬行按此上限做除法向上取整补算行数
+        用字符估算而不是 documentSize() 是因为后者会同步触发 layout，
+        对每个 chunk 都调是主要卡顿源。
         """
-        # 用 newline 数量估算（不强求精确，估高一点也没关系）
-        line_count = max(1, self._buffer.count('\n') + 1)
-        if line_count == self._last_lines:
-            return
-        self._last_lines = line_count
+        buf = self._buffer
         fm = QtGui.QFontMetrics(self._editor.font())
-        h = line_count * fm.lineSpacing() + 16
+        # 平均字符宽度：中文按 fontMetrics.height*0.55 估
+        try:
+            avg_char_w = max(6, fm.averageCharWidth())
+        except Exception:  # pylint: disable=broad-except
+            avg_char_w = 8
+        viewport_w = max(60, self._editor.viewport().width())
+        chars_per_line = max(1, viewport_w // avg_char_w)
+        # 软换行行数估算
+        soft_lines = 0
+        for hard_line in buf.split('\n'):
+            n = len(hard_line)
+            if n == 0:
+                soft_lines += 1
+            else:
+                soft_lines += (n + chars_per_line - 1) // chars_per_line
+        soft_lines = max(1, soft_lines)
+        h = soft_lines * fm.lineSpacing() + 16
         if h > self._MAX_HEIGHT:
             h = self._MAX_HEIGHT
         if h < 28:
             h = 28
-        if self._editor.height() != h:
+        if h != self._last_height:
+            self._last_height = h
             self._editor.setFixedHeight(h)
 
     def end_streaming(self):
@@ -466,10 +479,20 @@ class StreamingAssistantBubble(QtWidgets.QWidget):
         """流式结束，返回最终 buffer。调用方负责把这个 bubble 替换为
         最终的 markdown 渲染版本。"""
         self._closed = True
-        # 收尾时强制刷一次高度
-        if self._height_timer.isActive():
-            self._height_timer.stop()
-        self._grow_height()
+        # 收尾时用 documentSize 精算一次，避免估算偏差残留
+        try:
+            doc = self._editor.document()
+            doc.setTextWidth(self._editor.viewport().width())
+            h_precise = int(doc.size().height()) + 16
+            if h_precise > self._MAX_HEIGHT:
+                h_precise = self._MAX_HEIGHT
+            if h_precise < 28:
+                h_precise = 28
+            if h_precise != self._last_height:
+                self._last_height = h_precise
+                self._editor.setFixedHeight(h_precise)
+        except Exception:  # pylint: disable=broad-except
+            self._grow_height()
         return self._buffer
 
     def is_empty(self):
