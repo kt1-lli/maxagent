@@ -204,7 +204,16 @@ def _match_nodes(criteria):
     - selected_only: bool
     """
     _ensure_in_max()
-    criteria = criteria or {}
+    # LLM 有概率把 dict 传成 JSON 字符串（tool_call arguments 里嵌套 dict
+    # 序列化不彻底），这里做自动兼容。
+    if isinstance(criteria, str):
+        try:
+            import json
+            criteria = json.loads(criteria)
+        except (ValueError, TypeError):
+            criteria = {}
+    if not isinstance(criteria, dict):
+        criteria = {}
     source = list(rt.selection) if criteria.get('selected_only') else list(rt.objects)
     matched = []
     for node in source:

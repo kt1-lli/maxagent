@@ -322,8 +322,12 @@ class ToolDispatcher(object):
                 batch_results = []
                 with undo_block("agent: batch_execute"):
                     for name, spec, args in main_calls:
+                        # 传 in_batch=True，避免 _execute_one 再包一层
+                        # undo（Max 的 undo 系统不支持嵌套）
                         batch_results.append(
-                            self._execute_one(name, spec, args),
+                            self._execute_one(
+                                name, spec, args, in_batch=True,
+                            ),
                         )
                 return batch_results
 
@@ -382,14 +386,20 @@ class ToolDispatcher(object):
     # 内部
     # ------------------------------------------------------------------ #
 
-    def _execute_one(self, tool_name, spec, arguments):
-        # type: (str, Any, Dict[str, Any]) -> Dict[str, Any]
+    def _execute_one(self, tool_name, spec, arguments, in_batch=False):
+        # type: (str, Any, Dict[str, Any], bool) -> Dict[str, Any]
         """执行单个子调用，返回带子结果协议的 dict。
 
         与 dispatch() 不同：这里只做执行、序列化、单结果裁剪，
         不做危险确认（批次已统一确认）。
+
+        :param in_batch: True 表示已在批次 undo 上下文内，本方法**不再
+            嵌套 undo_block**——Max 的 undo 系统不支持嵌套 hold/accept，
+            嵌套会导致内层 accept 提前关闭外层 hold，创建的对象在批次
+            结束时被"撤销"，表现为 batch_execute 返回 ok:true 但节点
+            不在场景中。
         """
-        do_undo = self._wrap_undo and spec.wrap_undo
+        do_undo = self._wrap_undo and spec.wrap_undo and not in_batch
         on_main = spec.run_on_main_thread and IN_MAX
 
         def _call():
