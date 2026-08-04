@@ -192,6 +192,44 @@ def _format_http_error(exc: "urllib.error.HTTPError", url: str) -> str:
     return " | ".join(parts)
 
 
+def _humanize_rate_limit_error(status_code, detailed_msg):
+    """把 429 错误压成人类友好文案，隐藏组织 ID / TPD 计数等噪声。
+
+    :param status_code: HTTP 状态码（一般是 429）
+    :param detailed_msg: 已由 _format_http_error 抽取的详细消息（带 body 内容）
+
+    典型原始消息：
+      HTTP 429 | Your account org-2fe639... / proj-FFA... <ak-fbp...> request
+      reached organization TPD rate limit, current: 1537293, limit: 1500000
+
+    压缩后：
+      HTTP 429 · 上游速率限制：组织日 token 配额（TPD）已用尽
+      ，请配置备用 Profile 或稍后重试
+
+    完整原文由调用方通过 logger.warning 输出，本函数只负责生成 UI 简讯。
+    """
+    lower = (detailed_msg or "").lower()
+    # 分类：TPD（日）/ TPM（分钟）/ RPM（分钟请求数）/ 通用
+    if "tpd" in lower or ("token" in lower and "day" in lower):
+        hint = "组织日 token 配额（TPD）已用尽"
+    elif "tpm" in lower or ("token" in lower and "minute" in lower):
+        hint = "组织分钟 token 配额（TPM）已用尽"
+    elif "rpm" in lower or ("request" in lower and "minute" in lower):
+        hint = "组织分钟请求数配额（RPM）已用尽"
+    elif "quota" in lower:
+        hint = "账户配额受限"
+    elif "concurrent" in lower:
+        hint = "并发请求数超限"
+    elif status_code in (502, 503, 504):
+        hint = "上游服务暂时不可用"
+    else:
+        hint = "上游速率限制"
+
+    return "HTTP {} · {}，请配置备用 Profile 或稍后重试".format(
+        status_code, hint,
+    )
+
+
 # 已知路径误填模式 -> 自动剥除的尾部
 _KNOWN_PATH_TAILS = (
     "/chat/completions",
@@ -470,8 +508,12 @@ class LLMClient(object):
                     # 可重试状态码：继续循环；耗尽后抛 LLMRateLimitError
                     if attempt < max_retries:
                         continue
+                    # detailed 版本用于日志排查（含组织 ID/配额数字）
+                    detailed = _format_http_error(exc, req.full_url)
+                    logger.warning('rate_limit_detailed: %s', detailed)
+                    # humanize 版本用于 UI/异常消息（压掉噪声）
                     raise LLMRateLimitError(
-                        _format_http_error(exc, req.full_url),
+                        _humanize_rate_limit_error(exc.code, detailed),
                         should_fallback=True,
                         status_code=exc.code,
                     )
@@ -490,8 +532,10 @@ class LLMClient(object):
 
         # 理论上不会到达；防御性兜底
         if last_http_exc is not None:
+            detailed = _format_http_error(last_http_exc, req.full_url)
+            logger.warning('rate_limit_detailed_fallback: %s', detailed)
             raise LLMRateLimitError(
-                _format_http_error(last_http_exc, req.full_url),
+                _humanize_rate_limit_error(last_http_exc.code, detailed),
                 should_fallback=True,
                 status_code=last_http_exc.code,
             )

@@ -108,6 +108,12 @@ class AgentWorker(QObject):
     # LLM 用量回报: (prompt_tokens, completion_tokens, total_tokens, cost_usd)
     # cost_usd 为 -1 时表示 profile 未配价格 / 不可估算
     usage_received = Signal(int, int, int, float)
+    # 系统级通知（对话流内持久气泡）：(level, message)
+    # level: 'info' / 'warn' / 'error'
+    # 用途：fallback 切换、配额告警、备用链耗尽、工具禁用等需要用户
+    # 长期知晓的事件。与 status_changed 的区别：status_changed 是短暂
+    # 的状态栏文本，system_notice 是永久留在对话历史里的气泡。
+    system_notice = Signal(str, str)
 
     def __init__(self, llm_client, conversation, dispatcher,
                  max_tool_loops=MAX_TOOL_LOOPS,
@@ -133,6 +139,10 @@ class AgentWorker(QObject):
         self._config_manager = config_manager
         # 本轮已尝试过的 profile 名（去重防止循环切换）
         self._fallback_visited = set()  # type: set
+        # 上一次触发 fallback 的时间戳（monotonic），用于冷却回归判断。
+        # 距上次 fallback 超过 _FALLBACK_COOLDOWN_SEC 后新一轮对话会
+        # 清空 visited，重新从主 profile 开始尝试。0 表示尚未触发过。
+        self._last_fallback_time = 0.0
         # 视觉/多模态开关：False 时 user 消息里的图片附件不发给 LLM，
         # 只在本地气泡里展示并附"[图片] N 张"提示给模型，避免把 base64
         # 喂给纯文本模型导致 400 / token 浪费。
@@ -229,6 +239,73 @@ class AgentWorker(QObject):
     # ------------------------------------------------------------------ #
     # 备用 Profile 切换（触发 rate limit / 服务不可用时使用）
     # ------------------------------------------------------------------ #
+    # fallback 冷却回归：距上次 fallback 超过该秒数后，新一轮对话会重置
+    # visited 集合，让主 profile 有机会被再次尝试。取 60 秒是经验值：
+    # - 大部分 429 是分钟级配额，60s 足以让配额窗口滑动
+    # - 组织级 TPD（日）配额不会在 60s 内恢复，但重置后仍会立刻再次
+    #   命中 429 触发切换，只多花一次 LLM 请求成本，代价可接受。
+    # ------------------------------------------------------------------ #
+    _FALLBACK_COOLDOWN_SEC = 60.0
+
+    def _maybe_reset_fallback_cooldown(self):
+        """新一轮对话开始时判断是否重置 visited 集合。
+
+        条件：距上次 fallback 触发已超过 _FALLBACK_COOLDOWN_SEC。
+        效果：让主 profile 重新回到候选，避免整个 worker 生命周期都锁
+              死在备用链上、错过主 profile 已恢复的窗口。
+        """
+        if not self._fallback_visited:
+            return
+        if self._last_fallback_time <= 0:
+            return
+        elapsed = time.monotonic() - self._last_fallback_time
+        if elapsed < self._FALLBACK_COOLDOWN_SEC:
+            return
+        logger.info(
+            'fallback cooldown expired (%.1fs > %.1fs), reset visited=%s',
+            elapsed, self._FALLBACK_COOLDOWN_SEC,
+            sorted(self._fallback_visited),
+        )
+        self._fallback_visited.clear()
+        # 尝试切回原始主 profile（如果 config 中有记录）
+        try:
+            active = (
+                self._config_manager.get_active_profile()
+                if self._config_manager else None
+            )
+            primary = getattr(self, '_primary_profile_name', '') or ''
+            if (
+                primary
+                and active is not None
+                and active.name != primary
+                and self._config_manager is not None
+                and self._config_manager.get_profile(primary) is not None
+            ):
+                primary_prof = self._config_manager.get_profile(primary)
+                new_client = build_client_from_profile(
+                    primary_prof,
+                    getattr(self._config_manager, 'config', None),
+                )
+                self._llm = new_client
+                try:
+                    self._context_compressor._llm = new_client
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                try:
+                    self._config_manager.set_active_profile(primary)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+                logger.info('fallback cooldown: 已回归主 profile %s', primary)
+                self.system_notice.emit(
+                    'info',
+                    '冷却期已过（{}秒），已尝试回归主 Profile: {}'.format(
+                        int(self._FALLBACK_COOLDOWN_SEC), primary,
+                    ),
+                )
+        except Exception:  # pylint: disable=broad-except
+            logger.exception('fallback cooldown 回归主 profile 失败')
+
+    # ------------------------------------------------------------------ #
     def _try_switch_to_fallback(self):
         """尝试切换到当前 profile 的下一个可用备用 profile。
 
@@ -273,6 +350,10 @@ class AgentWorker(QObject):
             return None, True
         self._llm = new_client
         self._fallback_visited.add(target_prof.name)
+        # 记录主 profile 名（用于冷却期后回归）与本次 fallback 时间戳
+        if not getattr(self, '_primary_profile_name', ''):
+            self._primary_profile_name = active.name
+        self._last_fallback_time = time.monotonic()
         # 同步刷新上下文压缩器的 llm_client
         try:
             self._context_compressor._llm = new_client
@@ -574,6 +655,11 @@ class AgentWorker(QObject):
         """
         self.reset_cancel()
         self._current_user_input = user_input or ''
+        # fallback 冷却：距上次 fallback 触发超过 _FALLBACK_COOLDOWN_SEC 时，
+        # 清空 visited 集合，让主 profile 有机会被再次尝试。这样偶发 429
+        # 过去后能自动回归高质量 provider，不必让整个 worker 生命周期都锁在
+        # 备用链上。冷却期间保持 visited 生效，避免频繁切换来回振荡。
+        self._maybe_reset_fallback_cooldown()
         # 记录用户输入到事件日志（Layer 1：原始对话按时间落盘）
         if self._event_logger is not None and user_input:
             try:
@@ -637,6 +723,22 @@ class AgentWorker(QObject):
         # 规划器：为新请求生成计划
         if text:
             self._planner.create_plan(text)
+            # LLM 规划升级：默认关闭，用户可在 config.enable_llm_planner=True 启用。
+            # 成本考虑：每轮对话多一次快速 LLM 调用，换取更精准的步骤拆分。
+            # 失败时静默降级到规则版规划，不影响主流程。
+            try:
+                enable_llm_planner = False
+                if self._config_manager is not None:
+                    cfg = getattr(self._config_manager, 'config', None)
+                    enable_llm_planner = bool(
+                        getattr(cfg, 'enable_llm_planner', False)
+                    )
+                if enable_llm_planner and self._llm is not None:
+                    self._planner.upgrade_plan_with_llm(
+                        text, self._llm,
+                    )
+            except Exception:  # pylint: disable=broad-except
+                logger.exception('LLM planner 升级失败，保留规则版计划')
             try:
                 self.plan_changed.emit()
             except Exception:  # pylint: disable=broad-except
@@ -1031,16 +1133,27 @@ class AgentWorker(QObject):
                 self._flush_chunk_buf()
                 new_name, exhausted = self._try_switch_to_fallback()
                 if new_name is not None:
+                    notice_msg = (
+                        '触发上游速率限制（HTTP {}），已切换到备用 Profile: {}'
+                        '，将继续本次对话。'.format(exc.status_code, new_name)
+                    )
                     self.status_changed.emit(
                         '⚠ 触发速率限制，已切换到备用 Profile: '
                         + new_name,
                     )
+                    # 同时发一条持久气泡，避免用户只在状态栏看到瞬时提示
+                    self.system_notice.emit('warn', notice_msg)
                     logger.warning(
                         'LLMRateLimit hit (status=%s), fallback to %s',
                         exc.status_code, new_name,
                     )
                     continue
                 # 备用链耗尽或未配置：视为不可恢复
+                self.system_notice.emit(
+                    'error',
+                    '上游速率限制且备用 Profile 链已耗尽或未配置，本次对话中断。'
+                    '请到设置中为当前 Profile 配置备用链，或稍后重试。',
+                )
                 self.failed.emit(
                     'LLM 调用失败（速率限制/服务过载，无可用备用 Profile）: '
                     + str(exc),

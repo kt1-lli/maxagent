@@ -58,6 +58,7 @@ from .bubbles import ChatLabel as _ChatLabel  # noqa: F401
 from .bubbles import ErrorBubble as _ErrorBubble
 from .bubbles import StatusLine as _StatusLine
 from .bubbles import StreamingAssistantBubble as _StreamingAssistantBubble
+from .bubbles import SystemNoticeBubble as _SystemNoticeBubble
 from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
@@ -399,6 +400,16 @@ class _ChatRenderer(QtCore.QObject):
         block = _WelcomeBlock(html_body)
         block.example_picked.connect(self.example_picked.emit)
         self._append(block)
+
+    def add_system_notice(self, level, message):
+        """在对话流插入一条持久系统通知气泡（居中样式）。
+
+        与 status_bar 提示不同，本气泡会永久留在对话历史中，用户
+        滚动回来仍能看到，适合承载 fallback 切换 / 配额告警 /
+        备用链耗尽等对上下文有影响的重要事件。
+        """
+        self._close_streaming_if_any()
+        self._append(_SystemNoticeBubble(message, level=level))
 
     def clear(self):
         """清空全部消息，但保留末尾 stretch。"""
@@ -1819,6 +1830,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.status_changed.connect(self._on_status)
         self._worker.history_trimmed.connect(self._on_history_trimmed)
         self._worker.usage_received.connect(self._on_usage_received)
+        self._worker.system_notice.connect(self._on_system_notice)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.skill_proposed.connect(self._on_skill_proposed)
@@ -2033,6 +2045,17 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _on_status(self, text):
         self.status_label.setText(text)
+
+    def _on_system_notice(self, level, message):
+        """将 worker 发出的系统通知插入对话流为持久气泡。
+
+        level: 'info' / 'warn' / 'error'
+        """
+        try:
+            self._renderer.add_system_notice(level, message)
+        except Exception:  # pylint: disable=broad-except
+            # 通知渲染失败不应中断主流程
+            pass
 
     def _on_finished(self):
         self._renderer.end_turn()
