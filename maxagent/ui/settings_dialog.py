@@ -3441,15 +3441,18 @@ class SettingsDialog(QtWidgets.QDialog):
     # 测试连接：视觉模型识别 + 占位图自动喂入
     # ------------------------------------------------------------------ #
 
-    # 1×1 灰色 PNG 占位图（约 100 字节）。
+    # 32×32 纯灰色 PNG 占位图（约 130 字节）。
     # 设计目的：tokenhub 系视觉模型（如 youtu-vita）会在收到纯文本
     # messages 时返回 400 invalid_params，导致用户哪怕配置完全正确，
     # 点"测试连接"也永远是红叉。给视觉模型自动塞一张极小占位图，
     # 让握手能成功，按钮的判据才有意义。
-    # 用 8×8 而非 1×1 是为了避免某些后端把 1×1 视为"无效图像"。
+    #
+    # 尺寸从 8×8 升到 32×32 的原因：Moonshot Kimi Vision 后端要求
+    # 图像最小 28×28，8×8 会被判 "invalid or unsupported image format"。
+    # 用 32×32 是兼容 Kimi / Qwen-VL / GPT-4o 的通用下限。
     _VISION_PLACEHOLDER_PNG_B64 = (
-        'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAA'
-        'GUlEQVR4nGNgYGD4z0AEYBpVSF+FRDsTAGBdAQHO7+hpAAAAAElFTkSuQmCC'
+        'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAA'
+        'J0lEQVR42u3NMQ0AAAwDoPpXVllVsWMJGCA9FoFAIBAIBAKBQPAlGGDXYIje2qgoAAAAAElFTkSuQmCC'
     )
     _VISION_PLACEHOLDER_DATA_URL = (
         'data:image/png;base64,' + _VISION_PLACEHOLDER_PNG_B64
@@ -3544,9 +3547,23 @@ class SettingsDialog(QtWidgets.QDialog):
         except LLMError as exc:
             err_text = str(exc)
             logger.warning('测试连接失败: %s', err_text)
-            self.test_label.setText('{} 连接失败: {}'.format(_ee('❌'), err_text))
+            hint = ''
+            low = err_text.lower()
+            if is_vision and (
+                'prepare image' in low
+                or 'decode image' in low
+                or 'invalid_request' in low and 'image' in low
+            ):
+                hint = (
+                    '\n提示：该模型对图像格式校验失败。如果 "{}"'
+                    ' 本身不是视觉模型（例如代码/推理专用模型），'
+                    '请到"视觉模型白名单"中移除相关关键词。'
+                ).format(prof.model or '')
+            self.test_label.setText(
+                '{} 连接失败: {}{}'.format(_ee('❌'), err_text, hint),
+            )
             self.test_label.setStyleSheet('color:#e57373;')
-            self.test_label.setToolTip(err_text)
+            self.test_label.setToolTip(err_text + hint)
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception('测试连接异常')
             self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
