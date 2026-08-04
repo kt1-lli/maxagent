@@ -69,12 +69,22 @@ def _get_nodes(names):
     missing = []
     for n in items:
         node = rt.getNodeByName(n, exact=True, all=False)
+        # pymxs getNodeByName 在部分场景下会返回 MXSWrapperBase
+        # （不是真正的 node，例如 selection set 冲名），做类型校验
         if node is None:
             missing.append(n)
-        else:
-            out.append(node)
+            continue
+        try:
+            if not bool(rt.isValidNode(node)):
+                missing.append(n)
+                continue
+        except Exception:  # pylint: disable=broad-except
+            # isValidNode 本身抛异常说明拿到的对象根本不是 node
+            missing.append(n)
+            continue
+        out.append(node)
     if missing:
-        raise ValueError('对象不存在: {}'.format(', '.join(missing)))
+        raise ValueError('对象不存在或名称冲突: {}'.format(', '.join(missing)))
     return out
 
 

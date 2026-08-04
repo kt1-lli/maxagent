@@ -23,20 +23,71 @@ def _ensure_in_max():
 
 
 def _apply_common(node, name, position, rotation_euler):
-    """统一处理对象创建后的命名与变换。"""
+    """统一处理对象创建后的命名与变换。
+
+    坐标系陷阱：pymxs 里 ``node.position = rt.Point3(...)`` 在部分
+    Max 版本 / 部分创建函数（rt.Box 等）返回的 node 上会被静默忽略，
+    对象仍留在原点。原因是 Max 的 position 属性写入依赖当前
+    coordsys 上下文；pymxs 层没有稳定的 coordsys world 上下文注入。
+
+    稳妥做法：优先 ``node.pos``（多数版本可写），失败再兜底
+    ``node.position``，最后走 MaxScript 层 ``in coordsys world``。
+    """
     if name:
-        node.name = name
+        try:
+            node.name = name
+        except Exception:  # pylint: disable=broad-except
+            pass
     if position is not None and len(position) == 3:
-        node.position = rt.Point3(
+        p3 = rt.Point3(
             float(position[0]), float(position[1]), float(position[2]),
         )
+        _applied = False
+        # 优先 .pos（Max 里 pos 与 position 同义，但 pos 属性无坐标系依赖）
+        try:
+            node.pos = p3
+            _applied = True
+        except Exception:  # pylint: disable=broad-except
+            pass
+        if not _applied:
+            try:
+                node.position = p3
+                _applied = True
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # 校验实际位置——赋值成功但坐标系错误的兜底
+        try:
+            actual = node.pos
+            if (
+                abs(float(actual.x) - float(position[0])) > 0.01
+                or abs(float(actual.y) - float(position[1])) > 0.01
+                or abs(float(actual.z) - float(position[2])) > 0.01
+            ):
+                # 最后走 MaxScript 层强制 world coordsys
+                script = (
+                    'in coordsys world $\'{}\'.pos = [{},{},{}]'
+                ).format(
+                    str(node.name).replace("'", "\\'"),
+                    float(position[0]),
+                    float(position[1]),
+                    float(position[2]),
+                )
+                try:
+                    rt.execute(script)
+                except Exception:  # pylint: disable=broad-except
+                    pass
+        except Exception:  # pylint: disable=broad-except
+            pass
     if rotation_euler is not None and len(rotation_euler) == 3:
         euler = rt.eulerAngles(
             float(rotation_euler[0]),
             float(rotation_euler[1]),
             float(rotation_euler[2]),
         )
-        node.rotation = rt.eulerToQuat(euler)
+        try:
+            node.rotation = rt.eulerToQuat(euler)
+        except Exception:  # pylint: disable=broad-except
+            pass
     return node
 
 

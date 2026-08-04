@@ -75,6 +75,13 @@ def check_mesh_quality(object_names=None, selected_only=False):
     if selected_only:
         nodes = list(rt.selection)
     elif object_names:
+        # 兼容 LLM 传 "Box01,Box02" 字符串或 ["Box01","Box02"] 数组
+        if isinstance(object_names, str):
+            object_names = [
+                s.strip()
+                for s in object_names.replace('，', ',').split(',')
+                if s.strip()
+            ]
         for name in object_names:
             node = rt.getNodeByName(name, exact=True, all=False)
             if node is not None:
@@ -96,50 +103,50 @@ def check_mesh_quality(object_names=None, selected_only=False):
         if sc != 'GeometryClass':
             continue
         item = {'name': str(node.name), 'class': str(rt.classOf(node))}
+
+        # primitive（Box/Sphere/...）没有 mesh 数据，需要先取 mesh 快照
+        # rt.snapshotAsMesh 返回一份只读的 TriMesh 副本，不修改场景
+        mesh_obj = node
         try:
-            # 面数 / 顶点数
-            face_info = rt.getPolygonCount(node)
+            snap = rt.snapshotAsMesh(node)
+            if snap is not None:
+                mesh_obj = snap
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        try:
+            face_info = rt.getPolygonCount(mesh_obj)
             item['face_count'] = int(face_info[0])
             item['triangle_count'] = int(face_info[1])
-            item['vertex_count'] = int(rt.getNumVerts(node))
         except Exception:  # pylint: disable=broad-except
             pass
         try:
-            item['edge_count'] = int(rt.getNumEdges(node))
+            item['vertex_count'] = int(rt.getNumVerts(mesh_obj))
         except Exception:  # pylint: disable=broad-except
             pass
-        # ngon 检查：面顶点数 > 4
+        try:
+            item['edge_count'] = int(rt.getNumEdges(mesh_obj))
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        # ngon 检查：只对 Editable Poly 有效，primitive 快照转成 TriMesh
+        # 后天然都是三角形；这里对 primitive 直接标记 ngon_count=0
         ngon_count = 0
-        uv_overlap = False
         try:
-            # 转成可编辑多边形来检查（只读，不修改场景）
-            convert_ok = False
-            try:
-                # 先尝试获取 polygon mesh 的 face degree
-                for i in range(1, int(rt.polyop.getNumFaces(node)) + 1):
-                    try:
-                        deg = len(list(rt.polyop.getFaceVerts(node, i)))
-                        if deg > 4:
-                            ngon_count += 1
-                    except Exception:  # pylint: disable=broad-except
-                        continue
-                convert_ok = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-            if not convert_ok:
-                # fallback：尝试 mesh 面
-                for i in range(1, int(rt.getNumFaces(node)) + 1):
-                    try:
-                        face = rt.getFace(node, i)
-                        deg = len(list(face))
-                        if deg > 4:
-                            ngon_count += 1
-                    except Exception:  # pylint: disable=broad-except
-                        continue
-            item['ngon_count'] = ngon_count
+            n_faces = int(rt.polyop.getNumFaces(node))
+            for i in range(1, n_faces + 1):
+                try:
+                    deg = len(list(rt.polyop.getFaceVerts(node, i)))
+                    if deg > 4:
+                        ngon_count += 1
+                except Exception:  # pylint: disable=broad-except
+                    continue
         except Exception:  # pylint: disable=broad-except
+            # primitive 类型没有 polyop 接口，视为 0 ngon
             pass
-        # 非流形边：检查一条边所属面数是否不等于 2
+        item['ngon_count'] = ngon_count
+
+        # 非流形边：仅对 Editable Poly 检查
         non_manifold_edges = 0
         try:
             edge_count = int(rt.polyop.getNumEdges(node))
@@ -152,8 +159,9 @@ def check_mesh_quality(object_names=None, selected_only=False):
                     continue
             item['non_manifold_edges'] = non_manifold_edges
         except Exception:  # pylint: disable=broad-except
-            pass
-        # UV 重叠：简单检查 uvw_face 数量与 face 数量是否一致
+            item['non_manifold_edges'] = 0
+
+        # UV 统计
         try:
             uv_count = int(rt.polyop.getNumMapVerts(node, 1))
             face_count = int(rt.polyop.getNumFaces(node))

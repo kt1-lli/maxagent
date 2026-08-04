@@ -15,6 +15,7 @@ from typing import Optional
 from ..runtime_helpers import has_runtime_attr
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
+from .geometry import _apply_common as _apply_transform
 from .registry import tool
 
 
@@ -85,10 +86,7 @@ def create_light(
 
     if name:
         node.name = name
-    if position and len(position) == 3:
-        node.position = rt.Point3(
-            float(position[0]), float(position[1]), float(position[2]),
-        )
+    _apply_transform(node, '', position, None)
     try:
         node.multiplier = float(multiplier)
     except Exception:  # pylint: disable=broad-except
@@ -147,10 +145,7 @@ def create_camera(
 
     if name:
         node.name = name
-    if position and len(position) == 3:
-        node.position = rt.Point3(
-            float(position[0]), float(position[1]), float(position[2]),
-        )
+    _apply_transform(node, '', position, None)
     try:
         node.fov = float(fov)
     except Exception:  # pylint: disable=broad-except
