@@ -1,15 +1,21 @@
 -- ----------------------------------------------------------------------
 -- MaxAgent macroScript 集合（手写 .mcr，UTF-8 with BOM 编码）
 --
--- 关键约束：macroScript 块内引用的 fn 必须"跨会话可见"才行。
---   .mcr 文件级 fn 定义只在**首次 fileIn 时**被注册到当前会话全局命名空间；
---   Max 重启后 .mcr 自动 fileIn 的时机在 macroScript 之前，但**文件级 fn
---   在 Max ≤ 2024 上不会被自动重新注册**（尤其是 macroScript 触发时另起
---   新 scope 的场景），导致触发按钮时报：
---     Type error: Call needs function or class, got: undefined
+-- 关键约束：
+--   1. macroScript 块内引用的 fn 必须"跨会话可见"才行。Max 重启后
+--      文件级 fn 定义不一定能被 macroScript 找到，导致触发按钮时报：
+--        Type error: Call needs function or class, got: undefined
+--      → 所有辅助逻辑必须内联进 macroScript 块，不依赖顶部 fn。
 --
---   解决办法：所有 macroScript 内使用的辅助逻辑必须**完全内联**，不能
---   依赖 .mcr 顶部 fn 定义的跨会话可见性。
+--   2. python.execute 的返回值行为不稳定：Python 端 try/except 完成后
+--      写模块变量作为最后一个表达式，理论上 MaxScript 侧能拿到 list，
+--      但实测在部分 Max 版本 / 部分 Python 语句序列下会返回 undefined
+--      或非 Array 对象。因此**不依赖返回值**判断成功与否——只要
+--      python.execute 没抛 MaxScript 异常，就视为 Python 侧运行完成；
+--      Python 内部的错误由 try/except 自己打印到 Listener（F11 可见）。
+--
+--   3. Python 代码自身出错时，把错误信息写到全局文件 %TEMP%\maxagent_last_err.txt
+--      MaxScript 事后检查该文件，存在即弹窗展示。
 --
 -- 编码：UTF-8 with BOM，避免跨 Max 语言版本中文乱码。
 -- ----------------------------------------------------------------------
@@ -23,10 +29,15 @@ macroScript MaxAgent_Show
     local _userScripts = getDir #userScripts
     _userScripts = trimRight _userScripts "\\"
     local _pyInit = ""
-    _pyInit += "import sys, os\n"
+    _pyInit += "import sys, os, tempfile\n"
     _pyInit += "_root = r'" + _userScripts + "'\n"
     _pyInit += "if _root not in sys.path:\n"
     _pyInit += "    sys.path.insert(0, _root)\n"
+    _pyInit += "_err_flag = os.path.join(tempfile.gettempdir(), 'maxagent_last_err.txt')\n"
+    _pyInit += "try:\n"
+    _pyInit += "    os.remove(_err_flag)\n"
+    _pyInit += "except Exception:\n"
+    _pyInit += "    pass\n"
     try (
         python.execute _pyInit
     ) catch (
@@ -36,24 +47,25 @@ macroScript MaxAgent_Show
         return false
     )
 
-    -- 2) 内联的 safe python 执行（重启后跨会话可见性问题的兜底）
+    -- 2) 执行主入口（Python 内部 try/except 把错误写到临时文件）
     local _wrapper = ""
-    _wrapper += "import sys, traceback\n"
-    _wrapper += "_maxagent_err = None\n"
+    _wrapper += "import sys, os, tempfile, traceback\n"
     _wrapper += "try:\n"
-    _wrapper += "    import maxagent.startup as _s; _s.show_panel(force=True)\n"
-    _wrapper += "    _maxagent_err = ['OK', None]\n"
+    _wrapper += "    import maxagent.startup as _s\n"
+    _wrapper += "    _s.show_panel(force=True)\n"
     _wrapper += "except Exception as _e:\n"
     _wrapper += "    _tb = traceback.format_exc()\n"
     _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
     _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
     _wrapper += "    print(_tb)\n"
-    _wrapper += "    _maxagent_err = ['ERR', _msg + '\\n' + _tb]\n"
-    _wrapper += "_maxagent_err\n"
+    _wrapper += "    try:\n"
+    _wrapper += "        with open(os.path.join(tempfile.gettempdir(), 'maxagent_last_err.txt'), 'w', encoding='utf-8') as _fh:\n"
+    _wrapper += "            _fh.write(_msg + '\\n' + _tb)\n"
+    _wrapper += "    except Exception:\n"
+    _wrapper += "        pass\n"
 
-    local _result = undefined
     try (
-        _result = python.execute _wrapper
+        python.execute _wrapper
     ) catch (
         local _msErr = "python.execute 失败: " + (getCurrentException() as string)
         format "%\n" _msErr to:listener
@@ -61,14 +73,19 @@ macroScript MaxAgent_Show
         return false
     )
 
-    if _result == undefined or classOf _result != Array or _result.count < 1 do (
-        messagebox "python.execute 返回异常" title:"MaxAgent 启动失败"
-        return false
-    )
-
-    if _result[1] != "OK" do (
-        local _detail = if _result.count >= 2 then (_result[2] as string) else "未知错误"
-        local _msg = "MaxAgent 启动失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
+    -- 3) 检查 Python 侧是否留下错误标记
+    local _tempDir = sysInfo.tempdir
+    local _errFile = _tempDir + "maxagent_last_err.txt"
+    if doesFileExist _errFile do (
+        local _detail = ""
+        try (
+            local _fs = openFile _errFile
+            if _fs != undefined do (
+                while not eof _fs do _detail += (readLine _fs) + "\n"
+                close _fs
+            )
+        ) catch ()
+        local _msg = "MaxAgent 启动失败。完整异常已输出到 Max Listener（F11）。\n\n"
         _msg += "常见原因:\n"
         _msg += "  • 安装不完整（缺少 maxagent 包文件）\n"
         _msg += "  • 上次更新后未重新打包/重新安装 mzp\n"
@@ -87,10 +104,15 @@ macroScript MaxAgent_Toggle
     local _userScripts = getDir #userScripts
     _userScripts = trimRight _userScripts "\\"
     local _pyInit = ""
-    _pyInit += "import sys, os\n"
+    _pyInit += "import sys, os, tempfile\n"
     _pyInit += "_root = r'" + _userScripts + "'\n"
     _pyInit += "if _root not in sys.path:\n"
     _pyInit += "    sys.path.insert(0, _root)\n"
+    _pyInit += "_err_flag = os.path.join(tempfile.gettempdir(), 'maxagent_last_err.txt')\n"
+    _pyInit += "try:\n"
+    _pyInit += "    os.remove(_err_flag)\n"
+    _pyInit += "except Exception:\n"
+    _pyInit += "    pass\n"
     try (
         python.execute _pyInit
     ) catch (
@@ -101,22 +123,23 @@ macroScript MaxAgent_Toggle
     )
 
     local _wrapper = ""
-    _wrapper += "import sys, traceback\n"
-    _wrapper += "_maxagent_err = None\n"
+    _wrapper += "import sys, os, tempfile, traceback\n"
     _wrapper += "try:\n"
-    _wrapper += "    import maxagent; maxagent.toggle()\n"
-    _wrapper += "    _maxagent_err = ['OK', None]\n"
+    _wrapper += "    import maxagent\n"
+    _wrapper += "    maxagent.toggle()\n"
     _wrapper += "except Exception as _e:\n"
     _wrapper += "    _tb = traceback.format_exc()\n"
     _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
     _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
     _wrapper += "    print(_tb)\n"
-    _wrapper += "    _maxagent_err = ['ERR', _msg + '\\n' + _tb]\n"
-    _wrapper += "_maxagent_err\n"
+    _wrapper += "    try:\n"
+    _wrapper += "        with open(os.path.join(tempfile.gettempdir(), 'maxagent_last_err.txt'), 'w', encoding='utf-8') as _fh:\n"
+    _wrapper += "            _fh.write(_msg + '\\n' + _tb)\n"
+    _wrapper += "    except Exception:\n"
+    _wrapper += "        pass\n"
 
-    local _result = undefined
     try (
-        _result = python.execute _wrapper
+        python.execute _wrapper
     ) catch (
         local _msErr = "python.execute 失败: " + (getCurrentException() as string)
         format "%\n" _msErr to:listener
@@ -124,11 +147,17 @@ macroScript MaxAgent_Toggle
         return false
     )
 
-    if _result == undefined or classOf _result != Array or _result.count < 1 do return false
-
-    if _result[1] != "OK" do (
-        local _detail = if _result.count >= 2 then (_result[2] as string) else "未知错误"
-        local _msg = "MaxAgent 切换失败。完整 Python 异常已输出到 Max Listener（F11）。\n\n"
+    local _errFile = sysInfo.tempdir + "maxagent_last_err.txt"
+    if doesFileExist _errFile do (
+        local _detail = ""
+        try (
+            local _fs = openFile _errFile
+            if _fs != undefined do (
+                while not eof _fs do _detail += (readLine _fs) + "\n"
+                close _fs
+            )
+        ) catch ()
+        local _msg = "MaxAgent 切换失败。完整异常已输出到 Max Listener（F11）。\n\n"
         _msg += "异常摘要:\n" + _detail
         format "%\n" _msg to:listener
         messagebox _msg title:"MaxAgent 切换失败"
@@ -155,7 +184,6 @@ macroScript MaxAgent_Uninstall
     tooltip:"卸载 MaxAgent"
     buttontext:"卸载"
 (
-    -- 实时重算安装路径，不依赖全局变量（global 不跨会话持久化）
     local _userScripts = getDir #userScripts
     _userScripts = trimRight _userScripts "\\"
     local _pkgDir = _userScripts + "\\maxagent"
@@ -180,15 +208,12 @@ macroScript MaxAgent_Uninstall
 
     local _ok = true
 
-    -- 1) 清理菜单——按 Max 版本分发（2025+ 走 CUI，2022~2024 走 menuMan）
+    -- 1) 清理菜单
     local _ver = 0
     try (_ver = (maxVersion())[1] as integer) catch ()
 
     if _ver >= 27000 then (
-        -- Max 2025+：注销 cuiRegisterMenus 回调 + 删除 startup 脚本 + 刷新配置
-        try (
-            callbacks.removeScripts id:#MaxAgentMenu
-        ) catch ()
+        try (callbacks.removeScripts id:#MaxAgentMenu) catch ()
         try (
             local _mgr = maxOps.GetICuiMenuMgr()
             if _mgr != undefined do (
@@ -199,7 +224,6 @@ macroScript MaxAgent_Uninstall
             )
         ) catch ()
     ) else (
-        -- Max 2022~2024：从主菜单栏移除 MaxAgent 子菜单
         try (
             local _mainMenu = menuMan.getMainMenuBar()
             if _mainMenu != undefined do (
@@ -220,7 +244,7 @@ macroScript MaxAgent_Uninstall
         )
     )
 
-    -- 2) 删除 startup 脚本（Max 2025+ 才会写，2022~2024 也无妨）
+    -- 2) 删除 startup 脚本
     if doesFileExist _startupMs do (
         try (deleteFile _startupMs) catch (
             _ok = false
@@ -238,7 +262,7 @@ macroScript MaxAgent_Uninstall
         )
     )
 
-    -- 4) 删除本 .mcr 文件（放最后，因为删完这个宏定义就没了）
+    -- 4) 删除 .mcr（最后做）
     if doesFileExist _mcrFile do (
         try (deleteFile _mcrFile) catch (
             _ok = false
