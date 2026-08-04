@@ -444,7 +444,23 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         right.addRow('', self.vision_supported_chk)
 
-        # 高级：自定义 header
+        # 备用 Profile 链：触发速率限制或服务不可用时按顺序切换
+        self.fallback_list = QtWidgets.QListWidget()
+        self.fallback_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.NoSelection,
+        )
+        self.fallback_list.setMinimumHeight(80)
+        self.fallback_list.setMaximumHeight(120)
+        self.fallback_list.setToolTip(
+            '触发 429 速率限制或 5xx 服务过载时，按勾选顺序切换到备用\n'
+            'Profile 继续调用。\n'
+            '典型场景：主 Profile 用 Kimi/Moonshot（高质量但配额有限），\n'
+            '备用配 DeepSeek 或本地 Ollama 保底。\n'
+            '⚠ 只能选择已存在的其他 Profile；当前 Profile 不会出现在列表中。',
+        )
+        right.addRow('备用 Profile:', self.fallback_list)
+
+
         self.headers_edit = QtWidgets.QPlainTextEdit()
         self.headers_edit.setPlaceholderText(
             '可选：每行一个 KEY=VALUE，例如\nX-Org-Id=foo\n',
@@ -2556,6 +2572,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.vision_supported_chk.setChecked(
             bool(getattr(prof, 'vision_supported', False)),
         )
+        # 备用 Profile 列表：列出所有其他 Profile，按 prof.fallback_profile_names
+        # 顺序勾选（未勾选的 profile 追加到末尾）
+        self._refresh_fallback_list(prof)
         if prof.extra_headers:
             text = '\n'.join(
                 '{}={}'.format(k, v)
@@ -3031,6 +3050,7 @@ class SettingsDialog(QtWidgets.QDialog):
             new_prof.vision_supported = bool(
                 self.vision_supported_chk.isChecked(),
             )
+            new_prof.fallback_profile_names = self._read_fallback_list()
             new_prof.extra_headers = headers
             return new_prof
 
@@ -3054,8 +3074,58 @@ class SettingsDialog(QtWidgets.QDialog):
             stream=bool(self.stream_chk.isChecked()),
             supports_tools=bool(self.tools_chk.isChecked()),
             vision_supported=bool(self.vision_supported_chk.isChecked()),
+            fallback_profile_names=self._read_fallback_list(),
             extra_headers=headers,
         )
+
+    def _refresh_fallback_list(self, prof):
+        """刷新备用 Profile 列表 UI。
+
+        列表内容：全部其他 profile；已配置的按 fallback_profile_names 顺序
+        置顶并勾选，未配置的追加到末尾。
+        """
+        self.fallback_list.blockSignals(True)
+        self.fallback_list.clear()
+        cur_name = getattr(prof, 'name', '') or ''
+        selected = list(
+            getattr(prof, 'fallback_profile_names', None) or [],
+        )
+        # 全部候选（排除自身）
+        all_names = [
+            p.name for p in self._config.config.profiles
+            if p.name and p.name != cur_name
+        ]
+        # 保序：先按 selected 顺序（且必须真实存在），再追加剩余
+        ordered = []
+        seen = set()
+        for name in selected:
+            if name in all_names and name not in seen:
+                ordered.append((name, True))
+                seen.add(name)
+        for name in all_names:
+            if name not in seen:
+                ordered.append((name, False))
+                seen.add(name)
+        for name, checked in ordered:
+            item = QtWidgets.QListWidgetItem(name)
+            item.setFlags(
+                item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable,
+            )
+            item.setCheckState(
+                QtCore.Qt.CheckState.Checked
+                if checked else QtCore.Qt.CheckState.Unchecked
+            )
+            self.fallback_list.addItem(item)
+        self.fallback_list.blockSignals(False)
+
+    def _read_fallback_list(self):
+        """按 UI 顺序读出被勾选的备用 Profile 名列表。"""
+        names = []
+        for i in range(self.fallback_list.count()):
+            item = self.fallback_list.item(i)
+            if item.checkState() == QtCore.Qt.CheckState.Checked:
+                names.append(item.text())
+        return names
 
     def _on_profile_selected(self, cur, prev):
         if prev is not None and self._dirty:

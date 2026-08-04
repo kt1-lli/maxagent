@@ -816,7 +816,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
     def _build_llm_client(self):
         prof = self._config.get_active_profile()
-        return build_client_from_profile(prof)
+        return build_client_from_profile(prof, self._config.config)
 
     def _build_dispatcher(self):
         """根据当前 profile 构造 dispatcher（含工具结果裁剪上限）。"""
@@ -1800,6 +1800,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             vision_enabled=vision_on,
             vision_whitelist=whitelist,
             tools_enabled=tools_enabled,
+            config_manager=self._config,
         )
         self._worker.set_sync_tool_runner(self._run_tool_sync)
         self._worker.set_system_prompt_addon_provider(
