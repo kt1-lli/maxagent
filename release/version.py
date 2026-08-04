@@ -4,7 +4,7 @@
 
 from __future__ import absolute_import
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 # 支持的 3ds Max 版本对应的 Python ABI 标签
 # (参考 Autodesk 官方文档: 2027 已是 Python 3.13.9)
