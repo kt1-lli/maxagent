@@ -247,6 +247,30 @@ class AgentWorker(QObject):
         except Exception:  # pylint: disable=broad-except
             logger.debug('todo_tools 注册回调失败（已忽略）')
 
+        # ---------- 场景启动扫描 / 项目记忆 / 预算守卫 ----------
+        # 只在会话首轮触发扫描/项目记忆注入，跨轮次保持缓存。
+        self._scene_scan_done = False
+        self._project_mem_loaded_path = ''  # 已注入过的场景路径
+        # 预算守卫：按 config 里的 session_token_budget / session_usd_budget
+        # 初始化。0 表示不设限。price_* 从当前 profile 折算 USD。
+        self._budget_guard = None  # type: Optional[Any]
+        self._budget_alerted = False  # exceeded 状态只中止一次
+        try:
+            from .budget_guard import BudgetGuard
+            cfg = None
+            if self._config_manager is not None:
+                cfg = getattr(self._config_manager, 'config', None)
+            tok_bud = int(getattr(cfg, 'session_token_budget', 0) or 0)
+            usd_bud = float(getattr(cfg, 'session_usd_budget', 0.0) or 0.0)
+            self._budget_guard = BudgetGuard(
+                tokens_budget=tok_bud,
+                usd_budget=usd_bud,
+                price_in=self._price_in,
+                price_out=self._price_out,
+            )
+        except Exception:  # pylint: disable=broad-except
+            self._budget_guard = None
+
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
@@ -732,6 +756,61 @@ class AgentWorker(QObject):
         self._start_requested.emit()
 
     # ------------------------------------------------------------------ #
+    # 场景启动扫描 + 项目记忆注入（首轮一次性）
+    # ------------------------------------------------------------------ #
+    def _maybe_inject_startup_context(self):
+        """会话首轮的 pre-flight：把场景概况和项目记忆注入 system。
+
+        - 场景启动扫描（#4）：一次 build_scene_snapshot，LLM 就能知道
+          当前场景有哪些对象、多少 mesh/相机/灯光，避免开局反问。
+        - 项目级记忆（#14）：按当前 .max 文件路径读取历史 notes 并注入。
+
+        两者都受 config 开关控制，都是 best-effort：任何异常不影响主流程。
+        只在 worker 生命周期内触发一次。
+        """
+        if self._scene_scan_done:
+            return
+        self._scene_scan_done = True
+
+        cfg = None
+        if self._config_manager is not None:
+            cfg = getattr(self._config_manager, 'config', None)
+
+        # 场景启动扫描
+        if getattr(cfg, 'enable_scene_startup_scan', True):
+            try:
+                snap = build_scene_snapshot(self._sync_tool_runner)
+                text = snapshot_to_prompt_text(snap)
+                if text:
+                    self._conv.add_system_note(
+                        '## 场景启动扫描（会话初始状态）\n' + text
+                        + '\n（以上是 Agent 启动时的场景快照，'
+                        '后续每 3 轮会自动刷新一次。）',
+                    )
+                    logger.info('场景启动扫描已注入 system prompt')
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning('场景启动扫描失败: %s', exc)
+
+        # 项目级记忆
+        if getattr(cfg, 'enable_project_memory', True):
+            try:
+                from ..memory import project_memory as pm
+                scene_path = pm.current_scene_path()
+                if scene_path:
+                    pm.bump_open_count(scene_path)
+                    mem = pm.load_project_memory(scene_path)
+                    txt = pm.to_prompt_text(mem)
+                    if txt:
+                        self._conv.add_system_note(txt)
+                        self._project_mem_loaded_path = scene_path
+                        logger.info(
+                            '项目记忆已注入: %s (notes=%d)',
+                            scene_path, len(mem.get('notes') or []),
+                        )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning('项目记忆注入失败: %s', exc)
+
+    # ------------------------------------------------------------------ #
     # 任务解析与任务卡管理
     # ------------------------------------------------------------------ #
     def _parse_and_set_mission_card(self, user_input):
@@ -847,6 +926,10 @@ class AgentWorker(QObject):
         - 真超限：保留已经写入 conversation 的所有工具结果，仅发出告警
           让用户看到部分成果，而不是丢失整轮上下文
         """
+        # ---------- 首轮启动扫描 + 项目记忆注入 ----------
+        # 只在整个 worker 生命周期做一次，不逐轮重复。
+        self._maybe_inject_startup_context()
+
         tools_schema = build_openai_tools_schema()
         # Function Calling 总开关：profile.supports_tools=False 时整条
         # tools 链路熔断——既不发 schema，也不允许过滤后的子集。这是
@@ -885,6 +968,16 @@ class AgentWorker(QObject):
         for loop_idx in range(self._max_loops):
             if self._cancel_event.is_set():
                 self.failed.emit('用户取消')
+                return
+
+            # 预算硬停（#12）：exceeded 状态阻止发起新的 LLM 请求。
+            # _budget_alerted 由 _emit_usage 上一轮设置，避免重复提示。
+            if self._budget_alerted:
+                logger.warning(
+                    'Budget exceeded, aborting further LLM calls '
+                    '(loop=%d)', loop_idx,
+                )
+                self.failed.emit('会话预算已用尽，请在设置中调高上限或开新会话')
                 return
 
             remaining = self._max_loops - loop_idx
@@ -1259,12 +1352,73 @@ class AgentWorker(QObject):
                     logger.debug('批次前快照采集失败（已忽略）: %s', _exc)
                     _before_snap = None
 
-            # 有工具调用 → 逐个执行，结果写回历史
-            for tc in tool_calls:
-                if self._cancel_event.is_set():
-                    self.failed.emit('用户取消')
-                    return
-                self._exec_one_tool_call(tc)
+            # ---------- 操作确认清单（#10）+ 整轮 Undo（#11） ---------- #
+            # 1) 按 config.approval_threshold 判定是否需要用户批准
+            # 2) 用 UndoBatch 把整批操作合成 Max 的单次 Undo
+            _cfg = None
+            if self._config_manager is not None:
+                _cfg = getattr(self._config_manager, 'config', None)
+            _approval_needed = False
+            _approved_calls = tool_calls
+            if getattr(_cfg, 'enable_approval_queue', False) and tool_calls:
+                try:
+                    from .approval_queue import build_plan
+                    from ..macro_recorder import describe_action
+                    _thres = int(getattr(_cfg, 'approval_threshold', 3) or 3)
+                    _plan = build_plan(
+                        tool_calls,
+                        approval_threshold=_thres,
+                        describe_fn=describe_action,
+                    )
+                    if _plan.needs_approval:
+                        _approval_needed = True
+                        # UI 层需要监听 system_notice 展示批准对话框；
+                        # 当前实现走"默认放行 + 显式告知"策略：把清单
+                        # 以 warn 气泡展示，用户可通过 Ctrl+Z 撤销。
+                        # （后续若 UI 补上批准对话框，可改为阻塞等待）
+                        try:
+                            _msg = (
+                                '📋 本批操作 {}，已直接执行；如需回退请按'
+                                ' Ctrl+Z（会作为单次 Undo 一并撤销）。\n'
+                                '{}'.format(
+                                    _plan.summary_text(),
+                                    '\n'.join(
+                                        '  · ' + it.description
+                                        for it in _plan.items[:8]
+                                    ),
+                                )
+                            )
+                            self.system_notice.emit('warn', _msg)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+                except Exception as _exc:  # pylint: disable=broad-except
+                    logger.debug('approval_queue 判定异常（放行）: %s', _exc)
+
+            # UndoBatch 把整批 tool_calls 合并成 Max 的一次 Undo 记录
+            _undo_ctx = None
+            if _has_mutation and getattr(_cfg, 'wrap_undo', True):
+                try:
+                    from .approval_queue import UndoBatch
+                    _undo_ctx = UndoBatch(
+                        label='MaxAgent Batch #{}'.format(loop_idx + 1),
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    _undo_ctx = None
+
+            # 有工具调用 → 逐个执行，结果写回历史（可选包 UndoBatch）
+            if _undo_ctx is not None:
+                with _undo_ctx:
+                    for tc in tool_calls:
+                        if self._cancel_event.is_set():
+                            self.failed.emit('用户取消')
+                            return
+                        self._exec_one_tool_call(tc)
+            else:
+                for tc in tool_calls:
+                    if self._cancel_event.is_set():
+                        self.failed.emit('用户取消')
+                        return
+                    self._exec_one_tool_call(tc)
 
             # 批次执行完后采集 after 快照并 diff，非空则注入 system note
             if _has_mutation and _before_snap is not None:
@@ -1639,6 +1793,36 @@ class AgentWorker(QObject):
             self.usage_received.emit(pt, ct, tt, cost)
         except Exception:  # pylint: disable=broad-except
             pass
+
+        # ---------- 预算守卫（#12） ---------- #
+        # 累计到 BudgetGuard；触发 warn/exceeded 时通过 system_notice
+        # 把告警气泡推到对话流。exceeded 会同时置 _budget_alerted，
+        # _run_loop 下一轮开头会检查并中止。
+        if self._budget_guard is not None:
+            try:
+                snap = self._budget_guard.accumulate(usage or {})
+                if snap.status == 'warn' and snap.message:
+                    try:
+                        self.system_notice.emit('warn', snap.message)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                elif snap.status == 'exceeded' and not self._budget_alerted:
+                    self._budget_alerted = True
+                    try:
+                        self.system_notice.emit('error', snap.message)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                    # 同时给 LLM 注入 system note 让它立刻收尾
+                    try:
+                        self._conv.add_system_note(
+                            snap.message
+                            + '\n请立即用一句话总结已完成的工作，'
+                            '并停止任何新的工具调用。',
+                        )
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.debug('BudgetGuard accumulate 异常: %s', exc)
 
     @staticmethod
     def _safe_json_dumps(obj):

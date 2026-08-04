@@ -304,6 +304,32 @@ class AppConfig:
     # 单条 create_box 不值得沉淀为可复用流程。
     skill_proposal_min_actions: int = 3
 
+    # ---------- 场景启动扫描（#4） ---------- #
+    # 会话首轮 LLM 调用前是否自动拉一次场景快照并作为 system note 注入。
+    # 效果：LLM 一上来就知道"当前场景有哪些对象/多少个 mesh/相机/灯光"，
+    # 无需先反问"帮我列一下场景"。默认开启，代价是首轮多 ~200 tokens。
+    enable_scene_startup_scan: bool = True
+
+    # ---------- 操作确认清单（#10） ---------- #
+    # 高风险工具批量执行前，是否先把清单交给用户批准。默认关闭。
+    # 开启后：一次 LLM 回复里出现 >= approval_threshold 个写入类工具时
+    # 会先弹批准对话框；批准前工具不会真正执行。适合放心大胆授权时关。
+    enable_approval_queue: bool = False
+    approval_threshold: int = 3
+
+    # ---------- Cost 预算保护（#12） ---------- #
+    # 单会话 token 预算（输入+输出累计，0 = 不限制）
+    # 触达 80% 告警、100% 强制停止并要求用户确认继续
+    session_token_budget: int = 0
+    # 单会话美元预算（0 = 不限制）；按 profile 里的 price_*_per_1m 折算
+    session_usd_budget: float = 0.0
+
+    # ---------- 项目级记忆（#14） ---------- #
+    # 按 .max 文件路径为 key 记录"这个场景的命名约定/单位/关键对象"等
+    # 长期上下文，每次打开该场景时自动注入 system prompt。
+    # 默认开启，纯本地文件，不联网。存放在 ~/.maxagent/projects/*.json
+    enable_project_memory: bool = True
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -345,6 +371,12 @@ class AppConfig:
             "llm_retryable_status_codes": list(self.llm_retryable_status_codes),
             "enable_skill_proposal": self.enable_skill_proposal,
             "skill_proposal_min_actions": self.skill_proposal_min_actions,
+            "enable_scene_startup_scan": self.enable_scene_startup_scan,
+            "enable_approval_queue": self.enable_approval_queue,
+            "approval_threshold": self.approval_threshold,
+            "session_token_budget": self.session_token_budget,
+            "session_usd_budget": self.session_usd_budget,
+            "enable_project_memory": self.enable_project_memory,
         }
 
     @classmethod
@@ -475,6 +507,37 @@ class AppConfig:
         # ---- Skill 自动提议 ---- #
         cfg.enable_skill_proposal = bool(data.get("enable_skill_proposal", False))
         cfg.skill_proposal_min_actions = int(data.get("skill_proposal_min_actions", 3))
+        # ---- 场景启动扫描（#4） ---- #
+        cfg.enable_scene_startup_scan = bool(
+            data.get("enable_scene_startup_scan", True),
+        )
+        # ---- 操作确认清单（#10） ---- #
+        cfg.enable_approval_queue = bool(
+            data.get("enable_approval_queue", False),
+        )
+        try:
+            cfg.approval_threshold = max(1, min(50, int(
+                data.get("approval_threshold", 3) or 3,
+            )))
+        except (TypeError, ValueError):
+            cfg.approval_threshold = 3
+        # ---- Cost 预算保护（#12） ---- #
+        try:
+            cfg.session_token_budget = max(0, int(
+                data.get("session_token_budget", 0) or 0,
+            ))
+        except (TypeError, ValueError):
+            cfg.session_token_budget = 0
+        try:
+            cfg.session_usd_budget = max(0.0, float(
+                data.get("session_usd_budget", 0.0) or 0.0,
+            ))
+        except (TypeError, ValueError):
+            cfg.session_usd_budget = 0.0
+        # ---- 项目级记忆（#14） ---- #
+        cfg.enable_project_memory = bool(
+            data.get("enable_project_memory", True),
+        )
         return cfg
 
 

@@ -37,6 +37,7 @@ from .store import get_memory_root
 from .store import get_memory_store
 from .writer import detect_explicit_memory_intent
 from .writer import write_instruction_from_user_message
+from . import project_memory  # noqa: F401
 
 __all__ = [
     'EventLogger',
@@ -49,4 +50,5 @@ __all__ = [
     'get_prompt_addon',
     'detect_explicit_memory_intent',
     'write_instruction_from_user_message',
+    'project_memory',
 ]
