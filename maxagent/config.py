@@ -302,6 +302,15 @@ class AppConfig:
     # 成本：每轮多约 200~500 tokens，建议在主 profile 稳定后再启用。
     enable_llm_planner: bool = False
 
+    # ---------- Skill 自动提议 ---------- #
+    # 是否在会话结束时自动弹出"是否记为 Skill"提议（默认关闭）
+    # 关闭时用户仍可通过对话或工具主动保存 Skill；开启时按下方门槛
+    # 触发。默认关闭以避免打扰。
+    enable_skill_proposal: bool = False
+    # 触发 Skill 提议的最少成功动作数（默认 3，低于则跳过）
+    # 单条 create_box 不值得沉淀为可复用流程。
+    skill_proposal_min_actions: int = 3
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -342,6 +351,8 @@ class AppConfig:
             "llm_retry_max_delay": self.llm_retry_max_delay,
             "llm_retryable_status_codes": list(self.llm_retryable_status_codes),
             "enable_llm_planner": self.enable_llm_planner,
+            "enable_skill_proposal": self.enable_skill_proposal,
+            "skill_proposal_min_actions": self.skill_proposal_min_actions,
         }
 
     @classmethod
@@ -471,6 +482,9 @@ class AppConfig:
             ]
         # ---- 任务规划器 ---- #
         cfg.enable_llm_planner = bool(data.get("enable_llm_planner", False))
+        # ---- Skill 自动提议 ---- #
+        cfg.enable_skill_proposal = bool(data.get("enable_skill_proposal", False))
+        cfg.skill_proposal_min_actions = int(data.get("skill_proposal_min_actions", 3))
         return cfg
 
 
