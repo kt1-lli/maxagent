@@ -811,22 +811,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.vision_enabled_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.vision_enabled_chk)
 
-        # ---- 任务规划器：LLM 规划开关 ---- #
-        self.enable_llm_planner_chk = QtWidgets.QCheckBox(
-            '启用 LLM 任务规划器（每轮多一次快速调用）',
-        )
-        self.enable_llm_planner_chk.setToolTip(
-            '开启后：每次收到用户请求先用 LLM 生成结构化 JSON 计划，'
-            '再由 Agent 逐步执行，比默认的规则版规划更精准。\n'
-            '成本：每轮对话多约 200~500 tokens。\n'
-            '关闭时使用内置规则版规划（默认，零成本但覆盖场景有限）。\n'
-            '⚠ 触发 429 限流的用户建议先保持关闭。',
-        )
-        self.enable_llm_planner_chk.toggled.connect(
-            self._on_app_setting_changed,
-        )
-        form.addRow('', self.enable_llm_planner_chk)
-
         # ---- Skill 自动提议开关 ---- #
         self.enable_skill_proposal_chk = QtWidgets.QCheckBox(
             '会话结束时自动提议记为 Skill（默认关闭，避免打扰）',
@@ -2192,10 +2176,6 @@ class SettingsDialog(QtWidgets.QDialog):
             (self.wrap_undo_chk, cfg.wrap_undo),
             (self.vision_enabled_chk, getattr(cfg, 'vision_enabled', True)),
             (
-                self.enable_llm_planner_chk,
-                getattr(cfg, 'enable_llm_planner', False),
-            ),
-            (
                 self.enable_skill_proposal_chk,
                 getattr(cfg, 'enable_skill_proposal', False),
             ),
@@ -2249,9 +2229,6 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg.confirm_before_exec = bool(self.confirm_exec_chk.isChecked())
         cfg.wrap_undo = bool(self.wrap_undo_chk.isChecked())
         cfg.vision_enabled = bool(self.vision_enabled_chk.isChecked())
-        cfg.enable_llm_planner = bool(
-            self.enable_llm_planner_chk.isChecked(),
-        )
         cfg.enable_skill_proposal = bool(
             self.enable_skill_proposal_chk.isChecked(),
         )

@@ -47,7 +47,6 @@ from ..tools import ToolExecutionError
 from .conversation import Conversation
 from .scene_snapshot import build_scene_snapshot
 from .scene_snapshot import snapshot_to_prompt_text
-from .planner import TaskPlanner
 from .task_context import get_task_prompt
 from .task_context import TaskContextManager
 from ..learning.skill_generator import propose_skill_from_recorder
@@ -97,10 +96,6 @@ class AgentWorker(QObject):
     failed = Signal(str)
     # 建议保存 Skill: (skill_manifest_dict, impl_code_str)
     skill_proposed = Signal(dict, str)
-    # 任务计划变更信号：UI 可据此刷新任务树
-    plan_changed = Signal()
-    # 子步骤状态报告信号：(step_description, status)
-    step_status_changed = Signal(str, str)
     # 状态文本: (status_text) - 用于 UI 显示"思考中..."等
     status_changed = Signal(str)
     # 历史被裁剪: (removed_count, current_tokens, budget_tokens)
@@ -169,8 +164,11 @@ class AgentWorker(QObject):
         # 间隙丢失上下文或偏离主线。纯内存，会话结束自动清空。
         self._task_ctx = TaskContextManager()  # type: TaskContextManager
 
-        # 任务规划器：把用户请求拆成可跟踪、可干预的子目标序列。
-        self._planner = TaskPlanner()  # type: TaskPlanner
+        # 视觉截图触发标记：当用户请求包含"看看/复核/效果/截图/渲染/画面/
+        # 检查"等视觉验证关键词、且当前 profile 支持视觉时，会自动截取
+        # 视口并附加到最后一条 user 消息。本轮 attach 后置 True 避免重复。
+        self._need_vision = False
+        self._vision_attached_this_turn = False
 
         # ---------- 会话级操作回放 (Macro Recorder) ----------
         self._macro_recorder = MacroRecorder()  # type: MacroRecorder
@@ -547,21 +545,17 @@ class AgentWorker(QObject):
         # type: () -> None
         """自动触发视口截图并追加到当前 user 消息。
 
-        触发条件：
-        - 任务规划器存在当前步骤且 steps.needs_vision=True
+        触发条件（简化后）：
+        - 用户本轮请求命中视觉关键词（self._need_vision=True）
         - 当前 LLMProfile 显式声明 vision_supported=True
-        - 同一规划步骤最多只触发一次（避免循环中重复截图）
+        - 本轮最多只触发一次（避免多次工具调用间重复截图）
 
         实现注意：截图函数内部通过 run_on_main 投递到 Max 主线程，
         但本方法仍由 worker 子线程调用，因此是安全的。
         """
-        if not self._planner.is_active():
+        if not self._need_vision:
             return
-        cur = self._planner.current_step()
-        if cur is None or not cur.needs_vision:
-            return
-        # 同一 step 只截一次，避免多轮工具调用间重复截图
-        if getattr(cur, '_vision_attached', False):
+        if self._vision_attached_this_turn:
             return
         profile = getattr(self._llm, '_profile', None)
         if profile is None:
@@ -580,10 +574,10 @@ class AgentWorker(QObject):
                     if msg.attachments is None:
                         msg.attachments = []
                     msg.attachments.append(att)
-                    cur._vision_attached = True
+                    self._vision_attached_this_turn = True
                     logger.info(
-                        '自动追加视口截图: step=%s model=%s',
-                        cur.description, getattr(profile, 'model', '')
+                        '自动追加视口截图: model=%s',
+                        getattr(profile, 'model', ''),
                     )
                     return
         except Exception as exc:  # pylint: disable=broad-except
@@ -716,33 +710,18 @@ class AgentWorker(QObject):
         # type: (str) -> None
         """基于用户输入解析任务意图，自动创建/更新 MissionCard。
 
-        同时生成任务规划（TaskPlanner），并在每次 user 输入后刷新计划。
+        同时用关键词判定本轮是否需要视口截图（供 _maybe_attach_viewport 使用）。
         """
         text = (user_input or '').strip()
 
-        # 规划器：为新请求生成计划
+        # 本轮视觉截图判定：命中关键词才触发（简化版，替代原 TaskPlanner）
+        self._vision_attached_this_turn = False
         if text:
-            self._planner.create_plan(text)
-            # LLM 规划升级：默认关闭，用户可在 config.enable_llm_planner=True 启用。
-            # 成本考虑：每轮对话多一次快速 LLM 调用，换取更精准的步骤拆分。
-            # 失败时静默降级到规则版规划，不影响主流程。
-            try:
-                enable_llm_planner = False
-                if self._config_manager is not None:
-                    cfg = getattr(self._config_manager, 'config', None)
-                    enable_llm_planner = bool(
-                        getattr(cfg, 'enable_llm_planner', False)
-                    )
-                if enable_llm_planner and self._llm is not None:
-                    self._planner.upgrade_plan_with_llm(
-                        text, self._llm,
-                    )
-            except Exception:  # pylint: disable=broad-except
-                logger.exception('LLM planner 升级失败，保留规则版计划')
-            try:
-                self.plan_changed.emit()
-            except Exception:  # pylint: disable=broad-except
-                pass
+            vision_kw = ('看看', '看一下', '复核', '效果', '截图',
+                         '画面', '检查', '看下', '瞧瞧')
+            self._need_vision = any(k in text for k in vision_kw)
+        else:
+            self._need_vision = False
 
         if not text:
             return
@@ -1010,20 +989,6 @@ class AgentWorker(QObject):
                                 'content': task_prompt + '\n\n---\n\n' + orig,
                             }
                         break
-            # 注入任务计划到 system prompt（在 sys_addon 之前，优先级高）
-            plan_prompt = self._planner.to_prompt_text()
-            if plan_prompt:
-                if messages and messages[0].get('role') == 'system':
-                    base = messages[0].get('content') or ''
-                    messages[0] = {
-                        'role': 'system',
-                        'content': base + '\n' + plan_prompt,
-                    }
-                else:
-                    messages.insert(
-                        0, {'role': 'system', 'content': plan_prompt},
-                    )
-
             # 注入额外 system prompt（如已学技能摘要）
             if self._sys_addon_provider is not None:
                 try:
@@ -1081,19 +1046,6 @@ class AgentWorker(QObject):
                         len(messages),
                         len(tools_schema or []),
                     )
-                # 设置当前规划步骤为 in_progress 并通知 UI
-                if self._planner.is_active():
-                    cur = self._planner.current_step()
-                    if cur is not None and cur.status == 'pending':
-                        cur.status = 'in_progress'
-                        cur.started_at = time.time()
-                        try:
-                            self.plan_changed.emit()
-                            self.step_status_changed.emit(
-                                cur.description, cur.status,
-                            )
-                        except Exception:  # pylint: disable=broad-except
-                            pass
 
                 # reasoning_mode=True：工具调用/规划轮次锁定低温度 0.1，
                 # 减少参数幻觉和过度联想；最终回复轮次（无 tools）保持原温度
@@ -1268,21 +1220,6 @@ class AgentWorker(QObject):
                 # 若任务已完成，清空任务卡避免残留
                 if not self._task_ctx.is_active():
                     self._task_ctx.complete()
-
-            # 规划器步骤推进（仅当当前步骤已完成时）
-            if self._planner.is_active():
-                cur = self._planner.current_step()
-                if cur is not None and cur.status == 'in_progress':
-                    self._planner.advance()
-                    try:
-                        self.plan_changed.emit()
-                        next_step = self._planner.current_step()
-                        if next_step is not None:
-                            self.step_status_changed.emit(
-                                next_step.description, next_step.status,
-                            )
-                    except Exception:  # pylint: disable=broad-except
-                        pass
 
             # 第一批工具执行完成后注入"完成即停"软提示（每轮对话仅一次）：
             # 防止 LLM 看到工具成功结果后产生"既然能创建球，那再顺便
@@ -1774,18 +1711,7 @@ class AgentWorker(QObject):
             # 8. 更新本轮命中 Skill 的 telemetry
             self._update_skill_telemetry(tool_stats)
 
-            # 9. 完成任务计划（如果有）
-            if self._planner.is_active():
-                self._planner.advance()
-                try:
-                    self.plan_changed.emit()
-                    cur = self._planner.current_step()
-                    if cur is not None:
-                        self.step_status_changed.emit(cur.description, cur.status)
-                except Exception:  # pylint: disable=broad-except
-                    pass
-
-            # 10. 写入事件日志
+            # 9. 写入事件日志
             if self._event_logger is not None:
                 self._event_logger.log(
                     'session_reflection',
