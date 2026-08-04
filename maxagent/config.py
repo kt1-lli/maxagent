@@ -150,6 +150,9 @@ class LLMProfile:
     # 老配置中的 force_temperature_one=True 会在 from_dict 中自动迁移为
     # param_overrides["temperature"] = 1.0。
     param_overrides: Dict[str, Any] = field(default_factory=dict)
+    # 备用 Profile 链：当前 profile 触发速率限制或不可用时，按列表顺序
+    # 尝试切换到链中的其他 profile。名称必须对应 profiles 中已有的 profile。
+    fallback_profile_names: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         data = asdict(self)
@@ -280,6 +283,18 @@ class AppConfig:
     # dispatch_task 单任务总超时（秒）
     bridge_dispatch_timeout_sec: int = 300
 
+    # ---------- 全局重试参数 ---------- #
+    # LLM 请求最大重试次数
+    llm_max_retries: int = 3
+    # LLM 请求重试基础延迟（秒）
+    llm_retry_base_delay: float = 1.0
+    # LLM 请求重试最大延迟（秒）
+    llm_retry_max_delay: float = 10.0
+    # LLM 请求重试状态码白名单
+    llm_retryable_status_codes: List[int] = field(default_factory=lambda: [
+        429, 502, 503, 504
+    ])
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -315,6 +330,10 @@ class AppConfig:
             "bridge_dispatch_enabled": self.bridge_dispatch_enabled,
             "bridge_dispatch_max_rounds": self.bridge_dispatch_max_rounds,
             "bridge_dispatch_timeout_sec": self.bridge_dispatch_timeout_sec,
+            "llm_max_retries": self.llm_max_retries,
+            "llm_retry_base_delay": self.llm_retry_base_delay,
+            "llm_retry_max_delay": self.llm_retry_max_delay,
+            "llm_retryable_status_codes": list(self.llm_retryable_status_codes),
         }
 
     @classmethod
@@ -418,6 +437,30 @@ class AppConfig:
             )))
         except (TypeError, ValueError):
             cfg.bridge_dispatch_timeout_sec = 300
+        # ---- 全局重试参数 ---- #
+        try:
+            cfg.llm_max_retries = max(0, min(10, int(
+                data.get("llm_max_retries", 3) or 3,
+            )))
+        except (TypeError, ValueError):
+            cfg.llm_max_retries = 3
+        try:
+            cfg.llm_retry_base_delay = max(0.0, min(60.0, float(
+                data.get("llm_retry_base_delay", 1.0) or 1.0,
+            )))
+        except (TypeError, ValueError):
+            cfg.llm_retry_base_delay = 1.0
+        try:
+            cfg.llm_retry_max_delay = max(0.0, min(60.0, float(
+                data.get("llm_retry_max_delay", 10.0) or 10.0,
+            )))
+        except (TypeError, ValueError):
+            cfg.llm_retry_max_delay = 10.0
+        raw_codes = data.get("llm_retryable_status_codes")
+        if isinstance(raw_codes, list) and raw_codes:
+            cfg.llm_retryable_status_codes = [
+                int(x) for x in raw_codes if isinstance(x, int)
+            ]
         return cfg
 
 

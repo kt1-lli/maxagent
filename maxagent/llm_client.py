@@ -27,12 +27,8 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 
-# 网络瞬断重试策略（仅针对"连接尚未建立"或"连接刚建立就被切断"
-# 的可重试场景；流式响应进入正文阶段后断开不重试，避免重复输出）。
-# 退避序列 1s/3s，总额外耗时上限 4s，够覆盖大多数本地软件抖动
-# （VPN/防火墙短暂切包、代理重连等）。
-_NETWORK_RETRY_BACKOFF_SEC = (1.0, 3.0)
-
+# 默认触发指数退避重试的 HTTP 状态码：429 rate limit / 502 / 503 / 504 服务端过载。
+_DEFAULT_RETRYABLE_STATUS_CODES = frozenset((429, 502, 503, 504))
 
 # Windows 网络错误码 → 用户友好提示映射。
 # 这些都是用户系统层面引发的 socket 中断，不是 LLM 服务端问题。
@@ -49,6 +45,20 @@ _WINERR_HINTS = {
 
 class LLMError(Exception):
     """LLM 调用相关异常。"""
+
+
+class LLMRateLimitError(LLMError):
+    """触发速率限制或服务端过载，建议上层切换到备用 provider。
+
+    :param message: 人类可读错误信息
+    :param should_fallback: 是否应尝试备用 provider
+    :param status_code: 原始 HTTP 状态码（若有）
+    """
+
+    def __init__(self, message, should_fallback=True, status_code=None):
+        super(LLMRateLimitError, self).__init__(message)
+        self.should_fallback = bool(should_fallback)
+        self.status_code = status_code
 
 
 def _winerror_of(exc: BaseException) -> Optional[int]:
@@ -241,6 +251,25 @@ def diagnose_base_url(url: str) -> Optional[str]:
     return None
 
 
+def _exponential_backoff(base_delay, max_delay, attempt):
+    """计算第 attempt 次重试的退避时间（从 0 开始计数）。
+
+    公式：min(max_delay, base_delay * 2^attempt) + 随机 jitter（±12.5%）
+    jitter 用于避免多个并发请求在同一时刻冲击备用 provider。
+    """
+    import random
+    delay = min(float(max_delay), float(base_delay) * (2 ** attempt))
+    jitter = delay * (random.uniform(-0.125, 0.125))
+    return max(0.0, delay + jitter)
+
+
+def _is_retryable_http_status(status_code, retryable_set=None):
+    """判断 HTTP 状态码是否应触发指数退避重试。"""
+    if retryable_set is None:
+        retryable_set = _DEFAULT_RETRYABLE_STATUS_CODES
+    return status_code in retryable_set
+
+
 class LLMClient(object):
     """OpenAI 兼容的最小客户端。
 
@@ -258,6 +287,10 @@ class LLMClient(object):
         model: str,
         timeout: int = 120,
         extra_headers: Optional[Dict[str, str]] = None,
+        max_retries: int = 3,
+        retry_base_delay: float = 2.0,
+        retry_max_delay: float = 60.0,
+        retryable_status_codes: Optional[set] = None,
     ):
         self._base_url = _sanitize_base_url(base_url)
         self._api_key = api_key or ""
@@ -268,6 +301,12 @@ class LLMClient(object):
         # ``{"prompt_tokens", "completion_tokens", "total_tokens"}``）。
         # 流式模式下大多数后端会在最后一个 chunk 的 ``usage`` 字段返回。
         self._last_usage = {}  # type: Dict[str, int]
+        # 指数退避重试配置：429 / 5xx / 网络瞬断时自动重试。
+        self._max_retries = max(0, int(max_retries))
+        self._retry_base_delay = float(retry_base_delay)
+        self._retry_max_delay = float(retry_max_delay)
+        # 默认触发指数退避重试的 HTTP 状态码：429 rate limit / 502 / 503 / 504 服务端过载。
+        self._retryable_status_codes = retryable_status_codes or _DEFAULT_RETRYABLE_STATUS_CODES
 
     # ------------------------------------------------------------------ #
     # 公共方法
@@ -389,56 +428,88 @@ class LLMClient(object):
         headers.update(self._extra_headers)
         return headers
 
+    def _open_request(
+        self,
+        req: urllib.request.Request,
+        is_stream: bool = False,
+    ) -> Any:
+        """统一建立 HTTP 连接，处理重试与可重试错误。
+
+        :param req: urllib Request 对象
+        :param is_stream: 是否为流式请求（仅影响日志文案）
+        :returns: urllib response 对象
+        :raises LLMRateLimitError: 429 / 503 等可重试状态码耗尽重试次数
+        :raises LLMError: 其他不可重试错误
+        """
+        max_retries = self._max_retries
+        base_delay = self._retry_base_delay
+        max_delay = self._retry_max_delay
+        retryable = self._retryable_status_codes
+        last_http_exc: Optional[urllib.error.HTTPError] = None
+
+        mode = 'stream' if is_stream else 'blocking'
+        for attempt in range(max_retries + 1):
+            if attempt > 0:
+                backoff = _exponential_backoff(base_delay, max_delay, attempt - 1)
+                logger.info(
+                    'HTTP %s retry attempt %d/%d after %.2fs backoff '
+                    '(model=%s)',
+                    mode, attempt, max_retries, backoff, self._model,
+                )
+                time.sleep(backoff)
+            t0 = time.time()
+            try:
+                return urllib.request.urlopen(req, timeout=self._timeout)
+            except urllib.error.HTTPError as exc:
+                last_http_exc = exc
+                logger.warning(
+                    'HTTP %s %s failed in %.2fs: %s',
+                    self._model, mode, time.time() - t0, exc.code,
+                )
+                if exc.code in retryable:
+                    # 可重试状态码：继续循环；耗尽后抛 LLMRateLimitError
+                    if attempt < max_retries:
+                        continue
+                    raise LLMRateLimitError(
+                        _format_http_error(exc, req.full_url),
+                        should_fallback=True,
+                        status_code=exc.code,
+                    )
+                # 不可重试 HTTP 错误直接抛 LLMError
+                raise LLMError(_format_http_error(exc, req.full_url))
+            except urllib.error.URLError as exc:
+                logger.warning(
+                    'Network %s %s failed in %.2fs: %s',
+                    self._model, mode, time.time() - t0, exc.reason,
+                )
+                if not _is_retryable_network_error(exc):
+                    raise LLMError(_humanize_network_error(exc))
+                if attempt < max_retries:
+                    continue
+                raise LLMError(_humanize_network_error(exc))
+
+        # 理论上不会到达；防御性兜底
+        if last_http_exc is not None:
+            raise LLMRateLimitError(
+                _format_http_error(last_http_exc, req.full_url),
+                should_fallback=True,
+                status_code=last_http_exc.code,
+            )
+        raise LLMError('网络错误: 未能建立连接')
+
     def _chat_blocking(
         self,
         url: str,
         headers: Dict[str, str],
         body: bytes,
     ) -> Dict[str, Any]:
-        # 重试策略：仅对"连接尚未拿到响应体"的瞬断错误重试。
-        # 一旦 urlopen 返回（即开始读 raw），网络抖动会被 read() 抛出，
-        # 那时已经无法重试（不知道服务端是否已扣额度），交给上层处理。
-        attempts = (None,) + _NETWORK_RETRY_BACKOFF_SEC  # (首次, 1s, 3s)
-        last_exc: Optional[BaseException] = None
-        for attempt_idx, backoff in enumerate(attempts):
-            if backoff is not None:
-                logger.info(
-                    'HTTP blocking retry attempt %d after %.1fs backoff '
-                    '(prev error: %s)',
-                    attempt_idx, backoff, last_exc,
-                )
-                time.sleep(backoff)
-            req = urllib.request.Request(
-                url, data=body, headers=headers, method="POST",
-            )
-            t0 = time.time()
-            try:
-                with urllib.request.urlopen(
-                    req, timeout=self._timeout,
-                ) as resp:
-                    raw = resp.read().decode("utf-8")
-                break  # 成功则跳出重试循环
-            except urllib.error.HTTPError as exc:
-                # HTTP 4xx/5xx 不重试（这是服务端业务错误，不是网络抖动）
-                logger.warning(
-                    'HTTP %s blocking failed in %.2fs: %s',
-                    self._model, time.time() - t0, exc.code,
-                )
-                raise LLMError(_format_http_error(exc, url))
-            except urllib.error.URLError as exc:
-                last_exc = exc
-                logger.warning(
-                    'Network error blocking in %.2fs: %s',
-                    time.time() - t0, exc.reason,
-                )
-                # 末次仍失败 → 抛友好错误
-                if attempt_idx == len(attempts) - 1:
-                    raise LLMError(_humanize_network_error(exc))
-                # 非可重试错误也直接抛
-                if not _is_retryable_network_error(exc):
-                    raise LLMError(_humanize_network_error(exc))
-                # 可重试 → 进入下一轮 backoff
-                continue
+        """非流式请求：建立连接用 _open_request（含指数退避重试），读取响应。"""
+        req = urllib.request.Request(
+            url, data=body, headers=headers, method="POST",
+        )
+        t0 = time.time()
+        with self._open_request(req, is_stream=False) as resp:
+            raw = resp.read().decode("utf-8")
         if logger.isEnabledFor(10):
             logger.debug(
                 'HTTP blocking ok in %.2fs body=%dB',
@@ -469,8 +540,6 @@ class LLMClient(object):
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """SSE 流式读取，按需回调文本片段，最终聚合成统一返回结构。"""
-        # 注：req 在 urlopen 重试循环里按需重建（urllib Request 对象不允许
-        # 复用已发出的实例），所以不在这里预先构造。
         content_chunks: List[str] = []
         # DeepSeek thinking 模式：reasoning_content 也是分片到达，
         # 必须按 chunk 累积成完整字符串供下一轮回传给 API
@@ -480,41 +549,13 @@ class LLMClient(object):
         finish_reason: Optional[str] = None
         usage_buf: Dict[str, int] = {}
 
+        req = urllib.request.Request(
+            url, data=body, headers=headers, method="POST",
+        )
         try:
-            attempts = (None,) + _NETWORK_RETRY_BACKOFF_SEC
-            last_exc: Optional[BaseException] = None
-            resp = None
-            for attempt_idx, backoff in enumerate(attempts):
-                if backoff is not None:
-                    logger.info(
-                        'HTTP stream retry attempt %d after %.1fs backoff '
-                        '(prev error: %s)',
-                        attempt_idx, backoff, last_exc,
-                    )
-                    time.sleep(backoff)
-                # 每次重试都重建 Request（urllib 不允许复用已发送过的对象）
-                req_attempt = urllib.request.Request(
-                    url, data=body, headers=headers, method="POST",
-                )
-                try:
-                    resp = urllib.request.urlopen(
-                        req_attempt, timeout=self._timeout,
-                    )
-                    break
-                except urllib.error.HTTPError as exc:
-                    raise LLMError(_format_http_error(exc, url))
-                except urllib.error.URLError as exc:
-                    last_exc = exc
-                    if attempt_idx == len(attempts) - 1:
-                        raise LLMError(_humanize_network_error(exc))
-                    if not _is_retryable_network_error(exc):
-                        raise LLMError(_humanize_network_error(exc))
-                    continue
+            resp = self._open_request(req, is_stream=True)
         except LLMError:
             raise
-        # 兜底（理论上不会触达——上面循环要么 break 要么 raise）
-        if resp is None:
-            raise LLMError('网络错误: 未能建立连接')
 
         if logger.isEnabledFor(10):
             logger.debug('HTTP stream connected to %s', url)
@@ -720,14 +761,26 @@ class LLMClient(object):
         }
 
 
-def build_client_from_profile(profile) -> LLMClient:
-    """从 LLMProfile 构造客户端。"""
-    client = LLMClient(
-        base_url=profile.base_url,
-        api_key=profile.api_key,
-        model=profile.model,
-        timeout=profile.timeout,
-        extra_headers=profile.extra_headers,
-    )
+def build_client_from_profile(profile, app_config=None) -> LLMClient:
+    """从 LLMProfile 构造客户端。
+
+    若传入 AppConfig，则把全局重试参数注入 LLMClient，保证 profile 级
+    配置和全局配置协同生效。
+    """
+    client_kwargs = {
+        "base_url": profile.base_url,
+        "api_key": profile.api_key,
+        "model": profile.model,
+        "timeout": profile.timeout,
+        "extra_headers": profile.extra_headers,
+    }
+    if app_config is not None:
+        client_kwargs.update({
+            "max_retries": app_config.llm_max_retries,
+            "retry_base_delay": app_config.llm_retry_base_delay,
+            "retry_max_delay": app_config.llm_retry_max_delay,
+            "retryable_status_codes": set(app_config.llm_retryable_status_codes),
+        })
+    client = LLMClient(**client_kwargs)
     client._profile = profile
     return client

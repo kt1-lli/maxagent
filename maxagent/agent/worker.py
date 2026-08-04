@@ -36,6 +36,8 @@ from ..attachments import build_user_content
 from ..attachments import model_supports_vision
 from ..llm_client import LLMClient
 from ..llm_client import LLMError
+from ..llm_client import LLMRateLimitError
+from ..llm_client import build_client_from_profile
 from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import Signal
@@ -115,8 +117,9 @@ class AgentWorker(QObject):
                  vision_enabled=True,
                  vision_whitelist=None,
                  tools_enabled=True,
+                 config_manager=None,
                  parent=None):
-        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, bool, Optional[List[str]], bool, Any) -> None
+        # type: (LLMClient, Conversation, ToolDispatcher, int, int, float, float, bool, Optional[List[str]], bool, Any, Any) -> None
         super(AgentWorker, self).__init__(parent)
         self._llm = llm_client
         self._conv = conversation
@@ -125,6 +128,11 @@ class AgentWorker(QObject):
         self._max_history_tokens = int(max_history_tokens)
         self._price_in = float(price_input_per_1m or 0.0)
         self._price_out = float(price_output_per_1m or 0.0)
+        # 配置管理器：用于在触发 rate limit 时按 profile.fallback_profile_names
+        # 顺序切换到备用 profile。None 时禁用 fallback 行为。
+        self._config_manager = config_manager
+        # 本轮已尝试过的 profile 名（去重防止循环切换）
+        self._fallback_visited = set()  # type: set
         # 视觉/多模态开关：False 时 user 消息里的图片附件不发给 LLM，
         # 只在本地气泡里展示并附"[图片] N 张"提示给模型，避免把 base64
         # 喂给纯文本模型导致 400 / token 浪费。
@@ -218,6 +226,69 @@ class AgentWorker(QObject):
     # ------------------------------------------------------------------ #
     # 主线程辅助
     # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
+    # 备用 Profile 切换（触发 rate limit / 服务不可用时使用）
+    # ------------------------------------------------------------------ #
+    def _try_switch_to_fallback(self):
+        """尝试切换到当前 profile 的下一个可用备用 profile。
+
+        :returns: 切换成功返回 (new_profile_name, exhausted=False)；
+                  没有可用备用返回 (None, exhausted=True)。
+        """
+        if self._config_manager is None:
+            return None, True
+        try:
+            active = self._config_manager.get_active_profile()
+        except Exception:  # pylint: disable=broad-except
+            return None, True
+        if active is None:
+            return None, True
+        # 记录当前 profile 已访问，避免循环
+        if active.name not in self._fallback_visited:
+            self._fallback_visited.add(active.name)
+        fallback_names = list(
+            getattr(active, 'fallback_profile_names', None) or [],
+        )
+        # 按顺序找第一个未访问且存在的 profile
+        target_prof = None
+        for name in fallback_names:
+            if name in self._fallback_visited:
+                continue
+            prof = self._config_manager.get_profile(name)
+            if prof is None:
+                continue
+            target_prof = prof
+            break
+        if target_prof is None:
+            return None, True
+        # 构建新 client 并热替换
+        try:
+            app_cfg = getattr(self._config_manager, 'config', None)
+            new_client = build_client_from_profile(target_prof, app_cfg)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning(
+                'fallback build client failed: profile=%s err=%s',
+                target_prof.name, exc,
+            )
+            return None, True
+        self._llm = new_client
+        self._fallback_visited.add(target_prof.name)
+        # 同步刷新上下文压缩器的 llm_client
+        try:
+            self._context_compressor._llm = new_client
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # 同步 config manager 的 active profile（让后续调用与 UI 状态一致）
+        try:
+            self._config_manager.set_active_profile(target_prof.name)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        logger.info(
+            'LLM fallback switched: -> %s (visited=%s)',
+            target_prof.name, sorted(self._fallback_visited),
+        )
+        return target_prof.name, False
+
     def set_sync_tool_runner(self, runner):
         """注入主线程同步工具执行器。
 
@@ -955,6 +1026,26 @@ class AgentWorker(QObject):
                         self._chunk_count, self._chunk_emit_count,
                         rate, compress,
                     )
+            except LLMRateLimitError as exc:
+                # 触发速率限制/服务过载：尝试切换到备用 profile 后重试
+                self._flush_chunk_buf()
+                new_name, exhausted = self._try_switch_to_fallback()
+                if new_name is not None:
+                    self.status_changed.emit(
+                        '⚠ 触发速率限制，已切换到备用 Profile: '
+                        + new_name,
+                    )
+                    logger.warning(
+                        'LLMRateLimit hit (status=%s), fallback to %s',
+                        exc.status_code, new_name,
+                    )
+                    continue
+                # 备用链耗尽或未配置：视为不可恢复
+                self.failed.emit(
+                    'LLM 调用失败（速率限制/服务过载，无可用备用 Profile）: '
+                    + str(exc),
+                )
+                return
             except LLMError as exc:
                 # LLM 出错前，先把已经收到的流式残片送达 UI
                 self._flush_chunk_buf()
