@@ -1902,9 +1902,20 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _on_snip(self):
         """✂️ 截图：进程内 Qt 全屏框选，结果加入预览条。
 
-        重要：不调用 self.window().hide() —— 在 3ds Max 内嵌 / docked
-        场景下 hide 主窗会破坏 docked 状态甚至导致主 UI 不再显示。
-        改为"先抓屏再起蒙层"，让蒙层完全盖住主窗，主窗保持原样不动。
+        流程（关键修复）：
+        1. hide 掉 Knot 面板顶层窗口——避免面板本身入镜；
+           docked 状态的 QDockWidget 用 hide 不会丢失位置，show 后
+           自动回到原停靠槽位。
+        2. 把 Max 主窗口 raise_ + activateWindow 抬到 Z 序最前——
+           防止用户曾切到浏览器/资源管理器后 Max 主窗被埋在下层，
+           抓屏抓到别的软件。
+        3. processEvents + msleep 让 Windows DWM 合成完成再抓屏。
+        4. finally 里无条件 show 面板，无论抓屏成功还是异常。
+
+        历史坑（已修）：
+        - 之前用 setWindowOpacity(0.0) 隐藏面板，但透明窗口仍占 Z 序，
+          DWM 抓屏时可能抓到下层其他软件；且 50ms processEvents 不够
+          覆盖 DWM 合成延迟。
         """
         if self._is_running:
             return
@@ -1916,28 +1927,50 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                 '截图模块加载失败: {}'.format(exc),
             )
             return
-        # 抓屏 + 蒙层全部交给 ScreenshotOverlay 处理，调用方不再 hide 主窗。
-        # 为了避免把自己截进去，在抓屏前把主窗临时设为不可见（透明）。
         top = self.window()
-        prev_opacity = None
+        was_visible = False
         try:
+            # 1. 真隐藏面板（QDockWidget docked 状态下 hide 不会丢位置）
             try:
-                prev_opacity = top.windowOpacity()
-                top.setWindowOpacity(0.0)
-                # 强制刷一次绘制，确保抓屏拿到的是无主窗画面
-                QtCore.QCoreApplication.processEvents(
-                    QtCore.QEventLoop.AllEvents, 50,
-                )
+                was_visible = top.isVisible()
+                if was_visible:
+                    top.hide()
             except Exception:  # pylint: disable=broad-except
-                prev_opacity = None
+                was_visible = False
+            # 2. 把 Max 主窗抬到最前
+            max_win = None
+            try:
+                from ..qt_compat import get_max_main_window
+                max_win = get_max_main_window()
+            except Exception:  # pylint: disable=broad-except
+                max_win = None
+            if max_win is not None:
+                try:
+                    if max_win.isMinimized():
+                        max_win.showNormal()
+                    max_win.raise_()
+                    max_win.activateWindow()
+                except Exception:  # pylint: disable=broad-except
+                    pass
+            # 3. 让 hide + raise 完成合成再抓屏
+            QtCore.QCoreApplication.processEvents(
+                QtCore.QEventLoop.AllEvents, 100,
+            )
+            try:
+                QtCore.QThread.msleep(150)
+            except Exception:  # pylint: disable=broad-except
+                pass
+            QtCore.QCoreApplication.processEvents(
+                QtCore.QEventLoop.AllEvents, 50,
+            )
+            # 4. 抓屏 + 框选
             pix = ScreenshotOverlay.capture_interactive()
         finally:
-            # 任何分支都要把主窗恢复回来
+            # 任何分支都要把面板恢复回来（docked 也能正确回位）
             try:
-                if prev_opacity is not None:
-                    top.setWindowOpacity(prev_opacity)
-                else:
-                    top.setWindowOpacity(1.0)
+                if was_visible:
+                    top.show()
+                    top.raise_()
             except Exception:  # pylint: disable=broad-except
                 pass
         if pix is None or pix.isNull():
