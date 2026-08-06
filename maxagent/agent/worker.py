@@ -115,6 +115,12 @@ class AgentWorker(QObject):
     # 由 tools.todo_tools 的变更回调触发；snapshot_dict 含 items/revision/counts
     # UI 侧维持"每会话单张 Todo 卡"的策略，接到通知就地更新，不新增气泡。
     todo_updated = Signal(str, dict)
+    # 本轮进度更新（崩溃防丢）：无参
+    # 触发时机：每次向 Conversation 追加 assistant / tool_result 后立即发出。
+    # UI 侧接到信号立即调用 _save_current_session 落盘，保证长任务
+    # 中途 Max 崩溃时已完成的步骤不丢失。session_mgr.save 是 tmp+rename
+    # 原子写，重复触发无副作用。
+    turn_progress = Signal()
 
     def __init__(self, llm_client, conversation, dispatcher,
                  max_tool_loops=MAX_TOOL_LOOPS,
@@ -1307,6 +1313,10 @@ class AgentWorker(QObject):
                 tool_calls=tool_calls if tool_calls else None,
                 reasoning_content=resp.get('reasoning_content') or None,
             )
+            # 崩溃防丢：assistant 消息落 conversation 后立即通知 UI 落盘。
+            # 这样即使下一步 tool_call 期间 Max 崩溃，本轮已完成的思考/
+            # 工具调用 id 也不会丢失，重启后能继续或至少看到中断位置。
+            self.turn_progress.emit()
 
             # 把整段文本通知 UI（即使是流式也再发一次完整版，方便 UI 收尾）
             if content:
@@ -1562,6 +1572,8 @@ class AgentWorker(QObject):
                     ensure_ascii=False,
                 ),
             )
+            # 崩溃防丢：错误消息也要立刻落盘，重启后能看到失败点
+            self.turn_progress.emit()
             self.tool_finished.emit(
                 name, False,
                 json.dumps({'error': err}, ensure_ascii=False),
@@ -1611,6 +1623,9 @@ class AgentWorker(QObject):
             name=name,
             content=content_str,
         )
+        # 崩溃防丢：单步 tool_result 落盘。长任务中途 Max 崩溃时，
+        # 已完成的步骤会保留在磁盘上，重启后用户能看到执行到哪一步。
+        self.turn_progress.emit()
         self.tool_finished.emit(name, ok, content_str, call_id)
         self._macro_recorder.record(name, args, ok)
         # 记录工具结果事件（Layer 1）

@@ -424,6 +424,56 @@ class Conversation(object):
         self.messages.append(msg)
         return msg
 
+    def repair_incomplete_tool_calls(self):
+        # type: () -> int
+        """修复上次会话崩溃留下的孤立 tool_calls。
+
+        场景：Max 在工具执行中途崩溃时，assistant 消息带 tool_calls
+        已经落盘，但对应的 tool 结果消息还没写入。重启后加载会话，
+        OpenAI/DeepSeek API 会拒绝这种"tool_call 无配对 tool 结果"的
+        消息序列，返回 400。
+
+        修复策略：为每个孤立的 tool_call 追加一条占位 tool 消息，
+        content 明确标注"上次会话中断，未执行"。这样 LLM 能读懂
+        中断位置，不再报协议错误。
+
+        :returns: 修复的孤立 tool_call 数量
+        """
+        # 收集所有 tool 消息覆盖到的 call_id
+        answered = set()
+        for m in self.messages:
+            if m.role == 'tool' and m.tool_call_id:
+                answered.add(m.tool_call_id)
+        # 找出 assistant 消息里未被应答的 tool_calls
+        repaired = 0
+        new_msgs = []
+        for m in self.messages:
+            new_msgs.append(m)
+            if m.role != 'assistant' or not m.tool_calls:
+                continue
+            for tc in m.tool_calls:
+                call_id = tc.get('id') if isinstance(tc, dict) else None
+                if not call_id or call_id in answered:
+                    continue
+                # 未应答：追加占位 tool 结果
+                fn = tc.get('function') or {}
+                name = fn.get('name') if isinstance(fn, dict) else ''
+                placeholder = Message(
+                    role='tool',
+                    content=(
+                        '{"ok": false, "error": '
+                        '"上次会话在此工具执行前/中被中断，未能完成"}'
+                    ),
+                    tool_call_id=call_id,
+                    name=name or 'unknown',
+                )
+                new_msgs.append(placeholder)
+                answered.add(call_id)
+                repaired += 1
+        if repaired > 0:
+            self.messages = new_msgs
+        return repaired
+
     # ------------------------------------------------------------------ #
     # 序列化
     # ------------------------------------------------------------------ #
