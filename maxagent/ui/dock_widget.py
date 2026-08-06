@@ -1902,20 +1902,26 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     def _on_snip(self):
         """✂️ 截图：进程内 Qt 全屏框选，结果加入预览条。
 
-        流程（关键修复）：
+        流程：
         1. hide 掉 Knot 面板顶层窗口——避免面板本身入镜；
            docked 状态的 QDockWidget 用 hide 不会丢失位置，show 后
            自动回到原停靠槽位。
-        2. 把 Max 主窗口 raise_ + activateWindow 抬到 Z 序最前——
-           防止用户曾切到浏览器/资源管理器后 Max 主窗被埋在下层，
-           抓屏抓到别的软件。
-        3. processEvents + msleep 让 Windows DWM 合成完成再抓屏。
+        2. processEvents + msleep 让 Windows DWM 合成完成再抓屏
+           （否则可能抓到 hide 前的旧画面）。
+        3. ScreenshotOverlay 内部会遍历所有屏幕合成虚拟桌面，蒙层
+           覆盖整个虚拟桌面，支持多屏跨屏框选。
         4. finally 里无条件 show 面板，无论抓屏成功还是异常。
 
+        设计原则：
+        - 不主动抬起 Max 主窗或其他任何应用——用户想截什么就截什么。
+          比如截浏览器里的参考图、其他 DCC 软件的贴图预览。
+        - QDockWidget docked 状态下 hide 不丢 dock 位置。
+
         历史坑（已修）：
-        - 之前用 setWindowOpacity(0.0) 隐藏面板，但透明窗口仍占 Z 序，
-          DWM 抓屏时可能抓到下层其他软件；且 50ms processEvents 不够
-          覆盖 DWM 合成延迟。
+        - v1：window().hide() 破坏 Max docked 状态 → 主面板消失。
+        - v2：setWindowOpacity(0.0) → 透明窗口仍占 Z 序，DWM 抓屏抓到下层。
+        - v3：强制 raise Max 主窗 → 越权抢走用户的截图目标。
+        - v4（当前）：只隐藏自身 + 多屏虚拟桌面合成，不动其他应用 Z 序。
         """
         if self._is_running:
             return
@@ -1937,22 +1943,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
                     top.hide()
             except Exception:  # pylint: disable=broad-except
                 was_visible = False
-            # 2. 把 Max 主窗抬到最前
-            max_win = None
-            try:
-                from ..qt_compat import get_max_main_window
-                max_win = get_max_main_window()
-            except Exception:  # pylint: disable=broad-except
-                max_win = None
-            if max_win is not None:
-                try:
-                    if max_win.isMinimized():
-                        max_win.showNormal()
-                    max_win.raise_()
-                    max_win.activateWindow()
-                except Exception:  # pylint: disable=broad-except
-                    pass
-            # 3. 让 hide + raise 完成合成再抓屏
+            # 2. 让 hide 完成合成再抓屏（DWM 合成延迟经验值 100~200ms）
             QtCore.QCoreApplication.processEvents(
                 QtCore.QEventLoop.AllEvents, 100,
             )
@@ -1963,7 +1954,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             QtCore.QCoreApplication.processEvents(
                 QtCore.QEventLoop.AllEvents, 50,
             )
-            # 4. 抓屏 + 框选
+            # 3. 抓屏 + 框选（overlay 内部处理多屏 + HiDPI）
             pix = ScreenshotOverlay.capture_interactive()
         finally:
             # 任何分支都要把面板恢复回来（docked 也能正确回位）
