@@ -1347,6 +1347,20 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._conv = conv
         self._pending_tool_blocks.clear()
         self._renderer.clear()
+        # 崩溃防丢：修复上次崩溃留下的孤立 tool_calls（assistant 消息
+        # 里有 tool_calls，但对应的 tool 结果消息因崩溃未落盘）。
+        # 未修复的话，下次发消息 API 会返回 400（tool_call 缺少配对 tool
+        # 消息）。修复即为每个孤立 call 追加一条 ok=false 占位消息。
+        try:
+            repaired_calls = conv.repair_incomplete_tool_calls()
+            if repaired_calls > 0:
+                logger.info(
+                    '会话 %s 修复了 %d 个孤立 tool_call（上次崩溃残留）',
+                    sid, repaired_calls,
+                )
+                self._save_current_session(force=True)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('repair_incomplete_tool_calls 异常: %s', exc)
         # 方案 C：从磁盘恢复的会话注入"重启对齐"提示，
         # 让 LLM 知道场景可能已变。空会话不注入。
         try:
@@ -1853,6 +1867,9 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._worker.usage_received.connect(self._on_usage_received)
         self._worker.system_notice.connect(self._on_system_notice)
         self._worker.todo_updated.connect(self._on_todo_updated)
+        # 崩溃防丢：worker 每追加一条 assistant/tool_result 就通知落盘。
+        # 长任务中途 Max 崩溃时，已完成的步骤不再丢失。
+        self._worker.turn_progress.connect(self._on_turn_progress)
         self._worker.finished.connect(self._on_finished)
         self._worker.failed.connect(self._on_failed)
         self._worker.skill_proposed.connect(self._on_skill_proposed)
@@ -2090,13 +2107,50 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._renderer.end_turn()
         self.status_label.setText(_ee('✅') + ' 完成')
         self._set_running(False)
+        # 停止节流 timer，避免 finished 后再触发一次冗余保存
+        timer = getattr(self, '_turn_save_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
         self._save_current_session()
         self._refresh_context_label()
+
+    def _on_turn_progress(self):
+        """崩溃防丢：worker 每完成一步立即落盘（带节流）。
+
+        触发时机：worker 追加了 assistant 消息或 tool_result 之后。
+        session_mgr.save 用 tmp+rename 原子写，重复触发无副作用；
+        长任务中途 Max 崩溃时，已保存的步骤会在下次启动时正确加载。
+
+        节流策略：最短 500ms 落一次盘。避免长任务连续追加大量
+        tool_result 时把 IO 打满；即使崩溃丢失也最多丢 500ms 的进度。
+        """
+        # 复用同一个 QTimer 单发，避免重复排队
+        timer = getattr(self, '_turn_save_timer', None)
+        if timer is None:
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(500)
+            timer.timeout.connect(self._do_turn_progress_save)
+            self._turn_save_timer = timer
+        if not timer.isActive():
+            timer.start()
+
+    def _do_turn_progress_save(self):
+        """turn_progress 节流后的真正落盘动作。"""
+        try:
+            self._save_current_session()
+        except Exception:  # pylint: disable=broad-except
+            # 落盘失败不能阻塞下一步；下次触发时会重试
+            logger.warning('turn_progress 落盘失败', exc_info=True)
 
     def _on_failed(self, err):
         self._renderer.add_error(err)
         self.status_label.setText(_ee('❌') + ' 失败')
         self._set_running(False)
+        # 停止节流 timer，避免 failed 后再触发一次冗余保存
+        timer = getattr(self, '_turn_save_timer', None)
+        if timer is not None and timer.isActive():
+            timer.stop()
         # 失败也保存：用户能在历史里看到失败原因
         self._save_current_session()
         self._refresh_context_label()
