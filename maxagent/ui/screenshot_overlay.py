@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""全屏截图框选蒙层。
+"""全屏截图框选蒙层（多屏 + HiDPI 感知）。
 
-零依赖、跨平台：基于 Qt 自带的 ``QGuiApplication.primaryScreen()``
-抓主屏 → 全屏 ``QWidget`` 蒙层 → 鼠标拖拽框选 → 返回选区 ``QPixmap``。
+零依赖、跨平台：遍历 ``QGuiApplication.screens()`` 抓齐所有屏幕的
+像素合成一张虚拟桌面 pixmap，蒙层覆盖整个虚拟桌面 → 鼠标拖拽框选
+→ 返回选区 ``QPixmap``。
 
 调用方式::
 
@@ -16,11 +17,13 @@
         ...
 
 设计要点：
-- 全屏蒙层 ``WindowFlag = FramelessWindowHint | WindowStaysOnTopHint``
-- 选区外半透明黑色蒙版，选区内透出原图
-- ESC / 右键 / 双击空白 = 取消
-- 单击拖拽确定矩形，松开鼠标完成截图
-- 不依赖系统截图工具，保证 Linux/Windows/macOS 一致
+- 多屏支持：主屏可能不是 (0,0) 起点、副屏可能负坐标，用虚拟桌面
+  统一坐标系，鼠标可在任意屏幕上跨屏拖框。
+- HiDPI：按每屏 devicePixelRatio 抓像素，合成后设置整张 pixmap 的
+  devicePixelRatio，让逻辑坐标（Qt widget 事件坐标）能与像素图正确
+  抠图。
+- 无边框 + 置顶 + 覆盖全屏；ESC / 右键 / 双击空白 = 取消。
+- 不主动抬起任何应用主窗——用户看到什么就截什么，不越权。
 """
 
 from __future__ import absolute_import
@@ -37,25 +40,122 @@ from ..qt_compat import QtWidgets
 logger = get_logger(__name__)
 
 
+def _grab_virtual_desktop():
+    """抓取虚拟桌面（含所有屏幕）的 pixmap。
+
+    返回值:
+        (pixmap, virtual_origin_qpoint, dpr)
+        - pixmap: 合成后的 QPixmap，已设置 devicePixelRatio
+        - virtual_origin_qpoint: 虚拟桌面左上角在 Qt 逻辑坐标系中的位置
+          （副屏在主屏左边时可能是负坐标）
+        - dpr: 采用的 devicePixelRatio（取所有屏幕的最大值以保精度）
+
+    失败返回 (None, None, 1.0)。
+    """
+    screens = list(QtGui.QGuiApplication.screens() or [])
+    if not screens:
+        logger.warning('截图失败：QGuiApplication.screens() 返回空')
+        return None, None, 1.0
+
+    # 计算虚拟桌面在 Qt 逻辑坐标系中的并集矩形
+    virtual_rect = QtCore.QRect()
+    for scr in screens:
+        try:
+            virtual_rect = virtual_rect.united(scr.geometry())
+        except Exception:  # pylint: disable=broad-except
+            continue
+    if virtual_rect.isEmpty():
+        logger.warning('截图失败：虚拟桌面 rect 为空')
+        return None, None, 1.0
+
+    # 取所有屏幕 devicePixelRatio 的最大值——避免 100% 主屏 + 200% 副屏时
+    # 副屏截图被降采样成模糊。低 dpr 的屏在合成时会被自然缩放。
+    dpr = 1.0
+    for scr in screens:
+        try:
+            dpr = max(dpr, float(scr.devicePixelRatio()))
+        except Exception:  # pylint: disable=broad-except
+            continue
+
+    # 目标合成 pixmap：物理像素尺寸 = 逻辑尺寸 × dpr
+    px_w = int(round(virtual_rect.width() * dpr))
+    px_h = int(round(virtual_rect.height() * dpr))
+    if px_w <= 0 or px_h <= 0:
+        logger.warning('截图失败：合成像素尺寸非法 %dx%d', px_w, px_h)
+        return None, None, 1.0
+
+    canvas = QtGui.QPixmap(px_w, px_h)
+    canvas.fill(QtCore.Qt.GlobalColor.black)
+
+    painter = QtGui.QPainter(canvas)
+    try:
+        for scr in screens:
+            try:
+                geo = scr.geometry()
+                # 抓单屏原生像素图（grabWindow(0) 抓的是该屏 root window）
+                shot = scr.grabWindow(0)
+                if shot is None or shot.isNull():
+                    logger.debug('屏幕 %s 抓屏返回空，跳过', scr.name())
+                    continue
+                # 该屏在虚拟桌面里的偏移（逻辑坐标）
+                offset_x_logic = geo.x() - virtual_rect.x()
+                offset_y_logic = geo.y() - virtual_rect.y()
+                # 换算到合成 pixmap 的物理像素坐标
+                dst_x = int(round(offset_x_logic * dpr))
+                dst_y = int(round(offset_y_logic * dpr))
+                dst_w = int(round(geo.width() * dpr))
+                dst_h = int(round(geo.height() * dpr))
+                painter.drawPixmap(
+                    QtCore.QRect(dst_x, dst_y, dst_w, dst_h),
+                    shot,
+                    shot.rect(),
+                )
+            except Exception:  # pylint: disable=broad-except
+                logger.debug(
+                    '屏幕 %s 抓屏或合成失败（已忽略）',
+                    getattr(scr, 'name', lambda: '?')(),
+                    exc_info=True,
+                )
+                continue
+    finally:
+        painter.end()
+
+    # 关键：把 dpr 打进 pixmap，Qt 后续按逻辑坐标绘制时会自动缩放
+    try:
+        canvas.setDevicePixelRatio(dpr)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    logger.debug(
+        '虚拟桌面抓屏完成: 逻辑 %dx%d @ (%d,%d), dpr=%.2f, 像素 %dx%d',
+        virtual_rect.width(), virtual_rect.height(),
+        virtual_rect.x(), virtual_rect.y(),
+        dpr, px_w, px_h,
+    )
+    return canvas, virtual_rect.topLeft(), dpr
+
+
 class ScreenshotOverlay(QtWidgets.QWidget):
-    """全屏截图蒙层窗口。"""
+    """全屏截图蒙层窗口（覆盖整个虚拟桌面，支持多屏跨屏框选）。"""
 
     # 选区最小有效边长（像素），低于此值视为误触不返回结果
     _MIN_EDGE = 4
 
-    def __init__(self, screen_pixmap, parent=None):
-        # type: (QtGui.QPixmap, QtCore.QObject) -> None
+    def __init__(self, screen_pixmap, virtual_origin, parent=None):
+        # type: (QtGui.QPixmap, QtCore.QPoint, QtCore.QObject) -> None
         super(ScreenshotOverlay, self).__init__(parent)
         self._snapshot = screen_pixmap
-        # 用户拖拽的起点和终点（屏幕坐标，与 self 几何一致）
+        # 虚拟桌面左上角在 Qt 全局坐标里的位置——副屏可能负坐标
+        self._virtual_origin = QtCore.QPoint(virtual_origin)
+        # 用户拖拽的起点和终点（widget 局部坐标，从 0,0 开始）
         self._origin = None  # type: Optional[QtCore.QPoint]
         self._cursor = None  # type: Optional[QtCore.QPoint]
         self._dragging = False
         # 结果：用户松开鼠标后保存的最终选区像素图，None 表示已取消
         self._result_pix = None  # type: Optional[QtGui.QPixmap]
 
-        # 无边框 + 置顶。注意：不用 Tool flag —— 部分窗口管理器下 Tool
-        # 窗口拿不到键盘焦点（ESC 失效）；统一用普通 Window 即可。
+        # 无边框 + 置顶。不用 Tool flag —— 部分窗口管理器下 Tool 窗口
+        # 拿不到键盘焦点（ESC 失效）；统一用普通 Window 即可。
         flags = (
             QtCore.Qt.WindowType.Window
             | QtCore.Qt.WindowType.FramelessWindowHint
@@ -63,8 +163,20 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         )
         self.setWindowFlags(flags)
         self.setCursor(QtCore.Qt.CursorShape.CrossCursor)
-        # 让蒙层覆盖整个虚拟桌面（含多屏），避免在多屏环境下漏角
-        self.setGeometry(self._snapshot.rect())
+        # 让蒙层覆盖整个虚拟桌面（含多屏，覆盖负坐标区域）。
+        # 逻辑坐标：虚拟桌面尺寸 = pixmap 尺寸 / dpr（Qt 已按 dpr 自动换算）
+        try:
+            dpr = self._snapshot.devicePixelRatio() or 1.0
+        except Exception:  # pylint: disable=broad-except
+            dpr = 1.0
+        logic_w = int(round(self._snapshot.width() / dpr))
+        logic_h = int(round(self._snapshot.height() / dpr))
+        self.setGeometry(
+            self._virtual_origin.x(),
+            self._virtual_origin.y(),
+            logic_w,
+            logic_h,
+        )
 
     # ------------------------------------------------------------------ #
     # 绘制
@@ -72,7 +184,7 @@ class ScreenshotOverlay(QtWidgets.QWidget):
     def paintEvent(self, event):  # noqa: D401  Qt 重载
         painter = QtGui.QPainter(self)
         try:
-            # 1. 底图：原始截图
+            # 1. 底图：虚拟桌面抓屏（Qt 会按 pixmap 的 dpr 自动做缩放绘制）
             painter.drawPixmap(self.rect(), self._snapshot)
             # 2. 半透明黑色蒙版
             mask = QtGui.QColor(0, 0, 0, 140)
@@ -94,18 +206,21 @@ class ScreenshotOverlay(QtWidgets.QWidget):
                     text_pos = rect.bottomRight() + QtCore.QPoint(-60, 18)
                     painter.drawText(text_pos, info)
             else:
-                # 提示文本
+                # 提示文本（画在鼠标所在屏幕中央，不是虚拟桌面中央——
+                # 虚拟桌面中央在双屏时可能落在屏幕拼接缝上看不清）
                 painter.setPen(QtGui.QColor('#ffffff'))
                 tip = '拖动鼠标框选截图区域 · ESC 取消 · 右键取消'
-                rect = self.rect()
+                # 简单起见：还是用 widget 中央（多屏时用户能看到即可）
                 painter.drawText(
-                    rect, QtCore.Qt.AlignmentFlag.AlignCenter, tip,
+                    self.rect(),
+                    QtCore.Qt.AlignmentFlag.AlignCenter,
+                    tip,
                 )
         finally:
             painter.end()
 
     # ------------------------------------------------------------------ #
-    # 鼠标事件
+    # 鼠标事件（widget 局部坐标，虚拟桌面 topLeft 为原点）
     # ------------------------------------------------------------------ #
     def mousePressEvent(self, event):  # noqa: D401
         if event.button() == QtCore.Qt.MouseButton.RightButton:
@@ -135,8 +250,29 @@ class ScreenshotOverlay(QtWidgets.QWidget):
                 or rect.height() < self._MIN_EDGE):
             self._cancel()
             return
-        # 抠出原图选区
-        self._result_pix = self._snapshot.copy(rect)
+        # 抠图：widget 逻辑坐标 → pixmap 物理像素坐标
+        try:
+            dpr = self._snapshot.devicePixelRatio() or 1.0
+        except Exception:  # pylint: disable=broad-except
+            dpr = 1.0
+        px_rect = QtCore.QRect(
+            int(round(rect.x() * dpr)),
+            int(round(rect.y() * dpr)),
+            int(round(rect.width() * dpr)),
+            int(round(rect.height() * dpr)),
+        )
+        # 边界裁剪，防越界
+        px_rect = px_rect.intersected(self._snapshot.rect())
+        if px_rect.isEmpty():
+            self._cancel()
+            return
+        cropped = self._snapshot.copy(px_rect)
+        # 保留 dpr，便于后续显示时按逻辑尺寸展现
+        try:
+            cropped.setDevicePixelRatio(dpr)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        self._result_pix = cropped
         self.close()
 
     def keyPressEvent(self, event):  # noqa: D401
@@ -173,47 +309,21 @@ class ScreenshotOverlay(QtWidgets.QWidget):
 
         在主线程调用，事件循环嵌套（exec_）等待用户操作。
 
-        抓屏前会强制把 3ds Max 主窗口和调用方父窗口抬到 Z 序最前，
-        避免出现"截图抓到 Max 后面的其他软件"的问题（用户曾反馈：
-        点截图后蒙层里显示的是其他软件而不是 Max 界面，根因是
-        Max 主窗被最小化 / 被其他窗口遮挡 / 不是当前 Z 序最前时，
-        grabWindow(0) 会抓到桌面区域实际暴露出的下层窗口内容）。
+        设计原则：
+        - 不主动抬起 Max 主窗或其他任何应用——用户想截什么就截什么，
+          比如浏览器里的参考图、其他 DCC 软件的贴图预览等。
+        - 由调用方（dock_widget._on_snip）负责在抓屏前隐藏 Knot 面板
+          自身（避免面板入镜），抓完 show 恢复。
+        - 全屏合成 = 遍历所有 QScreen 抓像素后拼接，蒙层覆盖整个虚拟
+          桌面，鼠标可在任意屏幕上跨屏拖框。
         """
-        # ---- 抓屏前的窗口置顶（关键修复） ------------------------- #
-        # 1. 优先把 Max 主窗口抬到最前——Max 内运行时这一步能把
-        #    可能被最小化或被其他窗口盖住的主窗口恢复并置顶。
-        max_win = None
-        try:
-            from ..qt_compat import get_max_main_window
-            max_win = get_max_main_window()
-        except Exception:  # pylint: disable=broad-except
-            max_win = None
-        if max_win is not None:
-            try:
-                # 如果被最小化了，先恢复；已正常显示的不受影响。
-                if max_win.isMinimized():
-                    max_win.showNormal()
-                max_win.raise_()
-                max_win.activateWindow()
-            except Exception:  # pylint: disable=broad-except
-                logger.debug('抬起 Max 主窗口失败（已忽略）', exc_info=True)
-        # 2. 兜底：把调用方 parent 也抬一次（比如 Max 之外测试时）
-        if parent is not None:
-            try:
-                parent.raise_()
-                parent.activateWindow()
-            except Exception:  # pylint: disable=broad-except
-                pass
-        # 3. 让窗口管理器完成 raise + 重绘，再抓屏。processEvents
-        #    冲刷 Qt 事件队列；100ms 是经验值，覆盖 Windows DWM 合成延迟。
+        # 让上一次的 hide 请求完成 + 让 DWM 合成刷新，再抓屏
         try:
             app = QtWidgets.QApplication.instance()
             if app is not None:
                 app.processEvents()
         except Exception:  # pylint: disable=broad-except
             pass
-        # 阻塞式短暂等待，让 OS 完成窗口切换动画（Aero/DWM 合成）。
-        # QThread.msleep 是跨平台且不阻塞信号的等待。
         try:
             QtCore.QThread.msleep(120)
         except Exception:  # pylint: disable=broad-except
@@ -225,24 +335,13 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         except Exception:  # pylint: disable=broad-except
             pass
 
-        # ---- 正式抓屏 --------------------------------------------- #
-        screen = QtGui.QGuiApplication.primaryScreen()
-        if screen is None:
-            logger.warning('截图失败：找不到主屏幕（primaryScreen=None）')
+        # ---- 抓全屏（多屏合成） ---------------------------------- #
+        snap, virtual_origin, _dpr = _grab_virtual_desktop()
+        if snap is None or snap.isNull() or virtual_origin is None:
+            logger.warning('截图失败：虚拟桌面抓屏返回空')
             return None
-        # grabWindow(0) = 抓整个屏幕（root window）
-        snap = screen.grabWindow(0)
-        if snap is None or snap.isNull():
-            logger.warning('截图失败：grabWindow 返回空 pixmap')
-            return None
-        logger.debug(
-            '截图蒙层启动: snap=%dx%d',
-            snap.width(), snap.height(),
-        )
 
-        overlay = cls(snap, parent=parent)
-        # 不依赖 destroyed 信号——destroyed 触发时 C++ 对象已析构，
-        # 取结果会 RuntimeError。改为在 closeEvent 里主动 quit 嵌套 loop。
+        overlay = cls(snap, virtual_origin, parent=parent)
         loop = QtCore.QEventLoop()
 
         def _on_close(_event):
@@ -251,14 +350,17 @@ class ScreenshotOverlay(QtWidgets.QWidget):
 
         overlay._on_close_hook = _on_close  # 注入到子类的 hook 槽
 
-        overlay.showFullScreen()
+        # 用 show()（而不是 showFullScreen()）——多屏下 showFullScreen
+        # 只会把 widget 放到主屏，副屏就没蒙层了。setGeometry 已经把
+        # 覆盖区域正确设置为整个虚拟桌面，show 即可全域展开。
+        overlay.show()
         overlay.raise_()
         overlay.activateWindow()
-        # 抢一次键盘焦点，确保 ESC 取消生效
         try:
             overlay.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
         except Exception:  # pylint: disable=broad-except
             pass
+
         if hasattr(loop, 'exec_'):
             loop.exec_()
         else:
@@ -268,10 +370,10 @@ class ScreenshotOverlay(QtWidgets.QWidget):
             logger.debug('截图取消或选区为空')
         else:
             logger.info(
-                '截图完成: 选区 %dx%d',
+                '截图完成: 选区 %dx%d (dpr=%.2f)',
                 result.width(), result.height(),
+                float(getattr(result, 'devicePixelRatio', lambda: 1.0)()),
             )
-        # 显式销毁，释放主屏快照
         try:
             overlay.deleteLater()
         except Exception:  # pylint: disable=broad-except
