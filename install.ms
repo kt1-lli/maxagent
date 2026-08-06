@@ -32,26 +32,37 @@ fn _maxagent_resolve_root = (
     rootDir
 )
 
--- 安全调用 Python：捕获 MaxScript 与 Python 端异常，并把完整 traceback
--- 输出到 Max Listener，方便用户按 F11 查看。
+-- 安全调用 Python：使用"副作用式错误标记"策略，不依赖 python.execute
+-- 的返回值。原因：Max 2022 的 python 桥对 tuple 求值返回给 MaxScript
+-- 时行为不稳定，可能被降级成 #success 这类 name symbol，导致 _result[1]
+-- 崩溃。改为：Python 侧只在出错时把 traceback 写入 %TEMP%\maxagent_last_err.txt，
+-- MaxScript 侧调用后检查该文件是否存在来判定成功/失败。
 fn _maxagent_safe_call_python pycode titleStr = (
+    -- 1. 先清理上次遗留的错误标记
+    local _errFile = (sysInfo.tempdir + "maxagent_last_err.txt")
+    if doesFileExist _errFile do (
+        try (deleteFile _errFile) catch ()
+    )
+
+    -- 2. 组装 Python wrapper：出错时写文件，成功时什么也不返回
+    local _errFileEsc = _maxagent_escape_path _errFile
     local _wrapper = ""
-    _wrapper += "import sys, traceback\n"
-    _wrapper += "_maxagent_err = None\n"
+    _wrapper += "import traceback\n"
     _wrapper += "try:\n"
     _wrapper += "    " + pycode + "\n"
-    _wrapper += "    _maxagent_err = ('OK', None)\n"
     _wrapper += "except Exception as _e:\n"
     _wrapper += "    _tb = traceback.format_exc()\n"
-    _wrapper += "    _msg = str(type(_e).__name__) + ': ' + str(_e)\n"
+    _wrapper += "    _msg = type(_e).__name__ + ': ' + str(_e) + '\\n' + _tb\n"
     _wrapper += "    print('[MaxAgent Python Error] ' + _msg)\n"
-    _wrapper += "    print(_tb)\n"
-    _wrapper += "    _maxagent_err = ('ERR', _msg + '\\n' + _tb)\n"
-    _wrapper += "_maxagent_err\n"
+    _wrapper += "    try:\n"
+    _wrapper += "        with open(r'" + _errFile + "', 'w', encoding='utf-8') as _fh:\n"
+    _wrapper += "            _fh.write(_msg)\n"
+    _wrapper += "    except Exception:\n"
+    _wrapper += "        pass\n"
 
-    local _result = undefined
+    -- 3. 执行；MaxScript 侧异常也走同一分支
     try (
-        _result = python.execute _wrapper
+        python.execute _wrapper
     ) catch (
         local _err = "MaxScript python.execute 失败: " + (getCurrentException() as string)
         format "%\n" _err to:listener
@@ -59,17 +70,28 @@ fn _maxagent_safe_call_python pycode titleStr = (
         return false
     )
 
-    if _result == undefined do (
-        messagebox "python.execute 未返回结果" title:titleStr
-        return false
+    -- 4. 检查错误标记文件（副作用式判定，不看返回值）
+    if not (doesFileExist _errFile) do return true
+
+    -- 5. 有错误：读取 traceback 展示给用户
+    local _detail = ""
+    try (
+        local _fh = openFile _errFile mode:"rt"
+        if _fh != undefined do (
+            while not (eof _fh) do (
+                _detail += (readLine _fh) + "\n"
+            )
+            close _fh
+        )
+    ) catch (
+        _detail = "（读取错误文件失败）"
     )
-    if _result[1] == "OK" do return true
 
     local _msg = "MaxAgent 调用 Python 失败。完整异常已输出到 Max Listener（F11）。\n\n"
     _msg += "常见原因:\n"
-    _msg += "  • 安装不完整或更新后未重新打包/重新安装 mzp\n"
+    _msg += "  • 安装不完整或更新后未重新打包/重新安装\n"
     _msg += "  • Python 代码存在导入/语法错误\n\n"
-    _msg += "异常摘要:\n" + _result[2]
+    _msg += "异常摘要:\n" + _detail
     format "%\n" _msg to:listener
     messagebox _msg title:titleStr
     false
@@ -85,7 +107,6 @@ fn _maxagent_ensure_path = (
             title:"MaxAgent"
         return false
     )
-    local escaped = _maxagent_escape_path g_max_agent_root
     local pycode = ""
     pycode += "import sys, os\n"
     pycode += "_root = r'" + g_max_agent_root + "'\n"
