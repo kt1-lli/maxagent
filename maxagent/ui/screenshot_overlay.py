@@ -172,7 +172,60 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         """阻塞式弹起截图蒙层，返回选区 QPixmap 或 None（取消）。
 
         在主线程调用，事件循环嵌套（exec_）等待用户操作。
+
+        抓屏前会强制把 3ds Max 主窗口和调用方父窗口抬到 Z 序最前，
+        避免出现"截图抓到 Max 后面的其他软件"的问题（用户曾反馈：
+        点截图后蒙层里显示的是其他软件而不是 Max 界面，根因是
+        Max 主窗被最小化 / 被其他窗口遮挡 / 不是当前 Z 序最前时，
+        grabWindow(0) 会抓到桌面区域实际暴露出的下层窗口内容）。
         """
+        # ---- 抓屏前的窗口置顶（关键修复） ------------------------- #
+        # 1. 优先把 Max 主窗口抬到最前——Max 内运行时这一步能把
+        #    可能被最小化或被其他窗口盖住的主窗口恢复并置顶。
+        max_win = None
+        try:
+            from ..qt_compat import get_max_main_window
+            max_win = get_max_main_window()
+        except Exception:  # pylint: disable=broad-except
+            max_win = None
+        if max_win is not None:
+            try:
+                # 如果被最小化了，先恢复；已正常显示的不受影响。
+                if max_win.isMinimized():
+                    max_win.showNormal()
+                max_win.raise_()
+                max_win.activateWindow()
+            except Exception:  # pylint: disable=broad-except
+                logger.debug('抬起 Max 主窗口失败（已忽略）', exc_info=True)
+        # 2. 兜底：把调用方 parent 也抬一次（比如 Max 之外测试时）
+        if parent is not None:
+            try:
+                parent.raise_()
+                parent.activateWindow()
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # 3. 让窗口管理器完成 raise + 重绘，再抓屏。processEvents
+        #    冲刷 Qt 事件队列；100ms 是经验值，覆盖 Windows DWM 合成延迟。
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        except Exception:  # pylint: disable=broad-except
+            pass
+        # 阻塞式短暂等待，让 OS 完成窗口切换动画（Aero/DWM 合成）。
+        # QThread.msleep 是跨平台且不阻塞信号的等待。
+        try:
+            QtCore.QThread.msleep(120)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+        # ---- 正式抓屏 --------------------------------------------- #
         screen = QtGui.QGuiApplication.primaryScreen()
         if screen is None:
             logger.warning('截图失败：找不到主屏幕（primaryScreen=None）')
