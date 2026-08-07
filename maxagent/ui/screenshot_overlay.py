@@ -44,29 +44,34 @@ def _grab_virtual_desktop():
     """抓取虚拟桌面（含所有屏幕）的 pixmap。
 
     返回值:
-        (pixmap, virtual_origin_qpoint, dpr)
+        (pixmap, virtual_origin_qpoint, dpr, screen_geoms)
         - pixmap: 合成后的 QPixmap，已设置 devicePixelRatio
         - virtual_origin_qpoint: 虚拟桌面左上角在 Qt 逻辑坐标系中的位置
           （副屏在主屏左边时可能是负坐标）
         - dpr: 采用的 devicePixelRatio（取所有屏幕的最大值以保精度）
+        - screen_geoms: 每块屏幕的 QRect 几何列表（全局逻辑坐标），
+          供 overlay 在每块屏中心画提示避免落在拼接缝上
 
-    失败返回 (None, None, 1.0)。
+    失败返回 (None, None, 1.0, [])。
     """
     screens = list(QtGui.QGuiApplication.screens() or [])
     if not screens:
         logger.warning('截图失败：QGuiApplication.screens() 返回空')
-        return None, None, 1.0
+        return None, None, 1.0, []
 
-    # 计算虚拟桌面在 Qt 逻辑坐标系中的并集矩形
+    # 收集每块屏的 geometry（同时用于计算并集 + 传给 overlay 画提示）
+    screen_geoms = []
     virtual_rect = QtCore.QRect()
     for scr in screens:
         try:
-            virtual_rect = virtual_rect.united(scr.geometry())
+            geo = QtCore.QRect(scr.geometry())
+            screen_geoms.append(geo)
+            virtual_rect = virtual_rect.united(geo)
         except Exception:  # pylint: disable=broad-except
             continue
     if virtual_rect.isEmpty():
         logger.warning('截图失败：虚拟桌面 rect 为空')
-        return None, None, 1.0
+        return None, None, 1.0, []
 
     # 取所有屏幕 devicePixelRatio 的最大值——避免 100% 主屏 + 200% 副屏时
     # 副屏截图被降采样成模糊。低 dpr 的屏在合成时会被自然缩放。
@@ -82,7 +87,7 @@ def _grab_virtual_desktop():
     px_h = int(round(virtual_rect.height() * dpr))
     if px_w <= 0 or px_h <= 0:
         logger.warning('截图失败：合成像素尺寸非法 %dx%d', px_w, px_h)
-        return None, None, 1.0
+        return None, None, 1.0, []
 
     canvas = QtGui.QPixmap(px_w, px_h)
     canvas.fill(QtCore.Qt.GlobalColor.black)
@@ -132,7 +137,7 @@ def _grab_virtual_desktop():
         virtual_rect.x(), virtual_rect.y(),
         dpr, px_w, px_h,
     )
-    return canvas, virtual_rect.topLeft(), dpr
+    return canvas, virtual_rect.topLeft(), dpr, screen_geoms
 
 
 class ScreenshotOverlay(QtWidgets.QWidget):
@@ -141,8 +146,9 @@ class ScreenshotOverlay(QtWidgets.QWidget):
     # 选区最小有效边长（像素），低于此值视为误触不返回结果
     _MIN_EDGE = 4
 
-    def __init__(self, screen_pixmap, virtual_origin, parent=None):
-        # type: (QtGui.QPixmap, QtCore.QPoint, QtCore.QObject) -> None
+    def __init__(self, screen_pixmap, virtual_origin, parent=None,
+                 screen_geoms=None):
+        # type: (QtGui.QPixmap, QtCore.QPoint, QtCore.QObject, Optional[list]) -> None
         super(ScreenshotOverlay, self).__init__(parent)
         self._snapshot = screen_pixmap
         # 虚拟桌面左上角在 Qt 全局坐标里的位置——副屏可能负坐标
@@ -153,6 +159,21 @@ class ScreenshotOverlay(QtWidgets.QWidget):
         self._dragging = False
         # 结果：用户松开鼠标后保存的最终选区像素图，None 表示已取消
         self._result_pix = None  # type: Optional[QtGui.QPixmap]
+        # 每块屏幕在 widget 局部坐标系中的 rect（原点 = virtual_origin）。
+        # 用于把提示文字在"每块屏各自的中心"画一遍，避免提示落在多屏
+        # 拼接缝上被切开——这是用户视觉体验的关键点。
+        self._screen_rects_local = []  # type: list
+        if screen_geoms:
+            for geo in screen_geoms:
+                try:
+                    self._screen_rects_local.append(QtCore.QRect(
+                        geo.x() - self._virtual_origin.x(),
+                        geo.y() - self._virtual_origin.y(),
+                        geo.width(),
+                        geo.height(),
+                    ))
+                except Exception:  # pylint: disable=broad-except
+                    continue
 
         # 无边框 + 置顶。不用 Tool flag —— 部分窗口管理器下 Tool 窗口
         # 拿不到键盘焦点（ESC 失效）；统一用普通 Window 即可。
@@ -206,18 +227,56 @@ class ScreenshotOverlay(QtWidgets.QWidget):
                     text_pos = rect.bottomRight() + QtCore.QPoint(-60, 18)
                     painter.drawText(text_pos, info)
             else:
-                # 提示文本（画在鼠标所在屏幕中央，不是虚拟桌面中央——
-                # 虚拟桌面中央在双屏时可能落在屏幕拼接缝上看不清）
-                painter.setPen(QtGui.QColor('#ffffff'))
-                tip = '拖动鼠标框选截图区域 · ESC 取消 · 右键取消'
-                # 简单起见：还是用 widget 中央（多屏时用户能看到即可）
-                painter.drawText(
-                    self.rect(),
-                    QtCore.Qt.AlignmentFlag.AlignCenter,
-                    tip,
-                )
+                # 提示文本：在每块屏幕各自的中心各画一次，避免落在多屏
+                # 拼接缝上被切开（这是多屏体验的关键改进点）。
+                tip = '拖动鼠标框选截图区域    ESC / 右键 取消'
+                self._draw_tip_on_each_screen(painter, tip)
         finally:
             painter.end()
+
+    def _draw_tip_on_each_screen(self, painter, tip):
+        """在每块屏幕的中心画一次提示（避免虚拟桌面中心落在拼接缝上）。
+
+        画法：白字 + 半透明黑色圆角胶囊底衬，视觉上比裸文字清晰得多。
+        """
+        # 无屏幕信息时退化：画在整个 widget 中央（单屏场景下等价）
+        rects = self._screen_rects_local or [self.rect()]
+        # 字体：比默认 UI 字号大一点，视觉更清晰
+        font = painter.font()
+        try:
+            font.setPointSize(max(font.pointSize() + 4, 14))
+            font.setBold(True)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(tip) if hasattr(
+            fm, 'horizontalAdvance'
+        ) else fm.width(tip)
+        text_h = fm.height()
+        # 胶囊内边距
+        pad_x, pad_y = 20, 10
+        for scr_rect in rects:
+            if scr_rect is None or scr_rect.isEmpty():
+                continue
+            cx = scr_rect.center().x()
+            cy = scr_rect.center().y()
+            capsule = QtCore.QRect(
+                cx - text_w // 2 - pad_x,
+                cy - text_h // 2 - pad_y,
+                text_w + pad_x * 2,
+                text_h + pad_y * 2,
+            )
+            # 半透明黑色胶囊底
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
+            painter.setBrush(QtGui.QColor(0, 0, 0, 180))
+            radius = capsule.height() // 2
+            painter.drawRoundedRect(capsule, radius, radius)
+            # 白色文字
+            painter.setPen(QtGui.QColor('#ffffff'))
+            painter.drawText(
+                capsule, QtCore.Qt.AlignmentFlag.AlignCenter, tip,
+            )
 
     # ------------------------------------------------------------------ #
     # 鼠标事件（widget 局部坐标，虚拟桌面 topLeft 为原点）
@@ -336,12 +395,15 @@ class ScreenshotOverlay(QtWidgets.QWidget):
             pass
 
         # ---- 抓全屏（多屏合成） ---------------------------------- #
-        snap, virtual_origin, _dpr = _grab_virtual_desktop()
+        snap, virtual_origin, _dpr, screen_geoms = _grab_virtual_desktop()
         if snap is None or snap.isNull() or virtual_origin is None:
             logger.warning('截图失败：虚拟桌面抓屏返回空')
             return None
 
-        overlay = cls(snap, virtual_origin, parent=parent)
+        overlay = cls(
+            snap, virtual_origin, parent=parent,
+            screen_geoms=screen_geoms,
+        )
         loop = QtCore.QEventLoop()
 
         def _on_close(_event):
