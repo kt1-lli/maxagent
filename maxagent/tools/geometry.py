@@ -4,6 +4,27 @@
 
 提供给 agent 的"创建"能力：box / sphere / cylinder / cone / torus / plane / teapot。
 所有工具都会返回创建出来的对象名（如果有重名 Max 会自动加后缀），方便 agent 后续操作。
+
+**关于 position 参数的官方正确用法（源自 Autodesk pymxs 官方文档）：**
+
+Autodesk 官方文档 "Accessing Object Properties and Controllers" 指出：
+
+    Python and MAXScript treat properties indicated with dot notation differently:
+    Python always returns a reference to the indicated property, while MAXScript
+    returns a copy of the value. Attempting to assign a value may not work as
+    intended in pymxs.
+
+    There are three solutions to this problem:
+      1. Use the MAXScript getProperty() and setProperty() functions
+      2. Use the pymxs MXSWrapperBase getmxsprop() and setmxsprop() functions
+      3. Work on a copy of the target property, and assign the object back
+
+因此本模块采用：
+
+- **首选**：构造器直接传 ``pos=rt.Point3(x, y, z)``（官方 teapot 示例的写法）——
+  这是最简单最稳的路径，创建瞬间就定位好，避免任何后续 setter 陷阱。
+- **兜底**：``rt.setProperty(node, 'pos', p3)``（官方 3 大方案之首）。
+- **硬校验**：写入后读回坐标，偏差 > 0.01 抛异常，绝不静默通过。
 """
 
 from __future__ import absolute_import
@@ -17,91 +38,109 @@ from ..runtime_helpers import rt
 from .registry import tool
 
 
+_POSITION_TOLERANCE = 0.01
+
+
 def _ensure_in_max():
     if not IN_MAX:
         raise RuntimeError('非 3ds Max 环境')
 
 
+def _to_point3(position):
+    """把 [x, y, z] 列表/元组转为 rt.Point3，非法输入返回 None。"""
+    if position is None:
+        return None
+    try:
+        if len(position) != 3:
+            return None
+        return rt.Point3(
+            float(position[0]), float(position[1]), float(position[2]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _verify_position(node, expected):
+    """读回 node.pos 并硬校验：偏差 > _POSITION_TOLERANCE 抛 RuntimeError。
+
+    读回失败（罕见，如 node 已被 undo 销毁）不阻塞——上层还能通过
+    get_object_info 复核，不应破坏正常流程。
+    """
+    if expected is None:
+        return
+    try:
+        actual = node.pos
+        dx = abs(float(actual.x) - float(expected[0]))
+        dy = abs(float(actual.y) - float(expected[1]))
+        dz = abs(float(actual.z) - float(expected[2]))
+    except Exception:  # pylint: disable=broad-except
+        return
+    if (
+        dx > _POSITION_TOLERANCE
+        or dy > _POSITION_TOLERANCE
+        or dz > _POSITION_TOLERANCE
+    ):
+        raise RuntimeError(
+            'position 未生效: 期望 [{},{},{}], 实际 [{},{},{}]'.format(
+                float(expected[0]), float(expected[1]), float(expected[2]),
+                float(actual.x), float(actual.y), float(actual.z),
+            ),
+        )
+
+
 def _apply_common(node, name, position, rotation_euler):
-    """统一处理对象创建后的命名与变换。
+    """统一处理对象创建后的命名、后置定位与旋转。
 
-    坐标系陷阱（已修）：pymxs 里 ``node.position = rt.Point3(...)`` 在
-    Max 2022 的部分 primitive（Box/Sphere/targetSpot/targetCamera）返回
-    的 node 上会被静默吞掉——setter 无异常但值不写入。根因是这些属性
-    setter 依赖当前 coordsys 上下文，且 pymxs 层无法可靠注入
-    ``in coordsys world``。
+    正常情况下 position 应在构造器里通过 ``pos=`` 关键字参数传入，本函数
+    对 position 只做**兜底**：如果构造器没传或读回偏差太大，才走
+    ``rt.setProperty(node, 'pos', p3)``（官方推荐路径）。
 
-    修复策略：优先直接走 MaxScript ``in coordsys world`` 一次性定位——
-    这是 3ds Max 官方唯一稳定的坐标写入路径；写入后**主动读回校验**，
-    偏差 > 0.01 直接抛异常（不再静默通过）。
+    :param node: rt 创建返回的节点
+    :param name: 要设置的名字（空字符串跳过）
+    :param position: 期望位置，用于硬校验；None 表示不校验
+    :param rotation_euler: 期望旋转（欧拉角度），None 表示不设置
     """
     if name:
         try:
             node.name = name
         except Exception:  # pylint: disable=broad-except
             pass
-    if position is not None and len(position) == 3:
-        px, py, pz = (
-            float(position[0]), float(position[1]), float(position[2]),
-        )
-        # 优先走 MaxScript：语义稳定，不受 pymxs setter bug 影响。
-        # 用 getAnimByHandle 而不是 $'name' —— 前者不依赖名字里的特殊字符转义。
-        try:
-            handle = int(rt.getHandleByAnim(node))
-        except Exception:  # pylint: disable=broad-except
-            handle = 0
-        _applied = False
-        if handle > 0:
-            script = (
-                'in coordsys world (getAnimByHandle {h}).pos = [{x},{y},{z}]'
-            ).format(h=handle, x=px, y=py, z=pz)
+
+    # position：优先假定构造器已传入正确值，硬校验一次；不达标才走
+    # 官方 setProperty 兜底，再校验一次。
+    if position is not None:
+        p3 = _to_point3(position)
+        if p3 is not None:
             try:
-                rt.execute(script)
-                _applied = True
-            except Exception:  # pylint: disable=broad-except
-                _applied = False
-        # 兜底 1：pymxs .pos setter
-        if not _applied:
-            try:
-                node.pos = rt.Point3(px, py, pz)
-                _applied = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-        # 兜底 2：pymxs .position setter
-        if not _applied:
-            try:
-                node.position = rt.Point3(px, py, pz)
-                _applied = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-        # 硬校验：读回实际坐标，偏差过大直接抛，绝不静默失败。
-        try:
-            actual = node.pos
-            dx = abs(float(actual.x) - px)
-            dy = abs(float(actual.y) - py)
-            dz = abs(float(actual.z) - pz)
-            if dx > 0.01 or dy > 0.01 or dz > 0.01:
-                raise RuntimeError(
-                    'position 未生效: 期望 [{},{},{}], 实际 [{},{},{}]'.format(
-                        px, py, pz,
-                        float(actual.x), float(actual.y), float(actual.z),
-                    ),
-                )
-        except RuntimeError:
-            raise
-        except Exception:  # pylint: disable=broad-except
-            # 读回失败（罕见），不阻塞——上层还能通过 get_object_info 复核
-            pass
+                _verify_position(node, position)
+            except RuntimeError:
+                # 兜底 1：官方 rt.setProperty（MAXScript setProperty 语义）
+                try:
+                    rt.setProperty(node, 'pos', p3)
+                except Exception:  # pylint: disable=broad-except
+                    # 兜底 2：pymxs MXSWrapperBase.setmxsprop
+                    try:
+                        node.setmxsprop('pos', p3)
+                    except Exception:  # pylint: disable=broad-except
+                        pass
+                # 最终硬校验：仍然不达标就抛，绝不静默通过
+                _verify_position(node, position)
+
     if rotation_euler is not None and len(rotation_euler) == 3:
-        euler = rt.eulerAngles(
-            float(rotation_euler[0]),
-            float(rotation_euler[1]),
-            float(rotation_euler[2]),
-        )
         try:
-            node.rotation = rt.eulerToQuat(euler)
+            euler = rt.eulerAngles(
+                float(rotation_euler[0]),
+                float(rotation_euler[1]),
+                float(rotation_euler[2]),
+            )
+            rt.setProperty(node, 'rotation', rt.eulerToQuat(euler))
         except Exception:  # pylint: disable=broad-except
-            pass
+            # rotation 兜底：直接属性赋值（rotation 的 setter 在 pymxs 里
+            # 通常稳定，属性 setter 陷阱主要出现在 pos 上）
+            try:
+                node.rotation = rt.eulerToQuat(euler)
+            except Exception:  # pylint: disable=broad-except
+                pass
     return node
 
 
@@ -128,9 +167,15 @@ def create_box(
     :returns: dict {"name": 实际名称, "class": "Box"}
     """
     _ensure_in_max()
-    node = rt.Box(
-        length=float(length), width=float(width), height=float(height),
-    )
+    kwargs = {
+        'length': float(length),
+        'width': float(width),
+        'height': float(height),
+    }
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Box(**kwargs)
     _apply_common(node, name, position, rotation_euler)
     return {'name': str(node.name), 'class': 'Box'}
 
@@ -154,7 +199,11 @@ def create_sphere(
     :returns: dict {"name": ..., "class": "Sphere"}
     """
     _ensure_in_max()
-    node = rt.Sphere(radius=float(radius), segs=int(segments))
+    kwargs = {'radius': float(radius), 'segs': int(segments)}
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Sphere(**kwargs)
     _apply_common(node, name, position, None)
     return {'name': str(node.name), 'class': 'Sphere'}
 
@@ -181,9 +230,15 @@ def create_cylinder(
     :param rotation_euler: 欧拉角（度）
     """
     _ensure_in_max()
-    node = rt.Cylinder(
-        radius=float(radius), height=float(height), sides=int(sides),
-    )
+    kwargs = {
+        'radius': float(radius),
+        'height': float(height),
+        'sides': int(sides),
+    }
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Cylinder(**kwargs)
     _apply_common(node, name, position, rotation_euler)
     return {'name': str(node.name), 'class': 'Cylinder'}
 
@@ -210,12 +265,16 @@ def create_cone(
     :param position: [x, y, z]
     """
     _ensure_in_max()
-    node = rt.Cone(
-        radius1=float(radius1),
-        radius2=float(radius2),
-        height=float(height),
-        sides=int(sides),
-    )
+    kwargs = {
+        'radius1': float(radius1),
+        'radius2': float(radius2),
+        'height': float(height),
+        'sides': int(sides),
+    }
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Cone(**kwargs)
     _apply_common(node, name, position, None)
     return {'name': str(node.name), 'class': 'Cone'}
 
@@ -242,12 +301,16 @@ def create_torus(
     :param position: [x, y, z]
     """
     _ensure_in_max()
-    node = rt.Torus(
-        radius1=float(radius1),
-        radius2=float(radius2),
-        segs=int(segments),
-        sides=int(sides),
-    )
+    kwargs = {
+        'radius1': float(radius1),
+        'radius2': float(radius2),
+        'segs': int(segments),
+        'sides': int(sides),
+    }
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Torus(**kwargs)
     _apply_common(node, name, position, None)
     return {'name': str(node.name), 'class': 'Torus'}
 
@@ -274,12 +337,16 @@ def create_plane(
     :param position: [x, y, z]
     """
     _ensure_in_max()
-    node = rt.Plane(
-        length=float(length),
-        width=float(width),
-        lengthsegs=int(length_segs),
-        widthsegs=int(width_segs),
-    )
+    kwargs = {
+        'length': float(length),
+        'width': float(width),
+        'lengthsegs': int(length_segs),
+        'widthsegs': int(width_segs),
+    }
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Plane(**kwargs)
     _apply_common(node, name, position, None)
     return {'name': str(node.name), 'class': 'Plane'}
 
@@ -302,6 +369,10 @@ def create_teapot(
     :param position: [x, y, z]
     """
     _ensure_in_max()
-    node = rt.Teapot(radius=float(radius), segs=int(segments))
+    kwargs = {'radius': float(radius), 'segments': int(segments)}
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+    node = rt.Teapot(**kwargs)
     _apply_common(node, name, position, None)
     return {'name': str(node.name), 'class': 'Teapot'}
