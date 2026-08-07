@@ -32,10 +32,37 @@ def _get_node(name):
 
 
 def _to_color(rgb):
-    """[r, g, b] (0~255 或 0~1) -> rt.Color。"""
-    if rgb is None or len(rgb) < 3:
+    """RGB 输入 -> rt.Color。支持多种输入格式：
+
+    - [r, g, b] / (r, g, b) list/tuple
+    - "255,0,0" / "255 0 0" 字符串
+    - "[255,0,0]" / "(255,0,0)" 带括号字符串（LLM 常传这种）
+    - 0-1 浮点 或 0-255 整数（自动判断）
+
+    None 或非法输入返回白色。
+    """
+    if rgb is None:
         return rt.Color(255, 255, 255)
-    r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    # 字符串：兼容 "[255,0,0]" / "255,0,0" / "255 0 0"
+    if isinstance(rgb, str):
+        s = rgb.strip()
+        # 剥掉常见包裹符
+        for lb, rb in (('[', ']'), ('(', ')'), ('{', '}')):
+            if s.startswith(lb) and s.endswith(rb):
+                s = s[1:-1].strip()
+                break
+        # 支持逗号或空白分隔
+        parts = [p for p in s.replace(',', ' ').split() if p]
+        try:
+            rgb = [float(p) for p in parts]
+        except (ValueError, TypeError):
+            return rt.Color(255, 255, 255)
+    try:
+        if len(rgb) < 3:
+            return rt.Color(255, 255, 255)
+        r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    except (TypeError, ValueError):
+        return rt.Color(255, 255, 255)
     # 自动判断是 0-1 还是 0-255
     if max(r, g, b) <= 1.0:
         r, g, b = r * 255.0, g * 255.0, b * 255.0

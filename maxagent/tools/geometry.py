@@ -25,13 +25,15 @@ def _ensure_in_max():
 def _apply_common(node, name, position, rotation_euler):
     """统一处理对象创建后的命名与变换。
 
-    坐标系陷阱：pymxs 里 ``node.position = rt.Point3(...)`` 在部分
-    Max 版本 / 部分创建函数（rt.Box 等）返回的 node 上会被静默忽略，
-    对象仍留在原点。原因是 Max 的 position 属性写入依赖当前
-    coordsys 上下文；pymxs 层没有稳定的 coordsys world 上下文注入。
+    坐标系陷阱（已修）：pymxs 里 ``node.position = rt.Point3(...)`` 在
+    Max 2022 的部分 primitive（Box/Sphere/targetSpot/targetCamera）返回
+    的 node 上会被静默吞掉——setter 无异常但值不写入。根因是这些属性
+    setter 依赖当前 coordsys 上下文，且 pymxs 层无法可靠注入
+    ``in coordsys world``。
 
-    稳妥做法：优先 ``node.pos``（多数版本可写），失败再兜底
-    ``node.position``，最后走 MaxScript 层 ``in coordsys world``。
+    修复策略：优先直接走 MaxScript ``in coordsys world`` 一次性定位——
+    这是 3ds Max 官方唯一稳定的坐标写入路径；写入后**主动读回校验**，
+    偏差 > 0.01 直接抛异常（不再静默通过）。
     """
     if name:
         try:
@@ -39,44 +41,56 @@ def _apply_common(node, name, position, rotation_euler):
         except Exception:  # pylint: disable=broad-except
             pass
     if position is not None and len(position) == 3:
-        p3 = rt.Point3(
+        px, py, pz = (
             float(position[0]), float(position[1]), float(position[2]),
         )
-        _applied = False
-        # 优先 .pos（Max 里 pos 与 position 同义，但 pos 属性无坐标系依赖）
+        # 优先走 MaxScript：语义稳定，不受 pymxs setter bug 影响。
+        # 用 getAnimByHandle 而不是 $'name' —— 前者不依赖名字里的特殊字符转义。
         try:
-            node.pos = p3
-            _applied = True
+            handle = int(rt.getHandleByAnim(node))
         except Exception:  # pylint: disable=broad-except
-            pass
+            handle = 0
+        _applied = False
+        if handle > 0:
+            script = (
+                'in coordsys world (getAnimByHandle {h}).pos = [{x},{y},{z}]'
+            ).format(h=handle, x=px, y=py, z=pz)
+            try:
+                rt.execute(script)
+                _applied = True
+            except Exception:  # pylint: disable=broad-except
+                _applied = False
+        # 兜底 1：pymxs .pos setter
         if not _applied:
             try:
-                node.position = p3
+                node.pos = rt.Point3(px, py, pz)
                 _applied = True
             except Exception:  # pylint: disable=broad-except
                 pass
-        # 校验实际位置——赋值成功但坐标系错误的兜底
+        # 兜底 2：pymxs .position setter
+        if not _applied:
+            try:
+                node.position = rt.Point3(px, py, pz)
+                _applied = True
+            except Exception:  # pylint: disable=broad-except
+                pass
+        # 硬校验：读回实际坐标，偏差过大直接抛，绝不静默失败。
         try:
             actual = node.pos
-            if (
-                abs(float(actual.x) - float(position[0])) > 0.01
-                or abs(float(actual.y) - float(position[1])) > 0.01
-                or abs(float(actual.z) - float(position[2])) > 0.01
-            ):
-                # 最后走 MaxScript 层强制 world coordsys
-                script = (
-                    'in coordsys world $\'{}\'.pos = [{},{},{}]'
-                ).format(
-                    str(node.name).replace("'", "\\'"),
-                    float(position[0]),
-                    float(position[1]),
-                    float(position[2]),
+            dx = abs(float(actual.x) - px)
+            dy = abs(float(actual.y) - py)
+            dz = abs(float(actual.z) - pz)
+            if dx > 0.01 or dy > 0.01 or dz > 0.01:
+                raise RuntimeError(
+                    'position 未生效: 期望 [{},{},{}], 实际 [{},{},{}]'.format(
+                        px, py, pz,
+                        float(actual.x), float(actual.y), float(actual.z),
+                    ),
                 )
-                try:
-                    rt.execute(script)
-                except Exception:  # pylint: disable=broad-except
-                    pass
+        except RuntimeError:
+            raise
         except Exception:  # pylint: disable=broad-except
+            # 读回失败（罕见），不阻塞——上层还能通过 get_object_info 复核
             pass
     if rotation_euler is not None and len(rotation_euler) == 3:
         euler = rt.eulerAngles(
