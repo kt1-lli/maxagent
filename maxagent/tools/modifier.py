@@ -32,12 +32,17 @@ def _get_node(name):
     return node
 
 
-# 常用修改器的友好名 -> MaxScript class 映射
+# 常用修改器的友好名 -> MaxScript class 映射。
+# 命名踩坑：3ds Max 内部类名去掉空格后是驼峰/纯词，比如
+#   "Noise modifier" -> Noisemodifier（无下划线，Max 内叫 Noisemodifier）
+#   "Normal Modifier" -> Normalmodifier
+#   "Volume Select" -> Vol__Select（有双下划线）
+# 如果这里映射错了，getattr(rt, cls_name, None) 会返回 None，报"未知修改器"。
 _MODIFIER_MAP = {
     'bend': 'Bend',
     'twist': 'Twist',
     'taper': 'Taper',
-    'noise': 'Noise_modifier',
+    'noise': 'Noisemodifier',
     'turbosmooth': 'TurboSmooth',
     'meshsmooth': 'MeshSmooth',
     'shell': 'Shell',
@@ -57,6 +62,40 @@ _MODIFIER_MAP = {
     'cap_holes': 'Cap_Holes',
     'displace': 'Displace',
 }
+
+
+def _resolve_modifier_class(cls_name):
+    """从 rt 找出实际存在的修改器 class。
+
+    LLM 或用户传进来的类名可能有多种变体（Noise / Noise_modifier /
+    Noisemodifier / noise），Max 的 rt 里只有一种是真的存在的。
+    这里做兜底：先按原名查，再按几种常见变体（去下划线、加/去
+    modifier 后缀、驼峰化）逐一尝试。
+    """
+    cls = getattr(rt, cls_name, None)
+    if cls is not None:
+        return cls
+    # 变体候选：去下划线 / 去 _modifier 后缀 / 加 modifier 后缀 / 首字母大写
+    base = cls_name.replace('_', '').lower()
+    candidates = set()
+    variants = [
+        cls_name.replace('_', ''),
+        cls_name.replace('_modifier', ''),
+        cls_name.replace('_modifier', 'modifier'),
+        cls_name.replace('_Modifier', 'modifier'),
+        base,
+        base.capitalize(),
+        base + 'modifier',
+        base.capitalize() + 'modifier',
+    ]
+    for v in variants:
+        if not v or v in candidates:
+            continue
+        candidates.add(v)
+        found = getattr(rt, v, None)
+        if found is not None:
+            return found
+    return None
 
 
 @tool(
@@ -79,7 +118,7 @@ def add_modifier(name, modifier_type, params=None):
     _ensure_in_max()
     node = _get_node(name)
     cls_name = _MODIFIER_MAP.get(modifier_type.lower(), modifier_type)
-    cls = getattr(rt, cls_name, None)
+    cls = _resolve_modifier_class(cls_name)
     if cls is None:
         raise ValueError(
             '未知修改器类型: {} (尝试 {})'.format(modifier_type, cls_name),
