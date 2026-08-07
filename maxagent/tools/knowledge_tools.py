@@ -102,4 +102,163 @@ def list_max_knowledge_topics():
 __all__ = [
     'lookup_max_knowledge',
     'list_max_knowledge_topics',
+    'search_max_docs',
+    'search_knowledge',
+    'list_knowledge_sources',
 ]
+
+
+# ================================================================== #
+# BM25 全文检索工具（A 场景 + D 场景）
+# ================================================================== #
+
+def _format_hits(hits, max_chars_per_hit=500):
+    """把 BM25 命中结果格式化成 LLM 友好的文本。"""
+    if not hits:
+        return {'found': False, 'hits': [], 'text': '（无命中）'}
+    lines = []
+    struct = []
+    for i, h in enumerate(hits, 1):
+        meta = h.get('meta') or {}
+        heading = meta.get('heading_path') or ''
+        src_name = meta.get('display_name') or meta.get('source_id') or ''
+        raw_text = h.get('text') or ''
+        text = raw_text[:max_chars_per_hit]
+        if len(raw_text) > max_chars_per_hit:
+            text += '\n...（后续内容已截断）'
+        head = '【{i}】{src}{arrow}{heading}  (score={score:.2f})'.format(
+            i=i,
+            src=src_name,
+            arrow=' > ' if heading else '',
+            heading=heading,
+            score=h.get('score', 0.0),
+        )
+        lines.append(head + '\n' + text)
+        struct.append({
+            'rank': i,
+            'score': h.get('score', 0.0),
+            'source': src_name,
+            'heading_path': heading,
+            'text': raw_text,
+            'doc_id': h.get('doc_id'),
+        })
+    return {
+        'found': True,
+        'count': len(hits),
+        'hits': struct,
+        'text': '\n\n---\n\n'.join(lines),
+    }
+
+
+@tool(
+    name='search_max_docs',
+    description=(
+        '全文检索本地打包的 3ds Max Python Help 文档（BM25 引擎，离线）。\n'
+        '何时调用（强烈推荐）：\n'
+        '  ✓ 你要写 MAXScript / pymxs 但不确定 API 精确签名（如 "Noise 修改器类名到底是啥"、'
+        '"targetSpot 有哪些参数"）\n'
+        '  ✓ 用户描述的 Max 概念你不熟悉，需要查官方文档做背书\n'
+        '  ✓ 出现"未知修改器类型"、"没有这个属性"等错误后，查一下正确写法\n'
+        '不要调用：\n'
+        '  ✗ 用户问的是通用 Python 编程问题\n'
+        '  ✗ 已在 lookup_max_knowledge 的 L2 词条里能找到的常见参数\n'
+        '返回文本已格式化，可直接引用；每条含 source / heading_path 便于溯源。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def search_max_docs(query, topk=3):
+    # type: (str, int) -> Dict[str, Any]
+    """检索 Max 官方文档（A 场景）。
+
+    :param query: 查询关键词，中英文均可（英文命中率更高）
+    :param topk: 返回条数，默认 3
+    """
+    q = (query or '').strip()
+    if not q:
+        return {'found': False, 'error': 'query 不能为空', 'text': ''}
+    try:
+        n = max(1, min(10, int(topk)))
+    except (TypeError, ValueError):
+        n = 3
+    try:
+        from ..knowledge import get_maxhelp_index  # pylint: disable=import-outside-toplevel
+        idx = get_maxhelp_index()
+        hits = idx.search(q, topk=n)
+        result = _format_hits(hits)
+        logger.info(
+            'search_max_docs query=%r topk=%d found=%d',
+            q, n, result.get('count', 0),
+        )
+        return result
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('search_max_docs 失败: %s', exc)
+        return {'found': False, 'error': str(exc), 'text': ''}
+
+
+@tool(
+    name='search_knowledge',
+    description=(
+        '全文检索用户导入的知识库（md / txt 文档，BM25 引擎，离线）。\n'
+        '这里的内容是用户主动导入的教程、SOP、参考资料——问题涉及'
+        '"用户团队的规范"、"某个具体项目的说明"、"用户之前记录的经验"时'
+        '优先调用本工具，而不是 search_max_docs（那是 Autodesk 官方内容）。\n'
+        '如果用户库为空则直接返回 found=False，请改用其它工具。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def search_knowledge(query, topk=3):
+    # type: (str, int) -> Dict[str, Any]
+    """检索用户扩展知识库（D 场景）。"""
+    q = (query or '').strip()
+    if not q:
+        return {'found': False, 'error': 'query 不能为空', 'text': ''}
+    try:
+        n = max(1, min(10, int(topk)))
+    except (TypeError, ValueError):
+        n = 3
+    try:
+        from ..knowledge import get_user_index  # pylint: disable=import-outside-toplevel
+        idx = get_user_index()
+        if not idx.list_sources():
+            return {
+                'found': False,
+                'error': '用户知识库为空，未导入任何 md/txt 文档',
+                'text': '',
+            }
+        hits = idx.search(q, topk=n)
+        return _format_hits(hits)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('search_knowledge 失败: %s', exc)
+        return {'found': False, 'error': str(exc), 'text': ''}
+
+
+@tool(
+    name='list_knowledge_sources',
+    description=(
+        '列出用户知识库中已导入的所有数据源（文件 / 目录）。'
+        '想知道"我导入过啥"时调用；也可用来告诉用户当前库空不空。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def list_knowledge_sources():
+    # type: () -> Dict[str, Any]
+    """列出用户库数据源。"""
+    try:
+        from ..knowledge import get_user_index  # pylint: disable=import-outside-toplevel
+        idx = get_user_index()
+        return {
+            'count': len(idx.list_sources()),
+            'sources': idx.list_sources(),
+            'stats': idx.stats(),
+        }
+    except Exception as exc:  # pylint: disable=broad-except
+        return {'count': 0, 'error': str(exc)}
