@@ -100,15 +100,21 @@ def create_light(
     # 后置校验 + 兜底（构造器已传 pos 时通常直接通过校验）
     _apply_transform(node, '', position, None)
     try:
-        node.multiplier = float(multiplier)
+        rt.setProperty(node, 'multiplier', float(multiplier))
     except Exception:  # pylint: disable=broad-except
-        pass
+        try:
+            node.multiplier = float(multiplier)
+        except Exception:  # pylint: disable=broad-except
+            pass
     if color:
         from .material import _to_color  # pylint: disable=import-outside-toplevel
         try:
-            node.rgb = _to_color(color)
+            rt.setProperty(node, 'rgb', _to_color(color))
         except Exception:  # pylint: disable=broad-except
-            pass
+            try:
+                node.rgb = _to_color(color)
+            except Exception:  # pylint: disable=broad-except
+                pass
     return {
         'name': str(node.name),
         'type': str(rt.classOf(node)),
@@ -164,9 +170,12 @@ def create_camera(
         node.name = name
     _apply_transform(node, '', position, None)
     try:
-        node.fov = float(fov)
+        rt.setProperty(node, 'fov', float(fov))
     except Exception:  # pylint: disable=broad-except
-        pass
+        try:
+            node.fov = float(fov)
+        except Exception:  # pylint: disable=broad-except
+            pass
     return {
         'name': str(node.name),
         'type': str(rt.classOf(node)),

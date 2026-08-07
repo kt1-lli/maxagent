@@ -326,7 +326,13 @@ def align_along_curve(source, curve, count, align_to_tangent=True):
                 p2 = rt.pathInterp(crv, 1, t2)
                 dx, dy = p2.x - pos.x, p2.y - pos.y
                 yaw = math.atan2(dy, dx)
-                node.rotation = rt.EulerAngles(0, 0, math.degrees(yaw))
+                try:
+                    rt.setProperty(
+                        node, 'rotation',
+                        rt.EulerAngles(0, 0, math.degrees(yaw)),
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    node.rotation = rt.EulerAngles(0, 0, math.degrees(yaw))
             except Exception:  # pylint: disable=broad-except
                 pass
 
@@ -522,7 +528,10 @@ def create_pbr_metal(name, tint='200,200,200', roughness=0.3, assign_to=''):
         node = _get_node(assign_to)
         if node is not None:
             try:
-                node.material = mat
+                try:
+                    rt.setProperty(node, 'material', mat)
+                except Exception:  # pylint: disable=broad-except
+                    node.material = mat
                 assigned = assign_to
             except Exception:  # pylint: disable=broad-except
                 pass
