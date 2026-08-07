@@ -256,7 +256,10 @@ def assign_material(object_name, material_name):
     mat = _find_material_by_name(material_name)
     if mat is None:
         raise ValueError('材质未找到: {}'.format(material_name))
-    node.material = mat
+    try:
+        rt.setProperty(node, 'material', mat)
+    except Exception:  # pylint: disable=broad-except
+        node.material = mat
     # 赋给对象后材质会自动进入 sceneMaterials；把它也补进内存簿避免后续重复查找
     _MATERIAL_REGISTRY[str(mat.name)] = mat
     return {

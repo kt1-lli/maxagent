@@ -6,6 +6,11 @@
 1. 所有工具用对象名定位节点（agent 友好），找不到则结构化报错。
 2. 移动/旋转/缩放支持绝对模式（set）和相对模式（add）。
 3. 默认在世界坐标系操作；如需局部坐标，可在后续扩展加 space 参数。
+
+**关于属性 setter**：Autodesk pymxs 官方文档明确警告 ``node.xxx = value``
+这种点号赋值在部分场景下会静默失败（Max 返回 copy 而非 reference）。
+本模块统一走 ``rt.setProperty(node, 'xxx', value)``（官方推荐方案 1），
+避免陷阱。
 """
 
 from __future__ import absolute_import
@@ -32,6 +37,25 @@ def _get_node(name):
     return node
 
 
+def _set_prop_safe(node, prop_name, value):
+    """走官方 setProperty 路径写属性，兜底再走 setmxsprop / 属性赋值。
+
+    避免 pymxs "attribute setter 返回 copy 静默失败" 陷阱。
+    """
+    try:
+        rt.setProperty(node, prop_name, value)
+        return
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        node.setmxsprop(prop_name, value)
+        return
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # 最后兜底：直接属性赋值（对已知稳定的属性如 rotation 通常也 OK）
+    setattr(node, prop_name, value)
+
+
 @tool(
     description='移动对象。支持绝对位置（set）或相对位移（add）。',
     category='transform',
@@ -56,7 +80,7 @@ def move_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
             float(cur.y) + float(y),
             float(cur.z) + float(z),
         )
-    node.position = target
+    _set_prop_safe(node, 'pos', target)
     pos = node.position
     return {
         'name': str(node.name),
@@ -89,7 +113,7 @@ def rotate_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
             float(cur_euler.y) + float(y),
             float(cur_euler.z) + float(z),
         )
-    node.rotation = rt.eulerToQuat(new_euler)
+    _set_prop_safe(node, 'rotation', rt.eulerToQuat(new_euler))
     out = rt.quatToEuler(node.rotation)
     return {
         'name': str(node.name),
@@ -128,7 +152,7 @@ def scale_object(name, x=1.0, y=1.0, z=1.0, mode='set'):
         )
     else:
         target = rt.Point3(float(x), float(y), float(z))
-    node.scale = target
+    _set_prop_safe(node, 'scale', target)
     out = node.scale
     return {
         'name': str(node.name),
@@ -160,11 +184,11 @@ def align_to(
     src = _get_node(source_name)
     tgt = _get_node(target_name)
     if align_position:
-        src.position = tgt.position
+        _set_prop_safe(src, 'pos', tgt.position)
     if align_rotation:
-        src.rotation = tgt.rotation
+        _set_prop_safe(src, 'rotation', tgt.rotation)
     if align_scale:
-        src.scale = tgt.scale
+        _set_prop_safe(src, 'scale', tgt.scale)
     return {
         'source': str(src.name),
         'target': str(tgt.name),
@@ -201,10 +225,11 @@ def reset_pivot(name, mode='object_center', x=0.0, y=0.0, z=0.0):
         # CenterPivot 内置命令
         rt.CenterPivot(node)
     elif mode == 'world_origin':
-        # 通过设置 pivot 的 transform 行 4 实现
-        node.pivot = rt.Point3(0.0, 0.0, 0.0)
+        _set_prop_safe(node, 'pivot', rt.Point3(0.0, 0.0, 0.0))
     elif mode == 'custom':
-        node.pivot = rt.Point3(float(x), float(y), float(z))
+        _set_prop_safe(
+            node, 'pivot', rt.Point3(float(x), float(y), float(z)),
+        )
     else:
         raise ValueError('未知 mode: {}'.format(mode))
     pv = node.pivot

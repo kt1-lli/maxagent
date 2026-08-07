@@ -80,6 +80,57 @@ def _safe_filename(name):
     return cleaned[:48] or 'skill'
 
 
+def _normalize_trigger_keywords(raw):
+    """标准化 trigger_keywords 输入，处理 LLM/用户常见传参错误。
+
+    真实场景 LLM 常常把关键词以字符串形式传入而非 list，直接 ``list(str)``
+    会**逐字拆分**（例如 "布置studio" -> ['布','置','s','t','u','d','i','o']），
+    导致触发匹配完全失效——这是长期存在的用户反馈 bug。
+
+    本函数按以下顺序尝试解析：
+    1. None / 空 → []
+    2. list / tuple → 逐项 str + strip，跳过空项
+    3. 字符串 → 按 JSON 数组、逗号（含中文逗号）、分号、竖线、换行等常见
+       分隔符切分；若无分隔符则整体视为单一关键词
+    """
+    if raw is None:
+        return []
+    # list / tuple：直接过滤空项
+    if isinstance(raw, (list, tuple)):
+        out = []
+        for item in raw:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if s:
+                out.append(s)
+        return out
+    # 字符串：多种解析策略
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        # 尝试 JSON 数组（LLM 有时会传 '["a", "b"]'）
+        if s.startswith('[') and s.endswith(']'):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return _normalize_trigger_keywords(parsed)
+            except (ValueError, TypeError):
+                pass
+        # 按常见分隔符切（中文逗号、英文逗号、分号、竖线、斜杠、换行）
+        parts = re.split(r'[,，;；\|/\n\r\t]+', s)
+        parts = [p.strip() for p in parts if p and p.strip()]
+        if len(parts) >= 1:
+            return parts
+        return [s]
+    # 其它类型：退化为字符串再走一次
+    try:
+        return _normalize_trigger_keywords(str(raw))
+    except Exception:  # pylint: disable=broad-except
+        return []
+
+
 class Skill(object):
     """一个 Skill 实例。
 
@@ -95,7 +146,7 @@ class Skill(object):
         # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]]) -> None
         self.name = name
         self.description = description or ''
-        self.trigger_keywords = list(trigger_keywords or [])
+        self.trigger_keywords = _normalize_trigger_keywords(trigger_keywords)
         self.instructions = instructions or ''
         now = time.time()
         self.created_at = float(created_at if created_at is not None else now)

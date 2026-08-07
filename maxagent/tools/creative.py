@@ -518,7 +518,10 @@ def smart_replace_material(criteria, material_name):
     assigned = []
     for node in nodes:
         try:
-            node.material = mat
+            try:
+                rt.setProperty(node, 'material', mat)
+            except Exception:  # pylint: disable=broad-except
+                node.material = mat
             assigned.append(str(node.name))
         except Exception:  # pylint: disable=broad-except
             pass
