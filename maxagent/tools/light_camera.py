@@ -4,6 +4,9 @@
 
 灯光类型：omni / spot / direct / skylight / target_spot / target_direct
 相机类型：free / target / physical
+
+**关于 position 的处理**：与 geometry.py 一致，优先在构造器里传 ``pos=Point3(...)``，
+_apply_transform（复用 geometry._apply_common）只做后置兜底 + 硬校验。
 """
 
 from __future__ import absolute_import
@@ -16,6 +19,7 @@ from ..runtime_helpers import has_runtime_attr
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
 from .geometry import _apply_common as _apply_transform
+from .geometry import _to_point3
 from .registry import tool
 
 
@@ -72,7 +76,14 @@ def create_light(
     if cls is None:
         raise ValueError('当前 Max 版本不支持: {}'.format(cls_name))
 
+    # 构造器优先传 pos（官方推荐路径）
+    kwargs = {}
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+
     if cls_name in ('targetSpot', 'targetDirect'):
+        # target 灯光需要一个 target helper；target 位置在世界坐标
         target = rt.Point3(0.0, 0.0, 0.0)
         if target_position and len(target_position) == 3:
             target = rt.Point3(
@@ -80,12 +91,13 @@ def create_light(
                 float(target_position[1]),
                 float(target_position[2]),
             )
-        node = cls(target=rt.Targetobject(target=target))
-    else:
-        node = cls()
+        kwargs['target'] = rt.Targetobject(target=target)
+
+    node = cls(**kwargs)
 
     if name:
         node.name = name
+    # 后置校验 + 兜底（构造器已传 pos 时通常直接通过校验）
     _apply_transform(node, '', position, None)
     try:
         node.multiplier = float(multiplier)
@@ -131,6 +143,11 @@ def create_camera(
     else:
         cls = rt.freeCamera
 
+    kwargs = {}
+    p3 = _to_point3(position)
+    if p3 is not None:
+        kwargs['pos'] = p3
+
     if cls is rt.targetCamera:
         target = rt.Point3(0.0, 0.0, 0.0)
         if target_position and len(target_position) == 3:
@@ -139,9 +156,9 @@ def create_camera(
                 float(target_position[1]),
                 float(target_position[2]),
             )
-        node = cls(target=rt.Targetobject(target=target))
-    else:
-        node = cls()
+        kwargs['target'] = rt.Targetobject(target=target)
+
+    node = cls(**kwargs)
 
     if name:
         node.name = name
