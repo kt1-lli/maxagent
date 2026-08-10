@@ -105,6 +105,8 @@ __all__ = [
     'search_max_docs',
     'search_knowledge',
     'list_knowledge_sources',
+    'add_knowledge_source',
+    'remove_knowledge_source',
 ]
 
 
@@ -262,3 +264,81 @@ def list_knowledge_sources():
         }
     except Exception as exc:  # pylint: disable=broad-except
         return {'count': 0, 'error': str(exc)}
+
+
+@tool(
+    name='add_knowledge_source',
+    description=(
+        '向用户知识库导入一个 md 或 txt 文档（或包含多篇文档的目录）。\n'
+        '导入后：\n'
+        '  ✓ 文件/目录会被复制到 MaxAgent 配置目录的副本区，原文件可安全删除\n'
+        '  ✓ 自动建立 BM25 索引，立刻可用 search_knowledge 检索\n'
+        '  ✓ 重启 Max 后索引会持久保留\n'
+        '何时调用：\n'
+        '  ✓ 用户说"把这个文档加进知识库"、"导入这篇 SOP/教程/规范"\n'
+        '  ✓ 用户想批量导入某个目录下的所有 md/txt\n'
+        '参数：\n'
+        '  - path: 文件或目录的绝对路径\n'
+        '  - kind: "auto"（自动判断文件/目录，默认） / "file" / "dir"\n'
+        '  - display_name: 可选，展示用名称\n'
+        '  - tags: 可选，字符串列表，用于给文档打标签\n'
+        '返回包含 source_id，后续可用 remove_knowledge_source 删除。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def add_knowledge_source(path, kind='auto', display_name=None, tags=None):
+    # type: (str, str, Optional[str], Optional[List[str]]) -> Dict[str, Any]
+    """导入用户知识库数据源。"""
+    if not path or not str(path).strip():
+        return {'ok': False, 'error': 'path 不能为空'}
+    if tags is None:
+        tags = []
+    try:
+        from ..knowledge import add_user_source  # pylint: disable=import-outside-toplevel
+        result = add_user_source(
+            str(path).strip(),
+            kind=kind or 'auto',
+            display_name=display_name,
+            tags=list(tags) if tags else [],
+        )
+        logger.info(
+            'add_knowledge_source path=%r kind=%r ok=%s',
+            path, kind, result.get('ok'),
+        )
+        return result
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('add_knowledge_source 失败: %s', exc)
+        return {'ok': False, 'error': str(exc)}
+
+
+@tool(
+    name='remove_knowledge_source',
+    description=(
+        '从用户知识库中删除一个已导入的数据源。\n'
+        '会同时删除配置目录中的副本和索引，不可恢复。\n'
+        'source_id 可通过 list_knowledge_sources 查询。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+)
+def remove_knowledge_source(source_id):
+    # type: (str) -> Dict[str, Any]
+    """删除用户知识库数据源。"""
+    if not source_id:
+        return {'ok': False, 'error': 'source_id 不能为空'}
+    try:
+        from ..knowledge import remove_user_source  # pylint: disable=import-outside-toplevel
+        result = remove_user_source(str(source_id))
+        logger.info(
+            'remove_knowledge_source source_id=%r ok=%s',
+            source_id, result.get('ok'),
+        )
+        return result
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('remove_knowledge_source 失败: %s', exc)
+        return {'ok': False, 'error': str(exc)}

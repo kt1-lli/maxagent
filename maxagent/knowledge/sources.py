@@ -139,12 +139,12 @@ class MarkdownFileSource(DocSource):
 
     source_tag = 'user'
 
-    def __init__(self, path, display_name=None, tags=None):
-        # type: (str, Optional[str], Optional[List[str]]) -> None
+    def __init__(self, path, display_name=None, tags=None, source_id=None):
+        # type: (str, Optional[str], Optional[List[str]], Optional[str]) -> None
         self.path = os.path.abspath(path)
         self.display_name = display_name or os.path.basename(path)
         self.tags = list(tags or [])
-        self.source_id = 'user:' + _sha1(self.path)
+        self.source_id = source_id or 'user:' + _sha1(self.path)
 
     def exists(self):
         return os.path.isfile(self.path)
@@ -198,11 +198,11 @@ class DirectorySource(DocSource):
     source_tag = 'user'
 
     def __init__(self, dir_path, display_name=None, tags=None,
-                 max_file_size=2 * 1024 * 1024):
+                 max_file_size=2 * 1024 * 1024, source_id=None):
         self.dir_path = os.path.abspath(dir_path)
         self.display_name = display_name or os.path.basename(dir_path) or 'root'
         self.tags = list(tags or [])
-        self.source_id = 'userdir:' + _sha1(self.dir_path)
+        self.source_id = source_id or 'userdir:' + _sha1(self.dir_path)
         self.max_file_size = int(max_file_size)
 
     def exists(self):

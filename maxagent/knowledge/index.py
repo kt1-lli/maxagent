@@ -22,8 +22,10 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import hashlib
 import json
 import os
+import shutil
 import threading
 import time
 from typing import Any
@@ -52,6 +54,43 @@ def _default_cache_dir():
     except Exception:  # pylint: disable=broad-except
         base = os.path.expanduser(os.path.join('~', '.maxagent'))
     return os.path.join(base, 'knowledge')
+
+
+def _user_sources_copy_dir():
+    # type: () -> str
+    """用户知识库副本根目录。"""
+    return os.path.join(_default_cache_dir(), 'user_sources')
+
+
+def _copy_to_user_sources(src_path, source_id):
+    # type: (str, str) -> str
+    """把用户指定的文件或目录复制到配置目录下的副本区。
+
+    返回副本目录根路径（文件也会被包在 ``{source_id}/{basename}`` 中，
+    与目录导入保持一致的层级结构）。
+    """
+    copy_root = _user_sources_copy_dir()
+    dst_dir = os.path.join(copy_root, source_id)
+    if os.path.isdir(dst_dir):
+        shutil.rmtree(dst_dir)
+    if os.path.isdir(src_path):
+        shutil.copytree(src_path, dst_dir)
+        return dst_dir
+    if os.path.isfile(src_path):
+        os.makedirs(dst_dir)
+        dst_file = os.path.join(dst_dir, os.path.basename(src_path))
+        shutil.copy2(src_path, dst_file)
+        return dst_dir
+    raise ValueError('不支持的源路径类型: ' + src_path)
+
+
+def _remove_user_sources_copy(source_id):
+    # type: (str) -> None
+    """删除配置目录下对应 source_id 的副本。"""
+    copy_root = _user_sources_copy_dir()
+    dst_dir = os.path.join(copy_root, source_id)
+    if os.path.isdir(dst_dir):
+        shutil.rmtree(dst_dir)
 
 
 class KnowledgeIndex(object):
@@ -280,6 +319,142 @@ def _user_registry_path():
     return os.path.join(_default_cache_dir(), 'user_sources.json')
 
 
+def _source_id_from_path(kind, path):
+    # type: (str, str) -> str
+    """根据 kind + 原路径生成稳定的 source_id。"""
+    seed = '{}:{}'.format(kind, os.path.abspath(path))
+    return hashlib.sha1(seed.encode('utf-8')).hexdigest()[:16]
+
+
+def _sync_registry_sources_to_copy():
+    # type: () -> None
+    """清理注册表中已不存在副本的 source 记录。
+
+    启动时调用：如果用户在外部删除了原路径，且配置目录副本也已被清理，
+    则把对应注册表项移除，避免索引指向不存在路径。
+    """
+    path = _user_registry_path()
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:  # pylint: disable=broad-except
+        return
+    cleaned = []
+    changed = False
+    for item in data.get('sources') or []:
+        kind = item.get('kind')
+        p = item.get('path')
+        if not p:
+            changed = True
+            continue
+        src_id = _source_id_from_path(kind, p)
+        copy_path = os.path.join(_user_sources_copy_dir(), src_id)
+        if kind == 'file':
+            candidate = os.path.join(copy_path, os.path.basename(p))
+            if os.path.isfile(candidate):
+                cleaned.append(item)
+            else:
+                changed = True
+        elif kind == 'dir' and os.path.isdir(copy_path):
+            cleaned.append(item)
+        else:
+            changed = True
+    if changed:
+        data['sources'] = cleaned
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+
+def _load_user_sources():
+    # type: () -> List[DocSource]
+    path = _user_registry_path()
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:  # pylint: disable=broad-except
+        return []
+    out = []
+    for item in data.get('sources') or []:
+        kind = item.get('kind')
+        original_path = item.get('original_path') or item.get('path')
+        p = item.get('path')
+        if not original_path:
+            continue
+        # source_id 永远由原始路径决定，保证增删稳定
+        src_id = _source_id_from_path(kind, original_path)
+        copy_path = os.path.join(_user_sources_copy_dir(), src_id)
+        # 如果副本区存在，则实际索引用副本；否则兜底用记录路径
+        if kind == 'file':
+            candidate = os.path.join(copy_path, os.path.basename(original_path))
+            if os.path.isfile(candidate):
+                p = candidate
+            elif not p:
+                p = original_path
+        elif kind == 'dir':
+            if os.path.isdir(copy_path):
+                p = copy_path
+            elif not p:
+                p = original_path
+        if kind == 'file':
+            out.append(MarkdownFileSource(
+                p,
+                display_name=item.get('display_name'),
+                tags=item.get('tags') or [],
+                source_id=src_id,
+            ))
+        elif kind == 'dir':
+            out.append(DirectorySource(
+                p,
+                display_name=item.get('display_name'),
+                tags=item.get('tags') or [],
+                source_id=src_id,
+            ))
+    return out
+
+
+def _save_user_sources(sources, original_paths=None):
+    # type: (List[DocSource], Optional[Dict[str, str]]) -> None
+    """持久化用户 source 注册表。
+
+    :param sources: 当前 KnowledgeIndex 中的 source 对象
+    :param original_paths: source_id -> 原始用户路径（添加时传入，保证稳定）
+    """
+    path = _user_registry_path()
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    items = []
+    for s in sources:
+        src_id = s.source_id
+        original = (original_paths or {}).get(src_id)
+        if isinstance(s, DirectorySource):
+            items.append({
+                'kind': 'dir',
+                'path': original or s.dir_path,
+                'original_path': original or s.dir_path,
+                'display_name': s.display_name,
+                'tags': list(s.tags),
+            })
+        elif isinstance(s, MarkdownFileSource):
+            items.append({
+                'kind': 'file',
+                'path': original or s.path,
+                'original_path': original or s.path,
+                'display_name': s.display_name,
+                'tags': list(s.tags),
+            })
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'version': 1, 'sources': items}, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def _load_user_sources():
     # type: () -> List[DocSource]
     path = _user_registry_path()
@@ -296,6 +471,16 @@ def _load_user_sources():
         p = item.get('path')
         if not p:
             continue
+        # 如果注册表中记录的是旧的外部原路径，而副本区已存在同名 source_id，
+        # 则优先使用副本路径（兼容第二批之前的旧数据迁移）
+        src_id = _source_id_from_path(kind, p)
+        copy_path = os.path.join(_user_sources_copy_dir(), src_id)
+        if kind == 'file':
+            candidate = os.path.join(copy_path, os.path.basename(p))
+            if os.path.isfile(candidate):
+                p = candidate
+        elif kind == 'dir' and os.path.isdir(copy_path):
+            p = copy_path
         if kind == 'file':
             out.append(MarkdownFileSource(
                 p,
@@ -311,34 +496,6 @@ def _load_user_sources():
     return out
 
 
-def _save_user_sources(sources):
-    # type: (List[DocSource]) -> None
-    path = _user_registry_path()
-    parent = os.path.dirname(path)
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent)
-    items = []
-    for s in sources:
-        if isinstance(s, DirectorySource):
-            items.append({
-                'kind': 'dir',
-                'path': s.dir_path,
-                'display_name': s.display_name,
-                'tags': list(s.tags),
-            })
-        elif isinstance(s, MarkdownFileSource):
-            items.append({
-                'kind': 'file',
-                'path': s.path,
-                'display_name': s.display_name,
-                'tags': list(s.tags),
-            })
-    tmp = path + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump({'version': 1, 'sources': items}, f, ensure_ascii=False)
-    os.replace(tmp, path)
-
-
 def get_user_index():
     # type: () -> KnowledgeIndex
     """获取用户知识库索引（懒加载单例，从注册表恢复 source 列表）。"""
@@ -348,6 +505,8 @@ def get_user_index():
     with _USER_LOCK:
         if _USER_INDEX is not None:
             return _USER_INDEX
+        # 先清理失效的注册表记录
+        _sync_registry_sources_to_copy()
         idx = KnowledgeIndex('user')
         for s in _load_user_sources():
             idx.add_source(s)
@@ -360,6 +519,10 @@ def add_user_source(path, kind='auto', display_name=None, tags=None):
     # type: (str, str, Optional[str], Optional[List[str]]) -> Dict[str, Any]
     """给用户库添加一个数据源并持久化注册表。
 
+    会把用户指定的文件/目录复制到 ``{config_dir}/knowledge/user_sources/``
+    下的副本区，后续索引和查询都基于副本。这样即使用户之后删除或移动
+    原路径，知识库仍然可用。
+
     :param path: 文件或目录绝对路径
     :param kind: 'auto' / 'file' / 'dir'
     """
@@ -367,17 +530,35 @@ def add_user_source(path, kind='auto', display_name=None, tags=None):
         return {'ok': False, 'error': '路径不存在: ' + str(path)}
     if kind == 'auto':
         kind = 'dir' if os.path.isdir(path) else 'file'
+    source_id = _source_id_from_path(kind, path)
+    try:
+        copy_path = _copy_to_user_sources(path, source_id)
+    except Exception as exc:  # pylint: disable=broad-except
+        return {'ok': False, 'error': '复制文件失败: ' + str(exc)}
     idx = get_user_index()
     if kind == 'dir':
-        src = DirectorySource(path, display_name=display_name, tags=tags)
+        src = DirectorySource(
+            copy_path,
+            display_name=display_name,
+            tags=tags,
+            source_id=source_id,
+        )
     else:
-        src = MarkdownFileSource(path, display_name=display_name, tags=tags)
+        src = MarkdownFileSource(
+            os.path.join(copy_path, os.path.basename(path)),
+            display_name=display_name,
+            tags=tags,
+            source_id=source_id,
+        )
     idx.add_source(src)
-    # 持久化 sources 注册表（获取当前所有 source 对象）
-    _save_user_sources(idx._sources)  # pylint: disable=protected-access
+    # 持久化 sources 注册表（记录原路径 + kind，下次加载时自动转副本）
+    _save_user_sources(
+        idx._sources,  # pylint: disable=protected-access
+        original_paths={source_id: os.path.abspath(path)},
+    )
     stats = idx.rebuild()
     idx.save()
-    return {'ok': True, 'source_id': src.source_id, 'stats': stats}
+    return {'ok': True, 'source_id': src.source_id, 'copy_path': copy_path, 'stats': stats}
 
 
 def remove_user_source(source_id):
@@ -387,6 +568,7 @@ def remove_user_source(source_id):
     if not removed:
         return {'ok': False, 'error': '未找到 source_id: ' + str(source_id)}
     _save_user_sources(idx._sources)  # pylint: disable=protected-access
+    _remove_user_sources_copy(source_id)
     stats = idx.rebuild()
     idx.save()
     return {'ok': True, 'stats': stats}
