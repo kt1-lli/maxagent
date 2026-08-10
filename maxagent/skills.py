@@ -51,6 +51,9 @@ from .logger import get_logger
 SKILLS_DIRNAME = 'skills'
 INDEX_FILENAME = '_index.json'
 
+# 技能语义索引名（复用 KnowledgeIndex，存储在 {config_dir}/knowledge/skills.idx.json）
+_SEMANTIC_INDEX_NAME = 'skills'
+
 logger = get_logger(__name__)
 
 # Skill 名字校验：只允许中英文 + 数字 + 下划线 + 短横线 + 空格
@@ -334,7 +337,103 @@ class SkillManager(object):
         return out
 
     # ------------------------------------------------------------------ #
-    # 公共 API
+    # 语义召回（BM25）
+    # ------------------------------------------------------------------ #
+    def _semantic_index(self):
+        # type: () -> Any
+        """获取或创建技能语义索引（懒加载，失败时返回 None）。"""
+        try:
+            from .knowledge.index import KnowledgeIndex
+            idx = KnowledgeIndex(_SEMANTIC_INDEX_NAME)
+            idx.load()
+            return idx
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('初始化技能语义索引失败: %s', exc)
+            return None
+
+    @staticmethod
+    def _skill_to_document(skill):
+        # type: (Skill) -> str
+        """把 skill 序列化为 BM25 可检索文本。
+
+        文本包含：名称、描述、触发关键词、instructions 摘要。
+        不直接塞完整 instructions（太长会稀释关键词权重）。
+        """
+        parts = [skill.name, skill.description]
+        parts.extend(skill.trigger_keywords)
+        instructions = skill.instructions.strip()
+        # 取 instructions 前 600 字符作为语义匹配依据
+        parts.append(instructions[:600])
+        return '\n'.join(parts)
+
+    def _rebuild_semantic_index(self):
+        # type: () -> None
+        """全量重建技能语义索引。"""
+        idx = self._semantic_index()
+        if idx is None:
+            return
+        try:
+            from .knowledge.bm25 import BM25Index
+            from .knowledge.index import KnowledgeIndex
+            bm = BM25Index()
+            for s in self.list_all_skills():
+                if not s.name:
+                    continue
+                bm.add_document(
+                    doc_id=s.name,
+                    text=self._skill_to_document(s),
+                    meta={
+                        'name': s.name,
+                        'description': s.description,
+                        'trigger_keywords': list(s.trigger_keywords),
+                    },
+                )
+            bm.finalize()
+            idx._bm25 = bm  # pylint: disable=protected-access
+            idx._built_at = time.time()  # pylint: disable=protected-access
+            idx._built_fingerprints = {'skills': 'all'}  # pylint: disable=protected-access
+            idx.save()
+            logger.info(
+                '技能语义索引重建完成: docs=%d', bm.n_docs,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('重建技能语义索引失败: %s', exc)
+
+    def _semantic_search(self, user_input, topk=2):
+        # type: (str, int) -> List[Skill]
+        """基于 BM25 语义召回相关 skill。
+
+        仅当已存在持久化索引或需要时重建；无 skill 时返回空列表。
+        """
+        if not user_input or not user_input.strip():
+            return []
+        idx = self._semantic_index()
+        if idx is None:
+            return []
+        # 如果没有索引或索引为空，尝试重建一次
+        if idx._bm25.n_docs == 0:  # pylint: disable=protected-access
+            self._rebuild_semantic_index()
+        try:
+            hits = idx.search(user_input, topk=topk, auto_rebuild=False)
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning('技能语义检索失败: %s', exc)
+            return []
+        # 过滤过低相关度的结果，避免误召回
+        threshold = 0.15
+        names = [
+            h['meta'].get('name')
+            for h in hits
+            if h.get('score', 0.0) >= threshold and h.get('meta', {}).get('name')
+        ]
+        out = []
+        for name in names:
+            s = self.get(name)
+            if s is not None:
+                out.append(s)
+        return out
+
+    # ------------------------------------------------------------------ #
+    # 公共 API（语义索引维护钩子）
     # ------------------------------------------------------------------ #
     def list_skills(self):
         # type: () -> List[Skill]
@@ -376,11 +475,13 @@ class SkillManager(object):
                 return s
         return None
 
-    def save(self, skill, overwrite=True):
-        # type: (Skill, bool) -> Skill
+    def save(self, skill, overwrite=True, rebuild_semantic_index=True):
+        # type: (Skill, bool, bool) -> Skill
         """保存（创建或更新）一个 Skill。
 
         :param overwrite: 同名时是否覆盖；False 且已存在则抛 ValueError
+        :param rebuild_semantic_index: 是否重建语义索引；
+            use_count 等统计字段更新时可设为 False 避免无意义重建
         """
         # 校验
         if not skill.name or not _NAME_RE.match(skill.name):
@@ -419,6 +520,9 @@ class SkillManager(object):
             os.replace(tmp, path)
         else:
             os.rename(tmp, path)
+        # skill 内容变化后重建语义索引；纯统计更新可跳过
+        if rebuild_semantic_index:
+            self._rebuild_semantic_index()
         return skill
 
     def delete(self, name):
@@ -432,6 +536,8 @@ class SkillManager(object):
             except OSError as exc:
                 logger.warning('删除 skill 失败: %s', exc)
                 return False
+        # 删除后重建语义索引
+        self._rebuild_semantic_index()
         return True
 
     def increment_use_count(self, name):
@@ -442,12 +548,12 @@ class SkillManager(object):
         s.use_count += 1
         s.updated_at = time.time()
         try:
-            self.save(s)
+            self.save(s, rebuild_semantic_index=False)
         except (OSError, ValueError):
             pass
 
     # ------------------------------------------------------------------ #
-    # Prompt 注入
+    # Prompt 注入（叠加语义召回）
     # ------------------------------------------------------------------ #
     def build_system_prompt_addon(self, user_input=None):
         # type: (Optional[str]) -> str
@@ -476,6 +582,7 @@ class SkillManager(object):
 
         # 命中触发词时把完整 instructions 注入
         matched = []
+        matched_ids = set()  # type: Any
         if user_input:
             ui_lower = user_input.lower()
             for s in skills:
@@ -484,7 +591,16 @@ class SkillManager(object):
                         continue
                     if kw.lower() in ui_lower:
                         matched.append(s)
+                        matched_ids.add(s.name)
                         break
+
+            # 关键词未命中或命中不足时，叠加 BM25 语义召回
+            if user_input.strip():
+                semantic_hits = self._semantic_search(user_input, topk=2)
+                for s in semantic_hits:
+                    if s.name not in matched_ids:
+                        matched.append(s)
+                        matched_ids.add(s.name)
 
         if matched:
             lines.append('')
