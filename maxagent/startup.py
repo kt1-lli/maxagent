@@ -117,7 +117,7 @@ def _restore_main_window_state(main_win, ui_state):
     return False
 
 
-def _connect_qdock_save_hooks(qdock, dock_widget):
+def _connect_qdock_save_hooks(qdock, dock_widget, main_win=None):
     """挂上保存钩子：浮动切换 / 关闭 / 区域变化时持久化 UI 状态。
 
     同时保存：
@@ -150,6 +150,12 @@ def _connect_qdock_save_hooks(qdock, dock_widget):
         'pending': False,         # 已有一次 singleShot 在排队
     }
 
+    # 闭包捕获 show_panel 调用处拿到的主窗口引用。
+    # 浮动 dock 现在没有 parent（避免隐藏 Max 时跟着消失），但保存时
+    # 仍需要主窗口来读取 dock area / saveState。如果 show_panel 拿到
+    # 了主窗口，这里直接用；否则 fallback 到 qdock.parent()。
+    _main_win_ref = main_win
+
     def _do_save_sync():
         """真正执行落盘的同步实现。失败时只打日志不抛。"""
         try:
@@ -167,12 +173,12 @@ def _connect_qdock_save_hooks(qdock, dock_widget):
             area = None
             main_state_b64 = ''
             try:
-                main_win = qdock.parent()
-                if main_win is not None and hasattr(main_win, 'dockWidgetArea'):
-                    area = int(main_win.dockWidgetArea(qdock))
+                main_win_ref = _main_win_ref or qdock.parent()
+                if main_win_ref is not None and hasattr(main_win_ref, 'dockWidgetArea'):
+                    area = int(main_win_ref.dockWidgetArea(qdock))
                 # 主窗口完整 dock 布局
-                if main_win is not None and hasattr(main_win, 'saveState'):
-                    state_ba = main_win.saveState()
+                if main_win_ref is not None and hasattr(main_win_ref, 'saveState'):
+                    state_ba = main_win_ref.saveState()
                     try:
                         st_bytes = bytes(state_ba)
                     except TypeError:
@@ -370,10 +376,15 @@ def show_panel(force=False):
     main_win = _get_max_main_window()
     if main_win is not None:
         # Max 环境：包到 QDockWidget 里
-        dock_widget = MaxAgentDockWidget(config_manager=config, parent=main_win)
+        # 关键：QDockWidget 和内部 widget 都不设 Max 主窗口为 parent。
+        # 当用户最小化/隐藏 Max 主窗口时，子窗口也会跟着隐藏，导致
+        # 浮动状态下的 MaxAgent 面板一起消失。作为独立顶层窗口后，
+        # 停靠仍然通过 main_win.addDockWidget() 生效，只是隐藏 Max
+        # 时不会带走面板。
+        dock_widget = MaxAgentDockWidget(config_manager=config)
         ui_state = dock_widget.get_ui_state()
 
-        qdock = QtWidgets.QDockWidget('MaxAgent', main_win)
+        qdock = QtWidgets.QDockWidget('MaxAgent')
         qdock.setObjectName('MaxAgentQDockWidget')
         qdock.setWidget(dock_widget)
         qdock.setAllowedAreas(
@@ -431,7 +442,7 @@ def show_panel(force=False):
             _restore_main_window_state(main_win, ui_state)
 
         # 注册保存钩子
-        _connect_qdock_save_hooks(qdock, dock_widget)
+        _connect_qdock_save_hooks(qdock, dock_widget, main_win=main_win)
 
         qdock.show()
         qdock.raise_()
