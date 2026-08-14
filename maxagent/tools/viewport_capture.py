@@ -29,29 +29,69 @@ logger = get_logger(__name__)
 # 截图默认质量参数
 _VIEWPORT_CAPTURE_QUALITY = 90
 
+# 标准视图名到 MAXScript 视图 ID 的映射（大小写不敏感）
+_VIEW_NAME_MAP = {
+    "top": "#top",
+    "front": "#front",
+    "left": "#left",
+    "right": "#right",
+    "bottom": "#bottom",
+    "back": "#back",
+    "persp": "#perspective",
+    "perspective": "#perspective",
+    "user": "#user",
+    "camera": "#camera",
+    "spot": "#spot",
+    "shape": "#shape",
+    "bone": "#bone",
+    "grid": "#grid",
+}
 
-def _capture_viewport_dib_main():
+
+def _resolve_view_id(view: Optional[str]) -> str:
+    """把用户友好的视图名转成 MaxScript viewport 标识。
+
+    :param view: 视图名，如 "top" / "persp" / "front"
+    :returns: MaxScript 可识别的视图 ID 字符串
+    """
+    if not view:
+        return "#current"
+    key = str(view).strip().lower()
+    return _VIEW_NAME_MAP.get(key, "#current")
+
+
+def _capture_viewport_dib_main(view: Optional[str] = None):
     """在主线程内部执行：调用 gw.getViewportDib() 并落盘为 PNG。
 
+    :param view: 视图名，None 表示当前活动视口
     :returns: 图片二进制 bytes；失败返回 None
     """
     if not IN_MAX or rt is None:
-        logger.warning('非 Max 环境，无法截取视口')
+        logger.warning("非 Max 环境，无法截取视口")
         return None
     try:
+        # 如果指定了视图，先尝试切换当前活动视口
+        view_id = _resolve_view_id(view)
+        if view_id != "#current":
+            try:
+                rt.viewport.setType(view_id)
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("切换视口到 %s 失败: %s", view_id, exc)
+                # 切换失败仍继续截当前活动视口，不阻断
+
         # gw = rt.gw 是 Max 的 GraphicWindow 接口，getViewportDib 返回位图
         dib = rt.gw.getViewportDib()
         if dib is None:
-            logger.warning('gw.getViewportDib() 返回空')
+            logger.warning("gw.getViewportDib() 返回空")
             return None
         tmp_path = os.path.join(
             tempfile.gettempdir(),
-            'maxagent_vp_{}.png'.format(uuid.uuid4().hex),
+            "maxagent_vp_{}.png".format(uuid.uuid4().hex),
         )
         # 通过 MaxScript 保存 PNG
         rt.save(dib, tmp_path)
         try:
-            with open(tmp_path, 'rb') as fh:
+            with open(tmp_path, "rb") as fh:
                 data = fh.read()
         finally:
             try:
@@ -60,39 +100,49 @@ def _capture_viewport_dib_main():
                 pass
         return data
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning('视口截图失败: %s', exc)
+        logger.warning("视口截图失败: %s", exc)
         return None
 
 
-def capture_viewport_attachment(name='viewport.png'):
-    """抓取当前活动视口并返回 Attachment。
+def capture_viewport_attachment(name: str = "viewport.png", view: Optional[str] = None):
+    """抓取指定视口并返回 Attachment。
 
     线程安全：内部通过 run_on_main 投递到 Max 主线程执行。
 
     :param name: 附件展示名
+    :param view: 视图名（如 top/front/persp），None 表示当前活动视口
     :returns: Attachment 实例；失败返回 None
     """
-    data = run_on_main(_capture_viewport_dib_main, _timeout=30.0)
+    data = run_on_main(
+        _capture_viewport_dib_main, view, _timeout=30.0,
+    )
     if not data:
         return None
-    return save_image_bytes(data, mime='image/png', name=name)
+    return save_image_bytes(data, mime="image/png", name=name)
 
 
 @tool(
     description=(
-        "截取 3ds Max 当前活动视口并作为图片附件返回。"
-        "用于视觉复核、效果检查等场景。"
+        "截取 3ds Max 当前活动视口或指定视口，并作为图片附件返回。"
+        "用于视觉复核、效果检查等场景。支持的 view 包括："
+        "top/front/left/right/bottom/back/persp/perspective/user。"
     ),
     category="scene_query",
     run_on_main_thread=True,
     wrap_undo=False,
 )
-def capture_viewport():
+def capture_viewport(view: Optional[str] = None):
     """工具封装：把视口截图能力暴露给 LLM。
 
+    :param view: 可选视图名。不传时抓取当前活动视口；
+                 传 "top" / "front" / "persp" 等切换到对应视图后截图。
     :returns: dict {"ok": True, "attachment": {...}} 或错误信息
     """
-    att = capture_viewport_attachment(name='viewport_capture.png')
+    suffix = "_{}".format(view) if view else ""
+    att = capture_viewport_attachment(
+        name="viewport_capture{}.png".format(suffix),
+        view=view,
+    )
     if att is None:
         return {
             "ok": False,
@@ -101,11 +151,12 @@ def capture_viewport():
     return {
         "ok": True,
         "attachment": att.to_json(),
+        "view": view or "current",
         "note": "截图已保存，可作为 image_url 发送给支持视觉的模型分析",
     }
 
 
 __all__ = [
-    'capture_viewport_attachment',
-    'capture_viewport',
+    "capture_viewport_attachment",
+    "capture_viewport",
 ]

@@ -322,11 +322,17 @@ def validate_tool_args(name, args):
     if errors:
         return (False, "; ".join(errors))
 
-    # 2. 逐个参数按 schema 校验
+    # 2. 逐个参数按 schema 校验，必要时做安全类型转换
     for key, value in args.items():
         prop_schema = properties.get(key, {})
         if not prop_schema:
             continue
+
+        # 尝试把字符串形式的数字/bool 转换为真实类型
+        coerced, value = _coerce_value(value, prop_schema)
+        if coerced:
+            args[key] = value
+
         is_valid, error = _validate_value(value, prop_schema, key)
         if not is_valid:
             errors.append(error)
@@ -334,6 +340,56 @@ def validate_tool_args(name, args):
     if errors:
         return (False, "; ".join(errors))
     return (True, "")
+
+
+def _coerce_value(value, schema):
+    # type: (Any, Dict[str, Any]) -> "tuple[bool, Any]"
+    """尝试把字符串值安全转换为 schema 期望的类型。
+
+    只处理简单标量：integer / number / boolean。
+    数组/对象元素由调用方递归处理。
+
+    :returns: (是否发生转换, 转换后的值)。未转换时返回原值。
+    """
+    if not isinstance(value, string_types):
+        return (False, value)
+
+    expected_type = schema.get("type")
+    if isinstance(expected_type, list):
+        # 多类型时，按 integer -> number -> boolean 顺序尝试
+        for t in ("integer", "number", "boolean"):
+            if t in expected_type:
+                coerced, new_value = _coerce_value_to_type(value, t)
+                if coerced:
+                    return (True, new_value)
+        return (False, value)
+
+    coerced, new_value = _coerce_value_to_type(value, expected_type)
+    return (coerced, new_value)
+
+
+def _coerce_value_to_type(value, type_name):
+    # type: (str, str) -> "tuple[bool, Any]"
+    """把字符串按单一类型转换。"""
+    text = value.strip()
+    if type_name == "integer":
+        try:
+            return (True, int(text))
+        except ValueError:
+            return (False, value)
+    if type_name == "number":
+        try:
+            return (True, float(text))
+        except ValueError:
+            return (False, value)
+    if type_name == "boolean":
+        lower = text.lower()
+        if lower in ("true", "1", "yes", "on"):
+            return (True, True)
+        if lower in ("false", "0", "no", "off"):
+            return (True, False)
+        return (False, value)
+    return (False, value)
 
 
 def _validate_value(value, schema, path):

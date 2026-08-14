@@ -22,6 +22,7 @@ from typing import Dict
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
 from ..logger import get_logger
+from ..safety import validate_escape_hatch
 from .registry import tool
 
 
@@ -65,6 +66,20 @@ def run_maxscript(code):
 
     code_len = len(code) if isinstance(code, str) else 0
     t0 = time.time()
+
+    # 安全扫描：基于 capability profile 拦截危险调用
+    scan_ok, scan_hint = validate_escape_hatch("run_maxscript", code)
+    if not scan_ok:
+        logger.info(
+            "run_maxscript rejected by safety scan code_len=%d hint=%s",
+            code_len, scan_hint,
+        )
+        return {
+            "success": False,
+            "error": scan_hint,
+            "rejected_by_safety_scan": True,
+        }
+    t_safety = (time.time() - t0) * 1000
 
     # 入口校验：拦截已知硬性语法错误（如 if-do-else），让 LLM 自纠
     # 校验器位于 agent 层，避免 tools 反向依赖，这里就近导入
@@ -164,6 +179,20 @@ def run_python(code):
 
     code_len = len(code) if isinstance(code, str) else 0
     t0 = time.time()
+
+    # 安全扫描：基于 capability profile 拦截危险调用
+    scan_ok, scan_hint = validate_escape_hatch("run_python", code)
+    if not scan_ok:
+        logger.info(
+            "run_python rejected by safety scan code_len=%d hint=%s",
+            code_len, scan_hint,
+        )
+        return {
+            "success": False,
+            "error": scan_hint,
+            "rejected_by_safety_scan": True,
+        }
+    t_safety = (time.time() - t0) * 1000
 
     # 准备执行环境，注入 rt 与 pymxs
     try:

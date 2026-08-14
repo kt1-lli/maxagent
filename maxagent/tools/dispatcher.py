@@ -26,6 +26,8 @@ from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import run_on_main
 from ..runtime_helpers import undo_block
 from ..logger import get_logger
+from ..safety import backup_scene_if_needed
+from ..safety import classify_risk_for_backup
 from .registry import get_tool
 from .registry import validate_tool_args
 
@@ -134,7 +136,12 @@ class ToolDispatcher(object):
             logger.warning("参数校验失败 tool=%s: %s", tool_name, error_msg)
             return _err(error_msg, "bad_arguments")
 
-        # 3. 实际执行（带阶段计时）
+        # 3. 场景级自动备份：高风险/写入工具执行前先 saveTempMaxFile
+        risk = classify_risk_for_backup(tool_name)
+        if risk in ("write", "high_risk"):
+            backup_scene_if_needed(tool_name, arguments)
+
+        # 4. 实际执行（带阶段计时）
         t0 = time.time()
         try:
             result = self._invoke(spec, arguments, stages)
@@ -315,7 +322,15 @@ class ToolDispatcher(object):
 
         results = []  # type: List[Dict[str, Any]]
 
-        # 6. 主线程批次：只 marshal 一次，包一次 undo group
+        # 6. 场景级自动备份：批次中只要有一个写操作就备份一次
+        has_write = any(
+            classify_risk_for_backup(name) in ("write", "high_risk")
+            for name, __, __ in parsed
+        )
+        if has_write:
+            backup_scene_if_needed("batch_execute", {"count": len(parsed)})
+
+        # 7. 主线程批次：只 marshal 一次，包一次 undo group
         if main_calls:
 
             def _run_main_batch():
@@ -356,11 +371,11 @@ class ToolDispatcher(object):
                         ),
                     )
 
-        # 7. 非主线程批次：当前线程直接执行
+        # 8. 非主线程批次：当前线程直接执行
         for name, spec, args in side_calls:
             results.append(self._execute_one(name, spec, args))
 
-        # 8. 统计与结果裁剪
+        # 9. 统计与结果裁剪
         success = sum(1 for r in results if r.get("ok"))
         failed = len(results) - success
         batch_out = {
