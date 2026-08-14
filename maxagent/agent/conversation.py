@@ -297,14 +297,12 @@ class Message(object):
         out = {'role': self.role}
         if self.content is not None:
             out['content'] = self.content
-        elif self.role == 'assistant' and self.tool_calls:
-            # OpenAI 要求 assistant 消息必须有 content 字段，可以是 None
-            out['content'] = None
         elif self.role == 'assistant':
-            # 关键修复：assistant 消息 content 兜底必须是 None 而非 ''。
-            # Moonshot/Kimi 接口对 assistant 消息校验严格，空字符串 ''
-            # 会被判定为 "message ... must not be empty" 直接 400。
-            # OpenAI 接受 None，Moonshot 同样接受 None，二者均不报错。
+            # assistant 消息 content 兜底必须是 None 而非 ''。
+            # Moonshot/Kimi 接口对 assistant 空串消息校验严格，会返回
+            # HTTP 400 "message ... must not be empty"；OpenAI 与
+            # Moonshot 均接受 None。覆盖无 content 的纯思考/纯 tool_calls
+            # 两类 assistant 消息。
             out['content'] = None
         else:
             out['content'] = ''
@@ -351,9 +349,17 @@ class Message(object):
                 # 极端情况：attachments 模块不可用，丢弃附件元信息
                 # 但保留文本，确保对话主体仍可恢复。
                 atts = []
+        # 兼容旧会话文件：早期版本会把 role=assistant 且无 tool_calls
+        # 的消息序列化成 content=''（空串）。Moonshot/Kimi 接口对
+        # assistant 空串消息校验严格，会返回 HTTP 400
+        # "message ... must not be empty"。这里在读回时把空串归一为
+        # None，与新版 to_openai_dict 的兜底逻辑保持一致，使历史会话
+        # 能正常加载而无需手动清理文件。
+        raw_content = data.get('content')
+        content = None if (raw_content == '' or raw_content is None) else raw_content
         return cls(
             role=data.get('role', 'user'),
-            content=data.get('content'),
+            content=content,
             tool_calls=data.get('tool_calls'),
             tool_call_id=data.get('tool_call_id'),
             name=data.get('name'),
