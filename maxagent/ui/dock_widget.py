@@ -1915,13 +1915,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         设计原则：
         - 不主动抬起 Max 主窗或其他任何应用——用户想截什么就截什么。
           比如截浏览器里的参考图、其他 DCC 软件的贴图预览。
-        - QDockWidget docked 状态下 hide 不丢 dock 位置。
+        - 停靠时只隐藏内容区，QDockWidget 仍占位，show 后自动回来。
 
         历史坑（已修）：
         - v1：window().hide() 破坏 Max docked 状态 → 主面板消失。
         - v2：setWindowOpacity(0.0) → 透明窗口仍占 Z 序，DWM 抓屏抓到下层。
         - v3：强制 raise Max 主窗 → 越权抢走用户的截图目标。
-        - v4（当前）：只隐藏自身 + 多屏虚拟桌面合成，不动其他应用 Z 序。
+        - v4（当前）：停靠时只隐藏内容 widget，浮动时隐藏整个 QDockWidget，
+          不影响 Max 主窗口显示。
         """
         if self._is_running:
             return
@@ -1934,13 +1935,24 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             )
             return
         top = self.window()
+        qdock = self.parent()
         was_visible = False
         try:
-            # 1. 真隐藏面板（QDockWidget docked 状态下 hide 不会丢位置）
+            # 1. 隐藏 MaxAgent 面板本身，但不能影响 Max 主窗口。
+            #    - 停靠状态：self.parent() 是 QDockWidget，且它的 parent
+            #      是 Max 主窗口；此时只隐藏内部 content widget（self），
+            #      QDockWidget 仍占位，Max 主窗口保持显示，截图能拍到 Max。
+            #    - 浮动状态：self.parent() 就是 QDockWidget 这个独立顶层窗
+            #      口，隐藏它即隐藏整个浮动面板。
             try:
-                was_visible = top.isVisible()
-                if was_visible:
-                    top.hide()
+                if qdock is not None and qdock.isFloating():
+                    was_visible = qdock.isVisible()
+                    if was_visible:
+                        qdock.hide()
+                else:
+                    was_visible = self.isVisible()
+                    if was_visible:
+                        self.hide()
             except Exception:  # pylint: disable=broad-except
                 was_visible = False
             # 2. 让 hide 完成合成再抓屏（DWM 合成延迟经验值 100~200ms）
@@ -1960,8 +1972,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             # 任何分支都要把面板恢复回来（docked 也能正确回位）
             try:
                 if was_visible:
-                    top.show()
-                    top.raise_()
+                    if qdock is not None and qdock.isFloating():
+                        qdock.show()
+                        qdock.raise_()
+                    else:
+                        self.show()
+                        if qdock is not None:
+                            qdock.show()
+                            qdock.raise_()
             except Exception:  # pylint: disable=broad-except
                 pass
         if pix is None or pix.isNull():

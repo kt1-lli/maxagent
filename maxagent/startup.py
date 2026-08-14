@@ -151,9 +151,8 @@ def _connect_qdock_save_hooks(qdock, dock_widget, main_win=None):
     }
 
     # 闭包捕获 show_panel 调用处拿到的主窗口引用。
-    # 浮动 dock 现在没有 parent（避免隐藏 Max 时跟着消失），但保存时
-    # 仍需要主窗口来读取 dock area / saveState。如果 show_panel 拿到
-    # 了主窗口，这里直接用；否则 fallback 到 qdock.parent()。
+    # qdock 的 parent 已重新设回 Max 主窗口，保存时直接通过 parent()
+    # 获取主窗口引用；show_panel 传入的 main_win 作为 fallback。
     _main_win_ref = main_win
 
     def _do_save_sync():
@@ -173,7 +172,7 @@ def _connect_qdock_save_hooks(qdock, dock_widget, main_win=None):
             area = None
             main_state_b64 = ''
             try:
-                main_win_ref = _main_win_ref or qdock.parent()
+                main_win_ref = qdock.parent() or _main_win_ref
                 if main_win_ref is not None and hasattr(main_win_ref, 'dockWidgetArea'):
                     area = int(main_win_ref.dockWidgetArea(qdock))
                 # 主窗口完整 dock 布局
@@ -376,15 +375,16 @@ def show_panel(force=False):
     main_win = _get_max_main_window()
     if main_win is not None:
         # Max 环境：包到 QDockWidget 里
-        # 关键：QDockWidget 和内部 widget 都不设 Max 主窗口为 parent。
-        # 当用户最小化/隐藏 Max 主窗口时，子窗口也会跟着隐藏，导致
-        # 浮动状态下的 MaxAgent 面板一起消失。作为独立顶层窗口后，
-        # 停靠仍然通过 main_win.addDockWidget() 生效，只是隐藏 Max
-        # 时不会带走面板。
+        # QDockWidget 的 parent 必须是 Max 主窗口，这样：
+        #   1) 停靠时 self.window() 返回 Max 主窗口，截图只隐藏面板内容
+        #      不会把 Max 主窗口一起隐藏；
+        #   2) addDockWidget / restoreState 等 Qt dock 布局机制正常工作。
+        # 浮动时不希望随 Max 主窗口最小化而隐藏，通过 setWindowFlags(Qt.Tool)
+        # 让它成为独立工具窗口解决。
         dock_widget = MaxAgentDockWidget(config_manager=config)
         ui_state = dock_widget.get_ui_state()
 
-        qdock = QtWidgets.QDockWidget('MaxAgent')
+        qdock = QtWidgets.QDockWidget('MaxAgent', parent=main_win)
         qdock.setObjectName('MaxAgentQDockWidget')
         qdock.setWidget(dock_widget)
         qdock.setAllowedAreas(
@@ -414,6 +414,16 @@ def show_panel(force=False):
             # 不调用 addDockWidget。addDockWidget 即使紧跟 setFloating(True)
             # 也会让 Max 主窗口记住"这里有个 dock"，重启后被 Max 自己
             # 的状态机恢复成嵌入态。
+            # 浮动时设为 Qt.Tool，让它作为独立工具窗口存在，隐藏/最小化
+            # Max 主窗口时不会带走这个浮动面板。
+            try:
+                qdock.setWindowFlags(
+                    QtCore.Qt.Tool
+                    | QtCore.Qt.WindowTitleHint
+                    | QtCore.Qt.WindowCloseButtonHint,
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
             qdock.setFloating(True)
             # 应用上次保存的几何；没有则用合理默认值
             restored = _restore_qdock_geometry(qdock, ui_state)
