@@ -85,6 +85,8 @@ def _default_approval(proposal):
         '调用此工具会弹出审批对话框给用户查看代码并决定是否保存。'
         '何时调用：当用户多次让你做类似操作（如批量改名、定制化清理），'
         '或用户明确说"以后帮我把这个做成一个工具"时。\n'
+        '撰写工具前，建议先用 list_class_tree / get_class_info 反射 Max 类树，'
+        '并用 search_max_docs 查询官方文档确认 API 签名，降低代码错误率。\n'
         '工具代码必须遵守:\n'
         ' - 用 @tool(name=..., description=...) 装饰一个函数\n'
         ' - 函数参数对应工具入参，用 type hint + docstring :param: 描述\n'

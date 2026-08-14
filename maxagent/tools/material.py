@@ -329,3 +329,311 @@ def list_scene_materials(limit=50):
         if 0 < limit <= len(items):
             break
     return {'count': len(items), 'items': items}
+
+
+def _is_texture_map(value):
+    """判断一个值是否是贴图/纹理对象。"""
+    if value is None:
+        return False
+    try:
+        cls = str(rt.classOf(value))
+    except Exception:  # pylint: disable=broad-except
+        return False
+    # 常见贴图基类名；不同版本可能略有差异
+    texture_super = ('TextureMap', 'Map', 'Bitmaptexture')
+    try:
+        super_cls = str(rt.superClassOf(value))
+    except Exception:  # pylint: disable=broad-except
+        super_cls = ''
+    return cls.endswith('Map') or cls.endswith('Texture') or super_cls in texture_super
+
+
+def _is_sub_material(value):
+    """判断一个值是否是子材质。"""
+    if value is None:
+        return False
+    try:
+        super_cls = str(rt.superClassOf(value))
+    except Exception:  # pylint: disable=broad-except
+        return False
+    return super_cls == 'Material'
+
+
+def _serialize_value(value, depth=0):
+    """把 MAXScript 属性值序列化为可 JSON 的 Python 对象。
+
+    对贴图/材质只做摘要，避免递归过深和循环引用。
+    """
+    if depth > 4:
+        return '<nested>'
+    if value is None:
+        return None
+    try:
+        cls = str(rt.classOf(value))
+    except Exception:  # pylint: disable=broad-except
+        cls = type(value).__name__
+    if _is_texture_map(value) or _is_sub_material(value):
+        name = ''
+        try:
+            name = str(getattr(value, 'name', '') or '')
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {
+            'type': cls,
+            'name': name,
+            'is_map': _is_texture_map(value),
+            'is_material': _is_sub_material(value),
+        }
+    # 颜色
+    if cls == 'Color':
+        try:
+            return {
+                'r': int(value.r),
+                'g': int(value.g),
+                'b': int(value.b),
+            }
+        except Exception:  # pylint: disable=broad-except
+            return str(value)
+    # 数组/列表
+    if cls in ('Array', 'MAXScriptArray') or isinstance(value, (list, tuple)):
+        out = []
+        try:
+            for item in value:
+                out.append(_serialize_value(item, depth + 1))
+                if len(out) >= 50:
+                    out.append('<truncated>')
+                    break
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return out
+    # 简单标量
+    if isinstance(value, (int, float, bool, str)):
+        return value
+    # 其他复杂类型统一字符串化
+    try:
+        return str(value)
+    except Exception:  # pylint: disable=broad-except
+        return '<unserializable>'
+
+
+def _get_material_properties(mat):
+    """读取材质的主要可读写属性。"""
+    props = []
+    try:
+        raw = rt.getPropNames(mat)
+        for p in raw:
+            props.append(str(p))
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return props
+
+
+def _inspect_material_main(material_name):
+    """在主线程执行材质自省。"""
+    mat = _find_material_by_name(material_name)
+    if mat is None:
+        raise ValueError('材质未找到: {}'.format(material_name))
+
+    info = {
+        'name': str(mat.name),
+        'class': str(rt.classOf(mat)),
+        'super_class': str(rt.superClassOf(mat)),
+    }
+
+    properties = _get_material_properties(mat)
+    channels = []
+    sub_materials = []
+    basic_values = {}
+
+    for prop in properties[:64]:
+        try:
+            value = rt.getProperty(mat, prop)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        serialized = _serialize_value(value)
+        entry = {
+            'property': prop,
+            'value': serialized,
+        }
+        if _is_texture_map(value):
+            entry['kind'] = 'map'
+            channels.append(entry)
+        elif _is_sub_material(value):
+            entry['kind'] = 'sub_material'
+            sub_materials.append(entry)
+        else:
+            entry['kind'] = 'value'
+            basic_values[prop] = serialized
+
+    info['channels'] = channels
+    info['sub_materials'] = sub_materials
+    info['basic_values'] = basic_values
+    info['properties_count'] = len(properties)
+    return info
+
+
+def _list_texture_maps_main(material_name):
+    """递归收集材质及其子材质/通道上的所有 Bitmaptexture。"""
+    mat = _find_material_by_name(material_name)
+    if mat is None:
+        raise ValueError('材质未找到: {}'.format(material_name))
+
+    results = []
+    visited = set()
+
+    def _scan(obj, path=''):
+        if obj in visited:
+            return
+        visited.add(obj)
+        try:
+            cls = str(rt.classOf(obj))
+        except Exception:  # pylint: disable=broad-except
+            return
+        if cls == 'Bitmaptexture':
+            filename = ''
+            try:
+                filename = str(getattr(obj, 'filename', '') or '')
+            except Exception:  # pylint: disable=broad-except
+                pass
+            name = ''
+            try:
+                name = str(getattr(obj, 'name', '') or '')
+            except Exception:  # pylint: disable=broad-except
+                pass
+            results.append({
+                'name': name,
+                'path': filename,
+                'channel': path,
+            })
+            return
+        if _is_sub_material(obj) or _is_texture_map(obj):
+            props = _get_material_properties(obj)
+            for prop in props[:32]:
+                try:
+                    value = rt.getProperty(obj, prop)
+                except Exception:  # pylint: disable=broad-except
+                    continue
+                if _is_texture_map(value) or _is_sub_material(value):
+                    new_path = '{}.{}'.format(path, prop) if path else prop
+                    _scan(value, new_path)
+
+    _scan(mat, material_name)
+    return {'count': len(results), 'maps': results}
+
+
+def _replace_texture_map_main(material_name, slot_name, new_image_path):
+    """替换材质指定属性上的 Bitmaptexture。"""
+    if not os.path.isfile(new_image_path):
+        raise ValueError('图片文件不存在: {}'.format(new_image_path))
+    mat = _find_material_by_name(material_name)
+    if mat is None:
+        raise ValueError('材质未找到: {}'.format(material_name))
+
+    # 精确匹配属性名
+    try:
+        current = rt.getProperty(mat, slot_name)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ValueError('材质没有属性 {}: {}'.format(slot_name, exc))
+
+    new_map = rt.Bitmaptexture(filename=new_image_path)
+    rt.setProperty(mat, slot_name, new_map)
+    return {
+        'material': material_name,
+        'slot': slot_name,
+        'old_map': str(rt.classOf(current)) if current else None,
+        'new_image': new_image_path,
+        'ok': True,
+    }
+
+
+@tool(
+    description='列出材质编辑器 24 个槽位中当前存放的材质名与类型。',
+    category='material',
+    wrap_undo=False,
+)
+def inspect_material_slots():
+    """列出材质编辑器槽位。
+
+    :returns: dict {"count": N, "items": [{"slot": 1, "name": ..., "type": ...}, ...]}
+    """
+    _ensure_in_max()
+    items = []
+    for i in range(1, 25):
+        try:
+            mat = rt.getMeditMaterial(i)
+            items.append({
+                'slot': i,
+                'name': str(getattr(mat, 'name', '') or ''),
+                'type': str(rt.classOf(mat)),
+            })
+        except Exception:  # pylint: disable=broad-except
+            items.append({'slot': i, 'name': '', 'type': '<error>'})
+    return {'count': len(items), 'items': items}
+
+
+@tool(
+    description=(
+        '深入自省一个材质的内部结构：属性、贴图通道、子材质。'
+        '用于 Agent 理解现有材质网络，而不是盲目修改。'
+    ),
+    category='material',
+    wrap_undo=False,
+    run_on_main_thread=True,
+)
+def inspect_material(material_name: str):
+    """自省材质节点网络。
+
+    :param material_name: 材质名
+    :returns: dict 包含 name, class, channels, sub_materials, basic_values
+    """
+    _ensure_in_max()
+    return run_on_main(
+        _inspect_material_main, material_name, _timeout=30.0,
+    )
+
+
+@tool(
+    description=(
+        '递归列出一个材质及其子材质/通道上所有 Bitmaptexture 贴图文件路径。'
+        '用于检查贴图引用、批量重链等场景。'
+    ),
+    category='material',
+    wrap_undo=False,
+    run_on_main_thread=True,
+)
+def list_texture_maps(material_name: str):
+    """列出材质上的贴图。
+
+    :param material_name: 材质名
+    :returns: dict {"count": N, "maps": [{"name", "path", "channel"}, ...]}
+    """
+    _ensure_in_max()
+    return run_on_main(
+        _list_texture_maps_main, material_name, _timeout=30.0,
+    )
+
+
+@tool(
+    description=(
+        '把材质某个贴图通道（如 diffuseMap、base_color_map、bumpMap）'
+        '替换为新的图片文件。'
+    ),
+    category='material',
+    run_on_main_thread=True,
+)
+def replace_texture_map(material_name: str, slot_name: str, new_image_path: str):
+    """替换材质贴图。
+
+    :param material_name: 材质名
+    :param slot_name: 贴图属性名，如 diffuseMap / base_color_map / bumpMap
+    :param new_image_path: 新的图片绝对路径
+    :returns: dict {"material", "slot", "old_map", "new_image", "ok"}
+    """
+    _ensure_in_max()
+    return run_on_main(
+        _replace_texture_map_main,
+        material_name,
+        slot_name,
+        new_image_path,
+        _timeout=30.0,
+    )

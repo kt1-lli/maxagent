@@ -35,29 +35,46 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     """
     global _LOADED  # pylint: disable=global-statement
 
+    import importlib
+    import sys
+
     # pylint: disable=import-outside-toplevel,unused-import
-    from . import scene_query  # noqa: F401
-    from . import geometry     # noqa: F401
-    from . import transform    # noqa: F401
-    from . import modifier     # noqa: F401
-    from . import material     # noqa: F401
-    from . import light_camera # noqa: F401
-    from . import render       # noqa: F401
-    from . import scene_io     # noqa: F401
-    from . import skills_tools # noqa: F401
-    from . import learn_tools  # noqa: F401
-    from . import learn_rules  # noqa: F401
-    from . import reflection_tools  # noqa: F401
-    from . import knowledge_tools  # noqa: F401
-    from . import web_tools    # noqa: F401
-    from . import autodesk_docs  # noqa: F401
-    from . import memory_tools  # noqa: F401
-    from . import batch              # noqa: F401
-    from . import creative           # noqa: F401
-    from . import viewport_capture   # noqa: F401
-    from . import scene_awareness    # noqa: F401
-    from . import todo_tools         # noqa: F401
-    from . import high_level         # noqa: F401
+    modules = [
+        'maxagent.tools.scene_query',
+        'maxagent.tools.geometry',
+        'maxagent.tools.transform',
+        'maxagent.tools.modifier',
+        'maxagent.tools.material',
+        'maxagent.tools.light_camera',
+        'maxagent.tools.render',
+        'maxagent.tools.scene_io',
+        'maxagent.tools.skills_tools',
+        'maxagent.tools.learn_tools',
+        'maxagent.tools.learn_rules',
+        'maxagent.tools.reflection_tools',
+        'maxagent.tools.knowledge_tools',
+        'maxagent.tools.web_tools',
+        'maxagent.tools.autodesk_docs',
+        'maxagent.tools.memory_tools',
+        'maxagent.tools.batch',
+        'maxagent.tools.creative',
+        'maxagent.tools.viewport_capture',
+        'maxagent.tools.scene_awareness',
+        'maxagent.tools.todo_tools',
+        'maxagent.tools.high_level',
+        'maxagent.tools.animation',
+        'maxagent.tools.class_tree',
+    ]
+    for name in modules:
+        try:
+            mod = sys.modules.get(name)
+            if mod is not None:
+                importlib.reload(mod)
+            else:
+                importlib.import_module(name)
+        except Exception:  # pylint: disable=broad-except
+            # 某个模块加载失败不应影响其他模块
+            logger.exception('加载工具模块失败: %s', name)
 
     if include_escape_hatch:
         from . import escape_hatch  # noqa: F401
