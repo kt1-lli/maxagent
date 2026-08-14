@@ -19,7 +19,6 @@ from ..runtime_helpers import has_runtime_attr
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
 from .geometry import _apply_common as _apply_transform
-from .geometry import _to_point3
 from .registry import tool
 
 
@@ -76,11 +75,8 @@ def create_light(
     if cls is None:
         raise ValueError('当前 Max 版本不支持: {}'.format(cls_name))
 
-    # 构造器优先传 pos（官方推荐路径）
+    # 构造器不再传 pos，统一走后置 setter（_apply_transform 三级兜底）
     kwargs = {}
-    p3 = _to_point3(position)
-    if p3 is not None:
-        kwargs['pos'] = p3
 
     if cls_name in ('targetSpot', 'targetDirect'):
         # target 灯光需要一个 target helper；target 位置在世界坐标
@@ -150,9 +146,6 @@ def create_camera(
         cls = rt.freeCamera
 
     kwargs = {}
-    p3 = _to_point3(position)
-    if p3 is not None:
-        kwargs['pos'] = p3
 
     if cls is rt.targetCamera:
         target = rt.Point3(0.0, 0.0, 0.0)

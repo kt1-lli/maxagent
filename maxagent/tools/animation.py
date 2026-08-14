@@ -14,8 +14,6 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
-import pymxs
-
 from ..logger import get_logger
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
@@ -41,26 +39,42 @@ def _get_node(name: str):
 def _get_controller(node, controller_name: str):
     """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
 
-    pymxs 不能直接用 ``node.position.controller``，必须使用 MAXScript
-    ``getPropertyController(node.controller, 'Position')`` 才能稳定取到。
+    pymxs 不能直接用 ``node.position.controller``（会报 AttributeError），
+    必须使用 MAXScript ``getPropertyController()`` 才能稳定取到。
+
+    知识库 "Working with Controllers" 章节明确指出：
+    ``myTeapot.pos.controller`` 在 pymxs 中不可用，必须用
+    ``rt.getPropertyController(node.controller, 'Position')``。
+
+    但 ``node.controller`` 在某些 Max 版本（如 2022）也可能返回非预期类型，
+    因此这里用 ``rt.getPropertyController`` 直接从 node 取 transform 子控制器。
     """
     if not controller_name:
         raise ValueError("controller_name 不能为空")
     prop_map = {
-        "position": "Position",
-        "rotation": "Rotation",
-        "scale": "Scale",
+        "position": "pos",
+        "rotation": "rotation",
+        "scale": "scale",
     }
-    mxs_name = prop_map.get(controller_name)
-    if mxs_name is None:
+    mxs_prop = prop_map.get(controller_name)
+    if mxs_prop is None:
         raise ValueError("未知控制器名: {}".format(controller_name))
     try:
-        ctrl = rt.getPropertyController(node.controller, mxs_name)
+        # 方案 1：直接从 node 取子控制器（知识库推荐）
+        ctrl = rt.getPropertyController(node, mxs_prop)
         if ctrl is None:
             raise ValueError("控制器为空: {}.{}".format(node.name, controller_name))
         return ctrl
-    except Exception as exc:  # pylint: disable=broad-except
-        raise ValueError("获取控制器失败: {}".format(exc))
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # 方案 2：通过 node.controller 取子控制器（兼容旧版）
+    try:
+        ctrl = rt.getPropertyController(node.controller, prop_map.get(controller_name, controller_name).capitalize())
+        if ctrl is not None:
+            return ctrl
+    except Exception:  # pylint: disable=broad-except
+        pass
+    raise ValueError("获取控制器失败: {}.{}".format(node.name, controller_name))
 
 
 # ---------------------------------------------------------------------- #
@@ -85,6 +99,7 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
     :returns: dict 描述执行结果
     """
     _ensure_in_max()
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
     node = _get_node(name)
     frame = float(frame)
     with pymxs.animate(True):
@@ -114,6 +129,7 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
     :param controller: 可选 'position'/'rotation'/'scale'/'transform'
     """
     _ensure_in_max()
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
     node = _get_node(name)
     frame = float(frame)
     with pymxs.attime(frame):
@@ -141,6 +157,7 @@ def get_keyframe_value(name: str, frame: float, controller: str = "position"):
     :returns: dict {"frame": ..., "value": [...]}
     """
     _ensure_in_max()
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
     node = _get_node(name)
     if controller not in ("position", "rotation", "scale"):
         raise ValueError("controller 必须是 position/rotation/scale 之一")

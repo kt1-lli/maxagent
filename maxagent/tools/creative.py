@@ -214,7 +214,16 @@ def generate_material_variants(material_name, description, count=3):
                 'opacity': float(mat.opacity),
             }
         _register_material_to_medit(mat)
-        # 二次确认：放入 medit 后必须能在 sceneMaterials / medit 槽 / 内存簿中找回
+        # 将材质赋给临时 Dummy 对象，确保进入 sceneMaterials
+        # 知识库 "Creating and Assigning Materials" 指出：
+        # 材质必须赋值给对象或放入 medit 才能被检索到
+        _dummy = rt.Dummy()
+        _dummy.name = '__maxagent_mat_temp__'
+        try:
+            rt.setProperty(_dummy, 'material', mat)
+        except Exception:  # pylint: disable=broad-except
+            _dummy.material = mat
+        # 二次确认：放入 medit + 赋给 Dummy 后必须能在内存簿/sceneMaterials/medit 中找回
         found = _find_material_by_name(unique_name)
         if found is None:
             # 再尝试一次显式放进材质编辑器槽位（1-based）
@@ -225,6 +234,11 @@ def generate_material_variants(material_name, description, count=3):
                 except Exception:  # pylint: disable=broad-except
                     continue
             found = _find_material_by_name(unique_name)
+        # 清理临时 Dummy
+        try:
+            rt.delete(_dummy)
+        except Exception:  # pylint: disable=broad-except
+            pass
         if found is None:
             raise RuntimeError('材质变体创建后无法找回: {}'.format(unique_name))
         variants.append({'name': unique_name, 'params': params})
