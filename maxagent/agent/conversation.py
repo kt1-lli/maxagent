@@ -300,6 +300,12 @@ class Message(object):
         elif self.role == 'assistant' and self.tool_calls:
             # OpenAI 要求 assistant 消息必须有 content 字段，可以是 None
             out['content'] = None
+        elif self.role == 'assistant':
+            # 关键修复：assistant 消息 content 兜底必须是 None 而非 ''。
+            # Moonshot/Kimi 接口对 assistant 消息校验严格，空字符串 ''
+            # 会被判定为 "message ... must not be empty" 直接 400。
+            # OpenAI 接受 None，Moonshot 同样接受 None，二者均不报错。
+            out['content'] = None
         else:
             out['content'] = ''
         if self.tool_calls:
