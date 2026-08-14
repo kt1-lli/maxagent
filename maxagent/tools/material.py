@@ -16,6 +16,7 @@ from typing import Optional
 from ..runtime_helpers import has_runtime_attr
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
+from ..runtime_helpers import run_on_main
 from .registry import tool
 
 
@@ -294,11 +295,31 @@ def add_diffuse_map(material_name, image_path):
     cls = str(rt.classOf(mat))
     try:
         if cls == 'PhysicalMaterial':
-            mat.base_color_map = bmap
+            rt.setProperty(mat, 'base_color_map', bmap)
         else:
-            mat.diffuseMap = bmap
+            rt.setProperty(mat, 'diffuseMap', bmap)
     except Exception as exc:  # pylint: disable=broad-except
-        raise RuntimeError('无法连接贴图: {}'.format(exc))
+        try:
+            if cls == 'PhysicalMaterial':
+                mat.base_color_map = bmap
+            else:
+                mat.diffuseMap = bmap
+        except Exception as fallback_exc:  # pylint: disable=broad-except
+            raise RuntimeError(
+                '无法连接贴图: {}; 兜底失败: {}'.format(exc, fallback_exc)
+            )
+    # 确认贴图确实连上
+    connected_map = None
+    try:
+        connected_map = (
+            rt.getProperty(mat, 'base_color_map')
+            if cls == 'PhysicalMaterial'
+            else rt.getProperty(mat, 'diffuseMap')
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+    if connected_map is None:
+        raise RuntimeError('贴图连接后未能读取到，可能未生效')
     return {
         'material': str(mat.name),
         'image': image_path,

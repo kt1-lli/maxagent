@@ -93,6 +93,19 @@ def _parse_material_description(desc):
     return result
 
 
+def _color_to_rgb_list(color_value):
+    """安全地把 pymxs Color 对象转为 [r, g, b] 整数列表。"""
+    try:
+        return [int(color_value.r), int(color_value.g), int(color_value.b)]
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        rgb = list(color_value)[:3]
+        return [int(c) for c in rgb]
+    except Exception:  # pylint: disable=broad-except
+        return [200, 200, 200]
+
+
 @tool(
     description=(
         '基于已有材质生成多个参数变体，用于美术探索。description 支持自然语言，'
@@ -130,27 +143,39 @@ def generate_material_variants(material_name, description, count=3):
             mat.name = unique_name
             # 复制基础属性
             try:
-                base_color = list(base_mat.base_color)[:3]
+                base_color = _color_to_rgb_list(base_mat.base_color)
             except Exception:  # pylint: disable=broad-except
                 base_color = [200, 200, 200]
             bright = adjustments['brightness_factor']
             # 不同变体在基础调整上再引入小幅随机阶梯
             step = (i - (count + 1) / 2.0) / count
-            mat.base_color = _to_color(_adjust_color(base_color, bright + step * 0.15))
-            mat.metalness = _clamp(
-                float(base_mat.metalness) + adjustments['metalness_delta'] + step * 0.1,
-                0.0, 1.0,
-            )
-            mat.roughness = _clamp(
-                float(base_mat.roughness) + adjustments['roughness_delta'] + step * 0.1,
-                0.0, 1.0,
-            )
-            mat.transparency = _clamp(
-                float(base_mat.transparency) + adjustments['opacity_delta'] + step * 0.05,
-                0.0, 1.0,
-            )
+            try:
+                mat.base_color = _to_color(_adjust_color(base_color, bright + step * 0.15))
+            except Exception:  # pylint: disable=broad-except
+                mat.base_color = _to_color(base_color)
+            try:
+                mat.metalness = _clamp(
+                    float(base_mat.metalness) + adjustments['metalness_delta'] + step * 0.1,
+                    0.0, 1.0,
+                )
+            except Exception:  # pylint: disable=broad-except
+                mat.metalness = 0.0
+            try:
+                mat.roughness = _clamp(
+                    float(base_mat.roughness) + adjustments['roughness_delta'] + step * 0.1,
+                    0.0, 1.0,
+                )
+            except Exception:  # pylint: disable=broad-except
+                mat.roughness = 0.5
+            try:
+                mat.transparency = _clamp(
+                    float(base_mat.transparency) + adjustments['opacity_delta'] + step * 0.05,
+                    0.0, 1.0,
+                )
+            except Exception:  # pylint: disable=broad-except
+                mat.transparency = 0.0
             params = {
-                'base_color': [int(c) for c in _to_color(list(mat.base_color)[:3])],
+                'base_color': _color_to_rgb_list(mat.base_color),
                 'metalness': float(mat.metalness),
                 'roughness': float(mat.roughness),
                 'transparency': float(mat.transparency),
@@ -160,32 +185,39 @@ def generate_material_variants(material_name, description, count=3):
             mat = rt.Standardmaterial()
             mat.name = unique_name
             try:
-                base_color = list(base_mat.diffuse)[:3]
+                base_color = _color_to_rgb_list(base_mat.diffuse)
             except Exception:  # pylint: disable=broad-except
                 base_color = [200, 200, 200]
             bright = adjustments['brightness_factor']
             step = (i - (count + 1) / 2.0) / count
-            mat.diffuse = _to_color(_adjust_color(base_color, bright + step * 0.15))
+            try:
+                mat.diffuse = _to_color(_adjust_color(base_color, bright + step * 0.15))
+            except Exception:  # pylint: disable=broad-except
+                mat.diffuse = _to_color(base_color)
             try:
                 mat.glossiness = _clamp(
                     float(base_mat.glossiness) - adjustments['roughness_delta'] * 50.0,
                     0.0, 100.0,
                 )
             except Exception:  # pylint: disable=broad-except
-                pass
+                mat.glossiness = 40.0
             try:
                 mat.opacity = _clamp(
                     float(base_mat.opacity) + adjustments['opacity_delta'] * 100.0,
                     0.0, 100.0,
                 )
             except Exception:  # pylint: disable=broad-except
-                pass
+                mat.opacity = 100.0
             params = {
-                'diffuse': [int(c) for c in _to_color(list(mat.diffuse)[:3])],
+                'diffuse': _color_to_rgb_list(mat.diffuse),
                 'glossiness': float(mat.glossiness),
                 'opacity': float(mat.opacity),
             }
         _register_material_to_medit(mat)
+        # 二次确认材质确实创建并可被检索
+        found = _find_material_by_name(unique_name)
+        if found is None:
+            raise RuntimeError('材质变体创建后无法找回: {}'.format(unique_name))
         variants.append({'name': unique_name, 'params': params})
     return {'base': material_name, 'variants': variants}
 

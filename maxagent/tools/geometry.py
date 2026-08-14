@@ -91,9 +91,9 @@ def _verify_position(node, expected):
 def _apply_common(node, name, position, rotation_euler):
     """统一处理对象创建后的命名、后置定位与旋转。
 
-    正常情况下 position 应在构造器里通过 ``pos=`` 关键字参数传入，本函数
-    对 position 只做**兜底**：如果构造器没传或读回偏差太大，才走
-    ``rt.setProperty(node, 'pos', p3)``（官方推荐路径）。
+    pymxs 对点号属性访问的赋值行为与 MAXScript 不同，直接 ``node.pos = p3``
+    在某些版本/对象上不会真正生效。Autodesk 官方文档推荐三种方案之一即
+    使用 MAXScript ``setProperty()`` 函数，本模块统一采用它作为标准写法。
 
     :param node: rt 创建返回的节点
     :param name: 要设置的名字（空字符串跳过）
@@ -106,25 +106,14 @@ def _apply_common(node, name, position, rotation_euler):
         except Exception:  # pylint: disable=broad-except
             pass
 
-    # position：优先假定构造器已传入正确值，硬校验一次；不达标才走
-    # 官方 setProperty 兜底，再校验一次。
+    # position：使用官方标准方法 rt.setProperty(node, 'pos', p3) 设置。
+    # 部分 Max 版本（如 2022）构造器 pos 不生效，因此创建后统一再设置一次，
+    # 并硬校验读回坐标与期望值偏差不超过 _POSITION_TOLERANCE。
     if position is not None:
         p3 = _to_point3(position)
         if p3 is not None:
-            try:
-                _verify_position(node, position)
-            except RuntimeError:
-                # 兜底 1：官方 rt.setProperty（MAXScript setProperty 语义）
-                try:
-                    rt.setProperty(node, 'pos', p3)
-                except Exception:  # pylint: disable=broad-except
-                    # 兜底 2：pymxs MXSWrapperBase.setmxsprop
-                    try:
-                        node.setmxsprop('pos', p3)
-                    except Exception:  # pylint: disable=broad-except
-                        pass
-                # 最终硬校验：仍然不达标就抛，绝不静默通过
-                _verify_position(node, position)
+            rt.setProperty(node, 'pos', p3)
+            _verify_position(node, position)
 
     if rotation_euler is not None and len(rotation_euler) == 3:
         try:
@@ -135,12 +124,7 @@ def _apply_common(node, name, position, rotation_euler):
             )
             rt.setProperty(node, 'rotation', rt.eulerToQuat(euler))
         except Exception:  # pylint: disable=broad-except
-            # rotation 兜底：直接属性赋值（rotation 的 setter 在 pymxs 里
-            # 通常稳定，属性 setter 陷阱主要出现在 pos 上）
-            try:
-                node.rotation = rt.eulerToQuat(euler)
-            except Exception:  # pylint: disable=broad-except
-                pass
+            pass
     return node
 
 

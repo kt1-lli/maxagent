@@ -14,6 +14,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+import pymxs
+
 from ..logger import get_logger
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
@@ -73,16 +75,18 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
     """
     _ensure_in_max()
     node = _get_node(name)
-    at = rt.frameTime(frame)
-    if controller is None or controller == "transform":
-        rt.addKnot(node.transform.controller, "position", at)
-        rt.addKnot(node.transform.controller, "rotation", at)
-        rt.addKnot(node.transform.controller, "scale", at)
-        return {"name": name, "frame": frame, "controller": "transform"}
-    if controller in ("position", "rotation", "scale"):
-        ctrl = _get_controller(node, controller)
-        rt.setKey(ctrl, at)
-        return {"name": name, "frame": frame, "controller": controller}
+    frame = float(frame)
+    with pymxs.animate(True):
+        with pymxs.attime(frame):
+            if controller is None or controller == "transform":
+                rt.addKnot(node.transform.controller, "position")
+                rt.addKnot(node.transform.controller, "rotation")
+                rt.addKnot(node.transform.controller, "scale")
+                return {"name": name, "frame": frame, "controller": "transform"}
+            if controller in ("position", "rotation", "scale"):
+                ctrl = _get_controller(node, controller)
+                rt.setKey(ctrl)
+                return {"name": name, "frame": frame, "controller": controller}
     raise ValueError("controller 必须是 position/rotation/scale/transform 之一")
 
 
@@ -100,14 +104,15 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
     """
     _ensure_in_max()
     node = _get_node(name)
-    at = rt.frameTime(frame)
-    if controller is None or controller == "transform":
-        rt.deleteKey(node.transform.controller, at)
-        return {"name": name, "frame": frame, "controller": "transform", "deleted": True}
-    if controller in ("position", "rotation", "scale"):
-        ctrl = _get_controller(node, controller)
-        rt.deleteKey(ctrl, at)
-        return {"name": name, "frame": frame, "controller": controller, "deleted": True}
+    frame = float(frame)
+    with pymxs.attime(frame):
+        if controller is None or controller == "transform":
+            rt.deleteKey(node.transform.controller)
+            return {"name": name, "frame": frame, "controller": "transform", "deleted": True}
+        if controller in ("position", "rotation", "scale"):
+            ctrl = _get_controller(node, controller)
+            rt.deleteKey(ctrl)
+            return {"name": name, "frame": frame, "controller": controller, "deleted": True}
     raise ValueError("controller 必须是 position/rotation/scale/transform 之一")
 
 
@@ -129,8 +134,9 @@ def get_keyframe_value(name: str, frame: float, controller: str = "position"):
     if controller not in ("position", "rotation", "scale"):
         raise ValueError("controller 必须是 position/rotation/scale 之一")
     ctrl = _get_controller(node, controller)
-    at = rt.frameTime(frame)
-    val = ctrl.value
+    frame = float(frame)
+    with pymxs.attime(frame):
+        val = ctrl.value
     # 如果是 Point3 类型
     if hasattr(val, "x"):
         return {
@@ -345,7 +351,7 @@ def list_wire_parameters(name: str):
 def set_time_range(start: int, end: int):
     """设置动画范围。"""
     _ensure_in_max()
-    rt.animationRange = rt.interval(rt.frameTime(start), rt.frameTime(end))
+    rt.animationRange = rt.interval(start, end)
     return {"start": start, "end": end}
 
 
@@ -357,7 +363,7 @@ def set_time_range(start: int, end: int):
 def set_current_frame(frame: int):
     """设置当前帧。"""
     _ensure_in_max()
-    rt.currentTime = rt.frameTime(frame)
+    rt.currentTime = frame
     return {"frame": frame}
 
 
