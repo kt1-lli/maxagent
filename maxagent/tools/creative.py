@@ -214,8 +214,17 @@ def generate_material_variants(material_name, description, count=3):
                 'opacity': float(mat.opacity),
             }
         _register_material_to_medit(mat)
-        # 二次确认材质确实创建并可被检索
+        # 二次确认：放入 medit 后必须能在 sceneMaterials / medit 槽 / 内存簿中找回
         found = _find_material_by_name(unique_name)
+        if found is None:
+            # 再尝试一次显式放进材质编辑器槽位（1-based）
+            for slot in range(1, 25):
+                try:
+                    rt.setMeditMaterial(slot, mat)
+                    break
+                except Exception:  # pylint: disable=broad-except
+                    continue
+            found = _find_material_by_name(unique_name)
         if found is None:
             raise RuntimeError('材质变体创建后无法找回: {}'.format(unique_name))
         variants.append({'name': unique_name, 'params': params})

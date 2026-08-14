@@ -39,12 +39,23 @@ def _get_node(name: str):
 
 
 def _get_controller(node, controller_name: str):
-    """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。"""
+    """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
+
+    pymxs 不能直接用 ``node.position.controller``，必须使用 MAXScript
+    ``getPropertyController(node.controller, 'Position')`` 才能稳定取到。
+    """
     if not controller_name:
         raise ValueError("controller_name 不能为空")
+    prop_map = {
+        "position": "Position",
+        "rotation": "Rotation",
+        "scale": "Scale",
+    }
+    mxs_name = prop_map.get(controller_name)
+    if mxs_name is None:
+        raise ValueError("未知控制器名: {}".format(controller_name))
     try:
-        # node.position.controller / node.rotation.controller / node.scale.controller
-        ctrl = getattr(node, controller_name).controller
+        ctrl = rt.getPropertyController(node.controller, mxs_name)
         if ctrl is None:
             raise ValueError("控制器为空: {}.{}".format(node.name, controller_name))
         return ctrl

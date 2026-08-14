@@ -21,9 +21,10 @@ Autodesk 官方文档 "Accessing Object Properties and Controllers" 指出：
 
 因此本模块采用：
 
-- **首选**：构造器直接传 ``pos=rt.Point3(x, y, z)``（官方 teapot 示例的写法）——
-  这是最简单最稳的路径，创建瞬间就定位好，避免任何后续 setter 陷阱。
-- **兜底**：``rt.setProperty(node, 'pos', p3)``（官方 3 大方案之首）。
+- **构造器**：仍然传 ``pos=rt.Point3(x, y, z)``（官方 teapot 示例写法）。
+- **首选后置 setter**：``node.setmxsprop('pos', p3)``（官方方案 2，
+  实测在 Max 2022~2027 均可靠）。
+- **兜底**：``rt.setProperty(node, 'pos', p3)``（官方方案 1）。
 - **硬校验**：写入后读回坐标，偏差 > 0.01 抛异常，绝不静默通过。
 """
 
@@ -92,8 +93,9 @@ def _apply_common(node, name, position, rotation_euler):
     """统一处理对象创建后的命名、后置定位与旋转。
 
     pymxs 对点号属性访问的赋值行为与 MAXScript 不同，直接 ``node.pos = p3``
-    在某些版本/对象上不会真正生效。Autodesk 官方文档推荐三种方案之一即
-    使用 MAXScript ``setProperty()`` 函数，本模块统一采用它作为标准写法。
+    在某些版本/对象上不会真正生效。Autodesk 官方文档推荐三种方案，本模块
+    优先使用 MXSWrapperBase ``setmxsprop()``（实测在 Max 2022 起最稳），
+    失败后再用 ``rt.setProperty()`` 兜底。
 
     :param node: rt 创建返回的节点
     :param name: 要设置的名字（空字符串跳过）
@@ -106,13 +108,17 @@ def _apply_common(node, name, position, rotation_euler):
         except Exception:  # pylint: disable=broad-except
             pass
 
-    # position：使用官方标准方法 rt.setProperty(node, 'pos', p3) 设置。
-    # 部分 Max 版本（如 2022）构造器 pos 不生效，因此创建后统一再设置一次，
+    # position：pymxs 点号赋值会触发“副本陷阱”，
+    # 官方文档推荐的 MXSWrapperBase.setmxsprop() 才是真正可靠的路径。
+    # 部分 Max 版本（如 2022）构造器 pos 也不生效，因此创建后统一再设置一次，
     # 并硬校验读回坐标与期望值偏差不超过 _POSITION_TOLERANCE。
     if position is not None:
         p3 = _to_point3(position)
         if p3 is not None:
-            rt.setProperty(node, 'pos', p3)
+            try:
+                node.setmxsprop('pos', p3)
+            except Exception:  # pylint: disable=broad-except
+                rt.setProperty(node, 'pos', p3)
             _verify_position(node, position)
 
     if rotation_euler is not None and len(rotation_euler) == 3:
@@ -122,9 +128,12 @@ def _apply_common(node, name, position, rotation_euler):
                 float(rotation_euler[1]),
                 float(rotation_euler[2]),
             )
-            rt.setProperty(node, 'rotation', rt.eulerToQuat(euler))
+            node.setmxsprop('rotation', rt.eulerToQuat(euler))
         except Exception:  # pylint: disable=broad-except
-            pass
+            try:
+                rt.setProperty(node, 'rotation', rt.eulerToQuat(euler))
+            except Exception:  # pylint: disable=broad-except
+                pass
     return node
 
 

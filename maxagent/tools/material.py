@@ -80,9 +80,10 @@ def _register_material_to_medit(mat):
 
     Max 设计上：未被任何对象引用的材质既不在 ``sceneMaterials`` 也不在
     ``getMeditMaterial`` 列表里。这会导致 ``create_*`` 之后立刻
-    ``assign_material`` 找不到。这里做两件事：
-    1. 找到第一个空 medit 槽放进去（会显示在材质编辑器面板）
-    2. 在模块内存里登记一份（最直接的找回路径）
+    ``assign_material`` 找不到。这里做三件事：
+    1. 在模块内存里登记一份（最直接的找回路径）
+    2. 优先找第一个真正空的 medit 槽放进去
+    3. 如果没空槽，覆盖第一个默认未命名槽，确保材质一定被注册
     """
     try:
         _MATERIAL_REGISTRY[str(mat.name)] = mat
@@ -91,16 +92,29 @@ def _register_material_to_medit(mat):
     try:
         # 查找一个空槽（默认 24 个槽位，从 1 开始）
         for i in range(1, 25):
-            slot = rt.getMeditMaterial(i)
-            cls = str(rt.classOf(slot))
-            # 默认空槽是 Standardmaterial 且名字以 #map 开头
-            if cls in ('Standardmaterial', 'PhysicalMaterial'):
+            try:
+                slot = rt.getMeditMaterial(i)
+            except Exception:  # pylint: disable=broad-except
+                continue
+            try:
+                cls = str(rt.classOf(slot))
+            except Exception:  # pylint: disable=broad-except
+                cls = ''
+            try:
                 slot_name = str(getattr(slot, 'name', '') or '')
-                if (not slot_name) or slot_name.startswith('Map ') \
-                        or slot_name.startswith('#') \
-                        or slot_name == cls:
-                    rt.setMeditMaterial(i, mat)
-                    break
+            except Exception:  # pylint: disable=broad-except
+                slot_name = ''
+            is_empty = (
+                (not slot_name)
+                or slot_name.startswith('Map ')
+                or slot_name.startswith('#')
+                or slot_name == cls
+            )
+            if is_empty:
+                rt.setMeditMaterial(i, mat)
+                return
+        # 没有空槽：回退到槽 1，确保材质一定可见
+        rt.setMeditMaterial(1, mat)
     except Exception:  # pylint: disable=broad-except
         pass
 
