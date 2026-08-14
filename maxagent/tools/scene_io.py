@@ -360,3 +360,151 @@ def reset_scene(quiet=True):
     _ensure_in_max()
     rt.resetMaxFile(rt.Name('noPrompt') if quiet else rt.Name('prompt'))
     return {'ok': True}
+
+
+@tool(
+    description=(
+        '导出当前场景或选中对象到 USD 文件（.usd / .usdc / .usda）。\n'
+        '需要 3ds Max 2022+ 且已安装并启用 USD for 3ds Max 插件。'
+    ),
+    category='scene_io',
+    dangerous=True,
+    wrap_undo=False,
+)
+def export_usd(file_path, selected_only=False, export_materials=True, up_axis='Y'):
+    """导出 USD 文件。
+
+    调用 3ds Max 的 ``exportFile``，并传入 ``#noPrompt`` 避免弹窗。
+    USD 插件通常在 3ds Max 2022+ 提供，旧版本或未启用插件时调用会失败。
+
+    :param file_path: 输出 USD 文件绝对路径，扩展名决定格式
+        （.usd / .usdc 二进制 / .usda ASCII）
+    :param selected_only: True 时仅导出选中对象
+    :param export_materials: True 时尝试导出材质（取决于 Max 版本与插件支持）
+    :param up_axis: 上轴方向，'Y' 或 'Z'；Max 默认 Y-up
+    :returns: dict {"file": ..., "ok": True}
+    """
+    _ensure_in_max()
+    out_dir = os.path.dirname(file_path)
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in ('.usd', '.usdc', '.usda'):
+        raise ValueError('USD 导出仅支持 .usd/.usdc/.usda 扩展名: {}'.format(file_path))
+
+    kwargs = {}
+    if selected_only:
+        kwargs['selectedOnly'] = True
+    if export_materials:
+        kwargs['exportMaterials'] = True
+    if up_axis and isinstance(up_axis, str):
+        kwargs['upAxis'] = rt.Name(up_axis)
+
+    ok = rt.exportFile(file_path, rt.Name('noPrompt'), **kwargs)
+    return {'file': file_path, 'ok': bool(ok)}
+
+
+@tool(
+    description=(
+        '从 USD 文件导入场景（.usd / .usdc / .usda）。\n'
+        '需要 3ds Max 2022+ 且已安装并启用 USD for 3ds Max 插件。'
+    ),
+    category='scene_io',
+    dangerous=True,
+)
+def import_usd(file_path, import_materials=True):
+    """导入 USD 文件。
+
+    调用 3ds Max 的 ``importFile``，并传入 ``#noPrompt`` 避免弹窗。
+    如果 USD 插件未启用，调用会抛出 MaxScript 异常。
+
+    :param file_path: USD 文件绝对路径
+    :param import_materials: True 时尝试导入 USD 中携带的材质
+    :returns: dict {"file": ..., "ok": True}
+    """
+    _ensure_in_max()
+    if not os.path.isfile(file_path):
+        raise ValueError('文件不存在: {}'.format(file_path))
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in ('.usd', '.usdc', '.usda'):
+        raise ValueError('USD 导入仅支持 .usd/.usdc/.usda 扩展名: {}'.format(file_path))
+
+    kwargs = {}
+    if import_materials:
+        kwargs['importMaterials'] = True
+
+    ok = rt.importFile(file_path, rt.Name('noPrompt'), **kwargs)
+    return {'file': file_path, 'ok': bool(ok)}
+
+
+@tool(
+    description=(
+        '导出当前场景或选中对象到 Alembic 文件（.abc）。\n'
+        '需要已安装并启用 Alembic 导出器（3ds Max 2018+ 通常内置）。'
+    ),
+    category='scene_io',
+    dangerous=True,
+    wrap_undo=False,
+)
+def export_alembic(file_path, selected_only=False, frame_range=None):
+    """导出 Alembic 文件。
+
+    调用 3ds Max 的 ``exportFile``，并传入 ``#noPrompt`` 避免弹窗。
+    frame_range 会映射为 ``frameRange: [start, end]`` 关键字参数。
+
+    :param file_path: 输出 .abc 文件绝对路径
+    :param selected_only: True 时仅导出选中对象
+    :param frame_range: 可选帧范围元组 (start, end)，例如 (0, 120)
+    :returns: dict {"file": ..., "ok": True}
+    """
+    _ensure_in_max()
+    out_dir = os.path.dirname(file_path)
+    if out_dir and not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    if os.path.splitext(file_path)[1].lower() != '.abc':
+        raise ValueError('Alembic 导出仅支持 .abc 扩展名: {}'.format(file_path))
+
+    kwargs = {}
+    if selected_only:
+        kwargs['selectedOnly'] = True
+    if frame_range is not None:
+        try:
+            start, end = frame_range
+            kwargs['frameRange'] = [int(start), int(end)]
+        except Exception as exc:
+            raise ValueError('frame_range 必须是 (start, end) 整数元组: {}'.format(exc))
+
+    ok = rt.exportFile(file_path, rt.Name('noPrompt'), **kwargs)
+    return {'file': file_path, 'ok': bool(ok)}
+
+
+@tool(
+    description=(
+        '从 Alembic 文件导入几何体与动画（.abc）。\n'
+        '需要已安装并启用 Alembic 导入器（3ds Max 2018+ 通常内置）。'
+    ),
+    category='scene_io',
+    dangerous=True,
+)
+def import_alembic(file_path, import_normals=True):
+    """导入 Alembic 文件。
+
+    调用 3ds Max 的 ``importFile``，并传入 ``#noPrompt`` 避免弹窗。
+    import_normals 会映射为 ``importNormals`` 关键字参数。
+
+    :param file_path: .abc 文件绝对路径
+    :param import_normals: True 时导入法线数据
+    :returns: dict {"file": ..., "ok": True}
+    """
+    _ensure_in_max()
+    if not os.path.isfile(file_path):
+        raise ValueError('文件不存在: {}'.format(file_path))
+    if os.path.splitext(file_path)[1].lower() != '.abc':
+        raise ValueError('Alembic 导入仅支持 .abc 扩展名: {}'.format(file_path))
+
+    kwargs = {}
+    if import_normals:
+        kwargs['importNormals'] = True
+
+    ok = rt.importFile(file_path, rt.Name('noPrompt'), **kwargs)
+    return {'file': file_path, 'ok': bool(ok)}

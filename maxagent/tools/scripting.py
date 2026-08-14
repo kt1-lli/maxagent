@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""脚本逃生舱：让 agent 在预定义工具不够用时，直接执行 MaxScript 或 Python。
+"""脚本工具：让 agent 在预定义工具不够用时，直接执行 MaxScript 或 Python。
 
-这是覆盖"尽可能多的 Max 操作"的关键 —— LLM 可现场写脚本完成任何 Max 能做的事。
+run_maxscript / run_python 是 MaxAgent 的**标准工具**（不再是"逃生舱"）。
+LLM 在预定义工具无法满足需求时，应优先使用它们编写脚本完成复杂或小众操作。
 
-⚠️ 安全：
-- 这两个工具被标记为 dangerous=True，dispatcher 会调用 confirm_callback 弹窗确认；
-- 上层应根据 AppConfig.allow_escape_hatch / confirm_before_exec 决定是否注册。
+安全约束：
+- 工具标记为 dangerous=True，dispatcher 会调用 confirm_callback 弹窗确认；
+- 执行前会经过安全扫描（Python AST / MaxScript 正则），按 AppConfig 中
+  ``allow_script_tools``（脚本工具总开关）与 ``confirm_before_exec``
+  （执行前确认）决定能力策略；
+- 默认能力策略较保守，禁止 shell、文件删除、网络、.NET 反射等危险调用。
 """
 
 from __future__ import absolute_import
@@ -19,10 +23,10 @@ import traceback
 from typing import Any
 from typing import Dict
 
+from ..logger import get_logger
 from ..runtime_helpers import IN_MAX
 from ..runtime_helpers import rt
-from ..logger import get_logger
-from ..safety import validate_escape_hatch
+from ..safety import validate_script_code
 from .registry import tool
 
 
@@ -30,13 +34,13 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------- #
-# MaxScript 逃生舱
+# MaxScript 脚本工具
 # ---------------------------------------------------------------------- #
 
 @tool(
     name="run_maxscript",
     description=(
-        "在 3ds Max 中执行任意 MaxScript 代码字符串，返回 MaxScript 表达式的结果。"
+        "在 3ds Max 中执行 MaxScript 代码字符串，返回 MaxScript 表达式的结果。"
         "适用于预定义工具未覆盖的场景，例如复杂的修改器栈操作、特殊插件调用、"
         "查询冷门属性等。注意：写出的代码会作为 rt.execute() 的字符串执行，"
         "请注意 MaxScript 字符串转义。"
@@ -48,7 +52,7 @@ logger = get_logger(__name__)
         "for 用 in/=...to/collect；数组索引从 1 开始；"
         "标识符用英文 camelCase；注释用中文。"
     ),
-    category="escape_hatch",
+    category="scripting",
     dangerous=True,
     wrap_undo=True,
     run_on_main_thread=True,
@@ -68,7 +72,7 @@ def run_maxscript(code):
     t0 = time.time()
 
     # 安全扫描：基于 capability profile 拦截危险调用
-    scan_ok, scan_hint = validate_escape_hatch("run_maxscript", code)
+    scan_ok, scan_hint = validate_script_code("run_maxscript", code)
     if not scan_ok:
         logger.info(
             "run_maxscript rejected by safety scan code_len=%d hint=%s",
@@ -144,13 +148,13 @@ def run_maxscript(code):
 
 
 # ---------------------------------------------------------------------- #
-# Python (pymxs) 逃生舱
+# Python (pymxs) 脚本工具
 # ---------------------------------------------------------------------- #
 
 @tool(
     name="run_python",
     description=(
-        "在 3ds Max 进程内执行任意 Python 代码（已注入 pymxs.runtime 为 rt）。"
+        "在 3ds Max 进程内执行 Python 代码（已注入 pymxs.runtime 为 rt）。"
         "适用于希望直接用 Python 操作 Max 的场景，比 MaxScript 更易写复杂逻辑。"
         "执行环境中已可用：pymxs、rt（=pymxs.runtime）。"
         "可以通过 print() 输出，所有 stdout 会被捕获并返回。"
@@ -162,7 +166,7 @@ def run_maxscript(code):
         "动画/撤销上下文用 with pymxs.animate(True): / with pymxs.undo(True):；"
         "标识符用英文 camelCase；注释用中文。"
     ),
-    category="escape_hatch",
+    category="scripting",
     dangerous=True,
     wrap_undo=True,
     run_on_main_thread=True,
@@ -181,7 +185,7 @@ def run_python(code):
     t0 = time.time()
 
     # 安全扫描：基于 capability profile 拦截危险调用
-    scan_ok, scan_hint = validate_escape_hatch("run_python", code)
+    scan_ok, scan_hint = validate_script_code("run_python", code)
     if not scan_ok:
         logger.info(
             "run_python rejected by safety scan code_len=%d hint=%s",
@@ -259,14 +263,3 @@ def run_python(code):
         "stdout": buf.getvalue(),
         "result": result_str,
     }
-
-
-# ---------------------------------------------------------------------- #
-# 注册控制：上层可根据用户配置决定是否注册逃生舱
-# ---------------------------------------------------------------------- #
-
-def unregister_escape_hatch():
-    """从全局注册表移除逃生舱（用于安全模式）。"""
-    from .registry import _REGISTRY  # pylint: disable=import-outside-toplevel
-    for name in ("run_maxscript", "run_python"):
-        _REGISTRY.pop(name, None)

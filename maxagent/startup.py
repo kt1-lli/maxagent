@@ -346,7 +346,7 @@ def show_panel(force=False):
             pass
 
     # 1. 加载工具
-    n = load_all_tools(include_escape_hatch=True)
+    n = load_all_tools()
     logger.info('已加载 %d 个工具', n)
 
     # 2. 复用单例

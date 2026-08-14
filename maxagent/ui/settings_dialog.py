@@ -779,10 +779,11 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow('', self.auto_show_chk)
 
         self.allow_escape_chk = QtWidgets.QCheckBox(
-            '允许使用 run_maxscript / run_python 工具',
+            '允许使用 run_maxscript / run_python 脚本工具（标准工具）',
         )
         self.allow_escape_chk.setToolTip(
-            '关闭后 LLM 无法执行任意脚本，仅能调用预定义工具。',
+            '关闭后 LLM 无法调用脚本工具，仅能使用预定义工具。'
+            '脚本工具受安全扫描与执行前确认约束，不是无限制逃生舱。',
         )
         self.allow_escape_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.allow_escape_chk)
@@ -2172,7 +2173,7 @@ class SettingsDialog(QtWidgets.QDialog):
         cfg = self._config.config
         for chk, val in (
             (self.auto_show_chk, cfg.auto_show_on_startup),
-            (self.allow_escape_chk, cfg.allow_escape_hatch),
+            (self.allow_escape_chk, cfg.allow_script_tools),
             (self.confirm_exec_chk, cfg.confirm_before_exec),
             (self.wrap_undo_chk, cfg.wrap_undo),
             (self.vision_enabled_chk, getattr(cfg, 'vision_enabled', True)),
@@ -2226,7 +2227,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def _on_app_setting_changed(self, _checked):
         cfg = self._config.config
         cfg.auto_show_on_startup = bool(self.auto_show_chk.isChecked())
-        cfg.allow_escape_hatch = bool(self.allow_escape_chk.isChecked())
+        cfg.allow_script_tools = bool(self.allow_escape_chk.isChecked())
         cfg.confirm_before_exec = bool(self.confirm_exec_chk.isChecked())
         cfg.wrap_undo = bool(self.wrap_undo_chk.isChecked())
         cfg.vision_enabled = bool(self.vision_enabled_chk.isChecked())

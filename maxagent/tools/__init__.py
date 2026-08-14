@@ -29,7 +29,8 @@ logger = get_logger(__name__)
 def load_all_tools(include_escape_hatch=True, load_user_tools=True):
     """导入并注册所有内置工具模块。
 
-    :param include_escape_hatch: 是否注册 run_maxscript / run_python 逃生舱
+    :param include_escape_hatch: 已废弃，保留仅用于兼容；脚本工具
+        ``run_maxscript`` / ``run_python`` 现为标准工具，默认始终注册。
     :param load_user_tools: 是否扫描并加载 ``user_tools/`` 下用户学习到的工具
     :returns: 已注册工具的总数
     """
@@ -56,7 +57,6 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
         'maxagent.tools.web_tools',
         'maxagent.tools.autodesk_docs',
         'maxagent.tools.memory_tools',
-        'maxagent.tools.batch',
         'maxagent.tools.creative',
         'maxagent.tools.viewport_capture',
         'maxagent.tools.scene_awareness',
@@ -76,12 +76,21 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
             # 某个模块加载失败不应影响其他模块
             logger.exception('加载工具模块失败: %s', name)
 
-    if include_escape_hatch:
-        from . import escape_hatch  # noqa: F401
-    else:
-        # 已加载过，再安全卸载一次
-        from .escape_hatch import unregister_escape_hatch
-        unregister_escape_hatch()
+    # 脚本工具（run_maxscript / run_python）已作为标准工具始终加载。
+    # include_escape_hatch 保留为兼容参数，不再控制是否卸载。
+    from . import scripting  # noqa: F401
+    if not include_escape_hatch:
+        logger.debug(
+            'include_escape_hatch=False 已忽略，脚本工具现为标准工具'
+        )
+
+    # batch 模块在包 __init__ 顶层已被导入（导出了 batch_execute / set_global_dispatcher），
+    # 这里跳过重复加载，避免 reload 时工具名重复。
+    if 'maxagent.tools.batch' not in sys.modules:
+        try:
+            importlib.import_module('maxagent.tools.batch')
+        except Exception:  # pylint: disable=broad-except
+            logger.exception('加载工具模块失败: maxagent.tools.batch')
 
     # 加载用户学习的工具（失败不影响主流程）
     if load_user_tools:

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""安全护栏：场景级自动备份与逃生舱静态扫描。
+"""安全护栏：场景级自动备份与脚本工具静态扫描。
 
 职责：
 1. 在危险/写入操作前自动保存临时 Max 文件，作为场景级逃生舱。
-2. 对 Python 逃生舱代码做轻量 AST 黑名单扫描。
-3. 对 MaxScript 逃生舱做关键字/正则拦截。
+2. 对 Python 脚本工具代码做轻量 AST 黑名单扫描。
+3. 对 MaxScript 脚本工具做关键字/正则拦截。
 
 注意：这不是真正的沙箱，只是降低误操作损害的保险层。
 """
@@ -209,8 +209,12 @@ def get_capability_from_config() -> CapabilityProfile:
     try:
         from .config import load_config
         cfg = load_config()
-        # 只有同时开启逃生舱 + 关闭执行前确认，才给宽松策略
-        if cfg.allow_escape_hatch and not cfg.confirm_before_exec:
+        # 只有同时开启脚本工具 + 关闭执行前确认，才给宽松策略
+        allow_script_tools = getattr(cfg, 'allow_script_tools', True)
+        # 兼容老配置名 allow_escape_hatch
+        if getattr(cfg, 'allow_escape_hatch', True) is False:
+            allow_script_tools = False
+        if allow_script_tools and not cfg.confirm_before_exec:
             return PERMISSIVE_CAPABILITY
     except Exception:  # pylint: disable=broad-except
         pass
@@ -302,7 +306,7 @@ def scan_python_code(
     code: str,
     cap: Optional[CapabilityProfile] = None,
 ) -> Tuple[bool, str]:
-    """对 Python 逃生舱代码做静态安全扫描。
+    """对 Python 脚本工具代码做静态安全扫描。
 
     :returns: (ok, reason) ok=True 表示通过
     """
@@ -347,7 +351,7 @@ def scan_maxscript_code(
     code: str,
     cap: Optional[CapabilityProfile] = None,
 ) -> Tuple[bool, str]:
-    """对 MaxScript 逃生舱代码做字符串级危险扫描。
+    """对 MaxScript 脚本工具代码做字符串级危险扫描。
 
     :returns: (ok, reason) ok=True 表示通过
     """
@@ -382,7 +386,7 @@ def scan_maxscript_code(
 # 统一校验入口
 # ---------------------------------------------------------------------- #
 
-def validate_escape_hatch(
+def validate_script_code(
     tool_name: str,
     code: str,
     cap: Optional[CapabilityProfile] = None,
@@ -400,3 +404,7 @@ def validate_escape_hatch(
     if tool_name == "run_maxscript":
         return scan_maxscript_code(code, cap)
     return (True, "")
+
+
+# 保留旧名作为兼容别名，避免外部代码和旧版测试立即失效。
+validate_escape_hatch = validate_script_code

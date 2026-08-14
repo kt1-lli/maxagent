@@ -197,9 +197,9 @@ class AppConfig:
     version: int = CONFIG_VERSION
     active_profile: str = "Ollama (本地)"
     profiles: List[LLMProfile] = field(default_factory=list)
-    # 安全：是否允许执行 run_maxscript / run_python 等"逃生舱"工具
-    allow_escape_hatch: bool = True
-    # 是否每次执行逃生舱前弹窗确认
+    # 安全：是否允许执行 run_maxscript / run_python 等脚本工具
+    allow_script_tools: bool = True
+    # 是否每次执行脚本工具前弹窗确认
     confirm_before_exec: bool = True
     # 是否每次 agent 操作包一层 undo
     wrap_undo: bool = True
@@ -341,7 +341,7 @@ class AppConfig:
             "version": self.version,
             "active_profile": self.active_profile,
             "profiles": [p.to_dict() for p in self.profiles],
-            "allow_escape_hatch": self.allow_escape_hatch,
+            "allow_script_tools": self.allow_script_tools,
             "confirm_before_exec": self.confirm_before_exec,
             "wrap_undo": self.wrap_undo,
             "max_context_chars": self.max_context_chars,
@@ -390,7 +390,10 @@ class AppConfig:
         # 避免老数据缺失字段时指向不存在的 profile
         fallback_active = cfg.profiles[0].name if cfg.profiles else "Default"
         cfg.active_profile = data.get("active_profile") or fallback_active
-        cfg.allow_escape_hatch = bool(data.get("allow_escape_hatch", True))
+        # allow_script_tools 是新的标准字段；allow_escape_hatch 为老配置名，兼容读取。
+        cfg.allow_script_tools = bool(
+            data.get("allow_script_tools", data.get("allow_escape_hatch", True))
+        )
         cfg.confirm_before_exec = bool(data.get("confirm_before_exec", True))
         cfg.wrap_undo = bool(data.get("wrap_undo", True))
         cfg.max_context_chars = int(data.get("max_context_chars", 4000))
