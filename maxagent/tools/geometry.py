@@ -48,17 +48,25 @@ def _ensure_in_max():
 
 
 def _to_point3(position):
-    """把 [x, y, z] 列表/元组转为 rt.Point3，非法输入返回 None。"""
+    """把 [x, y, z] 列表/元组转为 rt.Point3，非法输入抛出 ValueError。
+
+    之前返回 None 会导致非法 position 被静默忽略，agent 以为创建成功。
+    现在改为显式报错，让调用方能立即感知参数错误。
+    """
     if position is None:
         return None
     try:
         if len(position) != 3:
-            return None
+            raise ValueError(
+                'position 必须是包含 3 个数值的列表/元组: {}'.format(position),
+            )
         return rt.Point3(
             float(position[0]), float(position[1]), float(position[2]),
         )
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            'position 参数解析失败: {} ({})'.format(position, exc),
+        ) from exc
 
 
 def _verify_position(node, expected):
@@ -93,18 +101,17 @@ def _apply_common(node, name, position, rotation_euler):
     """统一处理对象创建后的命名、后置定位与旋转。
 
     pymxs 对点号属性访问的赋值行为与 MAXScript 不同，直接 ``node.pos = p3``
-    在某些版本/对象上不会真正生效。Autodesk 官方文档推荐三种方案：
+    在某些版本/对象上不会真正生效。Autodesk 官方文档推荐的
+    ``rt.setProperty`` / ``node.setmxsprop`` 在 Max 2022 实测仍可能失败。
 
-    1. ``rt.setProperty(node, rt.Name('pos'), p3)`` — MAXScript 原生函数
-    2. ``node.setmxsprop('pos', p3)`` — MXSWrapperBase 方法
-    3. 拷贝-修改-回写 — 对 Point3 等值类型
-
-    本模块按 1→2→3 顺序三级兜底，确保在 Max 2022~2027 均可靠。
-    构造器不再传 pos，统一走后置 setter，避免构造器参数被忽略后静默失败。
+    经过多轮回归测试验证，最可靠的方式是回到 MAXScript 原生执行路径：
+    通过 ``rt.execute`` 直接运行 ``obj.pos = [x, y, z]`` /
+    ``obj.rotation = eulerAngles x y z``。该路径与用户在 MaxScript 监听器
+    中手动验证成功的路径完全一致。
 
     :param node: rt 创建返回的节点
     :param name: 要设置的名字（空字符串跳过）
-    :param position: 期望位置 [x, y, z]，用于硬校验；None 表示不校验
+    :param position: 期望位置 [x, y, z]，None 表示不校验
     :param rotation_euler: 期望旋转（欧拉角度），None 表示不设置
     """
     if name:
@@ -113,53 +120,50 @@ def _apply_common(node, name, position, rotation_euler):
         except Exception:  # pylint: disable=broad-except
             pass
 
-    # position：三级兜底
-    # 1. rt.setProperty + rt.Name（知识库方案 1，MAXScript 原生路径）
-    # 2. node.setmxsprop（知识库方案 2，pymxs 包装）
-    # 3. 拷贝-修改-回写（知识库方案 3，对 Point3 等值类型）
+    node_name = str(node.name).replace('"', '\\"')
+
     if position is not None:
         p3 = _to_point3(position)
         if p3 is not None:
-            pos_set = False
-            # 方案 1：MAXScript 原生 setProperty
+            script = (
+                'obj = getNodeByName "{name}"\n'
+                'obj.pos = [{x}, {y}, {z}]'
+            ).format(
+                name=node_name,
+                x=float(p3.x),
+                y=float(p3.y),
+                z=float(p3.z),
+            )
             try:
-                rt.setProperty(node, rt.Name('pos'), p3)
-                pos_set = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-            # 方案 2：MXSWrapperBase setmxsprop
-            if not pos_set:
-                try:
-                    node.setmxsprop('pos', p3)
-                    pos_set = True
-                except Exception:  # pylint: disable=broad-except
-                    pass
-            # 方案 3：拷贝-修改-回写
-            if not pos_set:
-                try:
-                    current_pos = node.pos
-                    current_pos.x = p3.x
-                    current_pos.y = p3.y
-                    current_pos.z = p3.z
-                    node.pos = current_pos
-                    pos_set = True
-                except Exception:  # pylint: disable=broad-except
-                    pass
+                rt.execute(script)
+            except Exception as exc:  # pylint: disable=broad-except
+                raise RuntimeError(
+                    'position 设置失败: {} ({})'.format(position, exc),
+                ) from exc
             _verify_position(node, position)
 
-    if rotation_euler is not None and len(rotation_euler) == 3:
-        try:
-            euler = rt.eulerAngles(
-                float(rotation_euler[0]),
-                float(rotation_euler[1]),
-                float(rotation_euler[2]),
+    if rotation_euler is not None:
+        if len(rotation_euler) != 3:
+            raise ValueError(
+                'rotation_euler 必须是包含 3 个数值的列表/元组: {}'.format(
+                    rotation_euler,
+                ),
             )
-            rt.setProperty(node, rt.Name('rotation'), rt.eulerToQuat(euler))
-        except Exception:  # pylint: disable=broad-except
-            try:
-                node.setmxsprop('rotation', rt.eulerToQuat(euler))
-            except Exception:  # pylint: disable=broad-except
-                pass
+        script = (
+            'obj = getNodeByName "{name}"\n'
+            'obj.rotation = eulerAngles {x} {y} {z}'
+        ).format(
+            name=node_name,
+            x=float(rotation_euler[0]),
+            y=float(rotation_euler[1]),
+            z=float(rotation_euler[2]),
+        )
+        try:
+            rt.execute(script)
+        except Exception as exc:  # pylint: disable=broad-except
+            raise RuntimeError(
+                'rotation_euler 设置失败: {} ({})'.format(rotation_euler, exc),
+            ) from exc
     return node
 
 
