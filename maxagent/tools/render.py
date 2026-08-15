@@ -28,7 +28,10 @@ def _ensure_in_max():
         '注意：渲染过程会阻塞 Max 主线程，可能耗时数秒到数分钟。'
     ),
     category='render',
-    dangerous=True,  # 长耗时 + 写文件
+    dangerous=True,  # 长耗时 + 写文件,
+    examples=[{"summary": "典型调用", "args": {"output_path": 'C:/Work/render.png', "width": 1920, "height": 1080, "frame": 30, "camera": 'Camera01'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def render_current_frame(
     output_path,
@@ -81,6 +84,9 @@ def render_current_frame(
     description='渲染一段帧序列到指定目录（自动按 ####.ext 格式编号）。',
     category='render',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"output_dir": 'C:/Work/frames', "file_basename": 'frame', "file_ext": 'png', "start_frame": 0, "end_frame": 100, "width": 1920, "height": 1080, "camera": 'Camera01'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def render_animation(
     output_dir,
@@ -146,6 +152,9 @@ def render_animation(
 @tool(
     description='设置渲染输出分辨率与图像比例。不会立即渲染，只是配置 RenderSettings。',
     category='render',
+    examples=[{"summary": "典型调用", "args": {"width": 1920, "height": 1080, "pixel_aspect": 1.0}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def set_render_resolution(width=1920, height=1080, pixel_aspect=1.0):
     """配置渲染分辨率。

@@ -102,6 +102,9 @@ def _default_approval(proposal):
     wrap_undo=False,
     # 必须主线程：弹窗、registry 操作都需要
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "description": 'value', "code": 'print("hello")', "rationale": ''}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def propose_new_tool(name, description, code, rationale=''):
     # type: (str, str, str, str) -> dict
@@ -222,6 +225,12 @@ def propose_new_tool(name, description, code, rationale=''):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出所有已学习工具', 'args': {}}],
+    notes=[
+        '返回已学习工具的名称、触发关键词和简短描述。',
+        '如需运行某个工具，请使用 run_learned_tool（如存在）。',
+    ],
+    returns_desc='dict {"count": 工具数量, "tools": [...]}',
 )
 def list_learned_tools():
     """列出已学习的工具。"""
@@ -259,6 +268,9 @@ def list_learned_tools():
     wrap_undo=False,
     # 必须主线程：弹窗 + registry 操作
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "new_code": 'value', "rationale": 'value'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def patch_learned_tool(name, new_code, rationale):
     # type: (str, str, str) -> dict
@@ -426,6 +438,10 @@ def patch_learned_tool(name, new_code, rationale):
     dangerous=True,
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['对象 name 必须已存在于场景中']
 )
 def delete_learned_tool(name):
     """删除指定的学习工具。

@@ -224,6 +224,27 @@ def create_box(
 @tool(
     description='在场景中创建一个球体（Sphere）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认球体',
+            'args': {'radius': 10, 'segments': 32},
+        },
+        {
+            'summary': '在指定位置创建高细分球体',
+            'args': {
+                'name': 'SmoothSphere',
+                'radius': 15,
+                'segments': 64,
+                'position': '[0, 0, 50]',
+            },
+        },
+    ],
+    notes=[
+        'position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'segments 决定球体表面分段数，数值越高越圆滑。',
+        '若 name 与场景中已有对象重名，Max 会自动添加后缀。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Sphere"}',
 )
 def create_sphere(
     radius=10.0,
@@ -249,6 +270,29 @@ def create_sphere(
 @tool(
     description='在场景中创建一个圆柱体（Cylinder）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认圆柱体',
+            'args': {'radius': 10, 'height': 20, 'sides': 18},
+        },
+        {
+            'summary': '在指定位置创建放倒的圆柱体',
+            'args': {
+                'name': 'LyingCylinder',
+                'radius': 5,
+                'height': 30,
+                'sides': 24,
+                'position': '[20, 0, 0]',
+                'rotation_euler': '[0, 90, 0]',
+            },
+        },
+    ],
+    notes=[
+        'position 和 rotation_euler 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'sides 决定侧面边数，数值越高越接近圆形。',
+        '创建后若需精确摆放，可继续使用 move_object / rotate_object。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Cylinder"}',
 )
 def create_cylinder(
     radius=10.0,
@@ -281,6 +325,29 @@ def create_cylinder(
 @tool(
     description='在场景中创建一个圆锥体（Cone）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '创建默认尖锥',
+            'args': {'radius1': 10, 'radius2': 0, 'height': 20, 'sides': 18},
+        },
+        {
+            'summary': '创建圆台并指定位置',
+            'args': {
+                'name': 'TruncatedCone',
+                'radius1': 10,
+                'radius2': 5,
+                'height': 15,
+                'sides': 24,
+                'position': '[10, 10, 10]',
+            },
+        },
+    ],
+    notes=[
+        'position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'radius2 为 0 时生成尖锥，大于 0 时生成圆台。',
+        'sides 决定底面/顶面边数，数值越高越接近圆形。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Cone"}',
 )
 def create_cone(
     radius1=10.0,
@@ -314,6 +381,29 @@ def create_cone(
 @tool(
     description='在场景中创建一个圆环（Torus）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认圆环',
+            'args': {'radius1': 15, 'radius2': 3, 'segments': 24, 'sides': 12},
+        },
+        {
+            'summary': '创建并指定位置的大圆环',
+            'args': {
+                'name': 'BigTorus',
+                'radius1': 30,
+                'radius2': 5,
+                'segments': 48,
+                'sides': 16,
+                'position': '[0, 0, 25]',
+            },
+        },
+    ],
+    notes=[
+        'position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'radius1 是主半径（中心到管中心），radius2 是副半径（管半径）。',
+        'segments 和 sides 分别控制主方向和副方向的分段数。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Torus"}',
 )
 def create_torus(
     radius1=15.0,
@@ -347,6 +437,29 @@ def create_torus(
 @tool(
     description='在场景中创建一个平面（Plane）。常用作地面。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认平面',
+            'args': {'length': 100, 'width': 100, 'length_segs': 4, 'width_segs': 4},
+        },
+        {
+            'summary': '创建高细分地面',
+            'args': {
+                'name': 'Ground',
+                'length': 200,
+                'width': 200,
+                'length_segs': 20,
+                'width_segs': 20,
+                'position': '[0, 0, 0]',
+            },
+        },
+    ],
+    notes=[
+        'position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'length 对应 Y 方向，width 对应 X 方向。',
+        'length_segs 和 width_segs 决定平面细分程度，影响后续变形精度。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Plane"}',
 )
 def create_plane(
     length=100.0,
@@ -380,6 +493,27 @@ def create_plane(
 @tool(
     description='在场景中创建一个茶壶（Teapot，Max 的标志性测试模型）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认茶壶',
+            'args': {'radius': 10, 'segments': 4},
+        },
+        {
+            'summary': '创建高细分茶壶并指定位置',
+            'args': {
+                'name': 'HiResTeapot',
+                'radius': 20,
+                'segments': 8,
+                'position': '[0, 50, 0]',
+            },
+        },
+    ],
+    notes=[
+        'position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'segments 控制茶壶表面细分级别，数值越高面数越多。',
+        'Teapot 是 Max 内置测试模型，适合快速验证渲染/材质效果。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Teapot"}',
 )
 def create_teapot(
     radius=10.0,

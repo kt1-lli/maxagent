@@ -59,6 +59,9 @@ logger = get_logger(__name__)
     wrap_undo=False,
     # 仅写本地 JSON，不需要主线程 pymxs 调用
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"task_summary": 'value', "lessons": 'value', "what_went_wrong": '', "what_went_well": '', "tags": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def reflect_on_outcome(
     task_summary,
@@ -120,6 +123,12 @@ def reflect_on_outcome(
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出最近反思记录', 'args': {}}],
+    notes=[
+        '返回反思记录的摘要。',
+        '反思用于总结工具调用成功/失败经验，帮助后续决策。',
+    ],
+    returns_desc='dict {"count": 反思数量, "reflections": [...]}',
 )
 def list_reflections():
     """列出反思（按时间倒序，仅返回近 30 天内的）。"""
@@ -144,6 +153,9 @@ def list_reflections():
     wrap_undo=False,
     # 删除盘上文件，与 dangerous 弹窗结合：会走 confirm_callback
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"reflection_id": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def delete_reflection(reflection_id):
     """删除指定反思。

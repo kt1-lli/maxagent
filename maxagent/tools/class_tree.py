@@ -169,6 +169,9 @@ def _list_constructible_classes_main(super_class: Optional[str], pattern: Option
     category="reflection",
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"super_class": 'value', "pattern": 'value', "limit": 10}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def list_class_tree(super_class: Optional[str] = None, pattern: Optional[str] = None, limit: int = 100):
     """列出 Max 类树。
@@ -193,6 +196,9 @@ def list_class_tree(super_class: Optional[str] = None, pattern: Optional[str] = 
     category="reflection",
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"class_name": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def get_class_info(class_name: str):
     """查询单个类的反射信息。
@@ -214,6 +220,9 @@ def get_class_info(class_name: str):
     category="reflection",
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"super_class": 'value', "pattern": 'value', "limit": 10}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def list_constructible_classes(super_class: Optional[str] = None, pattern: Optional[str] = None, limit: int = 100):
     """列出可构造类。

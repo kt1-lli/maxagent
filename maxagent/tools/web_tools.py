@@ -103,6 +103,9 @@ def _resolve_web_settings():
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"query": 'Box.position', "max_results": 'value', "fetch_page": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def web_search(query, max_results=None, fetch_page=None):
     """联网搜索。
@@ -172,6 +175,9 @@ def web_search(query, max_results=None, fetch_page=None):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"url": 'https://example.com', "max_chars": 4000}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def web_fetch(url, max_chars=4000):
     """抓取单个 URL 的正文文本。

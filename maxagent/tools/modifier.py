@@ -99,13 +99,30 @@ def _resolve_modifier_class(cls_name):
 
 
 @tool(
-    description=(
-        '给对象添加一个修改器。type 可选: bend / twist / taper / noise / '
-        'turbosmooth / meshsmooth / shell / symmetry / unwrap_uvw / uvw_map / '
-        'edit_poly / edit_mesh / subdivide / extrude / lathe / displace 等，'
-        '也可以直接写 MaxScript 类名（如 "TurboSmooth"）。'
-    ),
+    description='给对象添加一个修改器，可设置初始化参数。',
     category='modifier',
+    examples=[
+        {
+            'summary': '给对象添加一个 TurboSmooth 修改器',
+            'args': {'name': 'Box001', 'modifier_type': 'turbosmooth'},
+        },
+        {
+            'summary': '添加 Bend 修改器并设置弯曲角度和方向',
+            'args': {
+                'name': 'Box001',
+                'modifier_type': 'bend',
+                'params': '{"angle": 45, "direction": 90}',
+            },
+        },
+    ],
+    notes=[
+        'modifier_type 支持友好名（如 turbosmooth、edit_poly）或 MaxScript 类名（如 "TurboSmooth"）。',
+        'params 可以是 dict，也可以是 JSON 字符串，工具内部会自动解析。',
+        '部分参数设置可能失败但不影响修改器添加，失败参数会被静默忽略。',
+        '修改器会被添加到栈顶（索引 1）。',
+    ],
+    returns_desc='dict {"object": 对象名, "modifier": 修改器类名, "stack_size": 栈大小}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def add_modifier(name, modifier_type, params=None):
     """给对象添加修改器。
@@ -151,8 +168,28 @@ def add_modifier(name, modifier_type, params=None):
 
 
 @tool(
-    description='移除对象修改器栈中的某个修改器（按 1-based 索引，1 是最顶层）。',
+    description='按 1-based 索引移除对象修改器栈中的某个修改器。',
     category='modifier',
+    examples=[
+        {
+            'summary': '移除栈顶修改器',
+            'args': {'name': 'Box001', 'index': 1},
+        },
+        {
+            'summary': '移除栈中第二层修改器',
+            'args': {'name': 'Box001', 'index': 2},
+        },
+    ],
+    notes=[
+        'index 为 1-based，1 表示最顶层修改器，数字越大越靠近基础对象。',
+        '移除前建议先用 list_modifiers 查看栈结构，避免误删。',
+        'index 超出有效范围会报错。',
+    ],
+    returns_desc='dict {"object": 对象名, "removed": 修改器类名, "stack_size_after": 移除后栈大小}',
+    prerequisites=[
+        '场景中必须存在名为 name 的对象',
+        '对象修改器栈不能为空',
+    ],
 )
 def remove_modifier(name, index=1):
     """删除修改器。
@@ -180,9 +217,22 @@ def remove_modifier(name, index=1):
 
 
 @tool(
-    description='列出对象的修改器栈（从顶到底）。',
+    description='列出对象的修改器栈，从顶到底显示索引、名称、类名和启用状态。',
     category='modifier',
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '查看 Box001 的修改器栈',
+            'args': {'name': 'Box001'},
+        },
+    ],
+    notes=[
+        '返回 stack 数组中 index 为 1-based，1 是最顶层修改器。',
+        'enabled 字段表示该修改器当前是否处于启用状态。',
+        '该工具不修改场景，仅用于查询。',
+    ],
+    returns_desc='dict {"object": 对象名, "stack": [{"index": 1, "name": ..., "class": ..., "enabled": ...}, ...]}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def list_modifiers(name):
     """列出修改器栈。
@@ -206,11 +256,25 @@ def list_modifiers(name):
 
 
 @tool(
-    description=(
-        '塌陷对象的修改器栈，把所有修改器烘焙成基础几何。'
-        'to 可选: "poly" 转为可编辑多边形（推荐）；"mesh" 转为可编辑网格。'
-    ),
+    description='塌陷对象的修改器栈，把所有修改器烘焙成可编辑多边形或网格。',
     category='modifier',
+    examples=[
+        {
+            'summary': '把对象塌陷为可编辑多边形',
+            'args': {'name': 'Box001', 'to': 'poly'},
+        },
+        {
+            'summary': '把对象塌陷为可编辑网格',
+            'args': {'name': 'Box001', 'to': 'mesh'},
+        },
+    ],
+    notes=[
+        'to="poly" 转为可编辑多边形（推荐）；to="mesh" 转为可编辑网格。',
+        '塌陷后修改器栈会被清空且不可逆，建议先保存文件或确认后再调用。',
+        'face_count 在部分对象上可能无法获取，返回 0。',
+    ],
+    returns_desc='dict {"object": 对象名, "result_class": 结果类名, "face_count": 面数}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def collapse_stack(name, to='poly'):
     """塌陷修改器栈。

@@ -86,6 +86,9 @@ def reset_manager_for_test(base_dir=None):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "description": 'value', "instructions": 'value', "trigger_keywords": 'value', "status": 'stable'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def save_skill(name, description, instructions, trigger_keywords=None,
                status='stable'):
@@ -130,6 +133,12 @@ def save_skill(name, description, instructions, trigger_keywords=None,
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出所有已学技能', 'args': {}}],
+    notes=[
+        '返回每个技能的名称、描述、触发关键词和使用次数。',
+        '如需查看某个技能的完整 instructions，请调用 show_skill。',
+    ],
+    returns_desc='dict {"count": 技能数量, "skills": [...]}',
 )
 def list_skills():
     """列出所有技能（不返回完整 instructions，避免 token 浪费）。"""
@@ -157,6 +166,9 @@ def list_skills():
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def show_skill(name):
     """查看指定技能的完整内容。
@@ -190,6 +202,10 @@ def show_skill(name):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['对象 name 必须已存在于场景中']
 )
 def delete_skill(name):
     """删除指定技能。
@@ -212,6 +228,9 @@ def delete_skill(name):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "reason": 'value', "instruction_changes": 'value', "param_defaults": 'value'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def propose_skill_patch(name, reason, instruction_changes=None,
                         param_defaults=None):
@@ -258,6 +277,9 @@ def propose_skill_patch(name, reason, instruction_changes=None,
     dangerous=True,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "patch_index": 0}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def apply_skill_patch(name, patch_index=0):
     # type: (str, int) -> dict
@@ -320,6 +342,9 @@ def apply_skill_patch(name, patch_index=0):
     dangerous=True,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "params": 'value'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def run_skill_code(name, params=None):
     # type: (str, Optional[Dict[str, Any]]) -> dict

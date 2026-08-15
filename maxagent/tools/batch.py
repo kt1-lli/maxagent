@@ -77,6 +77,9 @@ def set_global_dispatcher(dispatcher):
         },
         "required": ["calls"],
     },
+    examples=[{"summary": "典型调用", "args": {"calls": []}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def batch_execute(calls):
     # type: (List[Dict[str, Any]]) -> Dict[str, Any]

@@ -99,6 +99,9 @@ def _get_bbox(node):
         },
         'required': ['target'],
     },
+    examples=[{"summary": "典型调用", "args": {"target": 'value', "key_intensity": 1.0, "fill_ratio": 1.0, "back_ratio": 1.0, "prefix": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def create_three_point_lighting(
     target,
@@ -216,6 +219,9 @@ def create_three_point_lighting(
         },
         'required': ['source', 'rows', 'cols'],
     },
+    examples=[{"summary": "典型调用", "args": {"source": 'value', "rows": 1, "cols": 1, "spacing": 1.0, "z_offset": 1.0}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def arrange_in_grid(source, rows, cols, spacing=100.0, z_offset=0.0):
     """把源对象复制 rows×cols-1 份摆成矩阵。"""
@@ -286,6 +292,9 @@ def arrange_in_grid(source, rows, cols, spacing=100.0, z_offset=0.0):
         },
         'required': ['source', 'curve', 'count'],
     },
+    examples=[{"summary": "典型调用", "args": {"source": 'value', "curve": 'value', "count": 1, "align_to_tangent": True}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def align_along_curve(source, curve, count, align_to_tangent=True):
     """沿曲线均匀分布对象。"""
@@ -369,6 +378,9 @@ def align_along_curve(source, curve, count, align_to_tangent=True):
         },
         'required': [],
     },
+    examples=[{"summary": "典型调用", "args": {"size": 1.0, "target": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def setup_studio_scene(size=500.0, target=''):
     """搭建 studio 场景。"""
@@ -489,6 +501,9 @@ def setup_studio_scene(size=500.0, target=''):
         },
         'required': ['name'],
     },
+    examples=[{"summary": "典型调用", "args": {"name": 'Box01', "tint": 'value', "roughness": 1.0, "assign_to": 'value'}}],
+notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def create_pbr_metal(name, tint='200,200,200', roughness=0.3, assign_to=''):
     """创建 PBR 金属预设材质。"""

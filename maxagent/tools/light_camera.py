@@ -40,6 +40,28 @@ def _get_node(name):
         'direct（平行光） / skylight（天光） / target_spot / target_direct。'
     ),
     category='light_camera',
+    examples=[
+        {
+            'summary': '在原点创建一盏默认点光源',
+            'args': {'type': 'omni'},
+        },
+        {
+            'summary': '在指定位置创建红色聚光灯',
+            'args': {
+                'type': 'spot',
+                'name': 'KeyLight',
+                'position': '[100, 200, 100]',
+                'multiplier': 1.5,
+                'color': '[255, 200, 150]',
+            },
+        },
+    ],
+    notes=[
+        'position 和 target_position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'target_spot / target_direct 必须提供 target_position，否则目标点默认在世界原点。',
+        'color 接受 0-255 或 0-1 的 RGB 值，内部会统一归一化处理。',
+    ],
+    returns_desc='dict {"name": 灯光实际对象名, "type": Max 类名}',
 )
 def create_light(
     type='omni',  # pylint: disable=redefined-builtin
@@ -120,6 +142,28 @@ def create_light(
 @tool(
     description='创建一个相机。type: free / target / physical（Max 2016+）。',
     category='light_camera',
+    examples=[
+        {
+            'summary': '在原点创建自由相机',
+            'args': {'type': 'free'},
+        },
+        {
+            'summary': '创建一架对准目标点的目标相机',
+            'args': {
+                'type': 'target',
+                'name': 'RenderCam',
+                'position': '[0, -300, 150]',
+                'target_position': '[0, 0, 80]',
+                'fov': 60.0,
+            },
+        },
+    ],
+    notes=[
+        'position 和 target_position 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'physical 相机需要 Max 2016 及以上版本并加载对应插件，否则可能回退为 free 相机。',
+        'target 相机必须设置 target_position 以确定目标点，否则目标默认在世界原点。',
+    ],
+    returns_desc='dict {"name": 相机实际对象名, "type": Max 类名}',
 )
 def create_camera(
     type='free',  # pylint: disable=redefined-builtin
@@ -178,6 +222,18 @@ def create_camera(
 @tool(
     description='把活动视口切换为指定相机视角。',
     category='light_camera',
+    examples=[
+        {
+            'summary': '将活动视口切换到名为 RenderCam 的相机',
+            'args': {'camera_name': 'RenderCam'},
+        },
+    ],
+    notes=[
+        'camera_name 必须精确匹配场景中已存在的相机对象名。',
+        '切换后活动视口会立即变为该相机的视角，可用于渲染预览。',
+    ],
+    returns_desc='dict {"camera": 相机名, "ok": True}',
+    prerequisites=['场景中必须存在名为 camera_name 的相机对象'],
 )
 def set_viewport_camera(camera_name):
     """设置视口相机。
@@ -194,6 +250,21 @@ def set_viewport_camera(camera_name):
 @tool(
     description='把活动视口切换为标准视图（top / front / left / perspective 等）。',
     category='light_camera',
+    examples=[
+        {
+            'summary': '切换到透视图',
+            'args': {'view_type': 'perspective'},
+        },
+        {
+            'summary': '切换到顶视图',
+            'args': {'view_type': 'top'},
+        },
+    ],
+    notes=[
+        'view_type 仅支持 top / bottom / front / back / left / right / perspective。',
+        '传入值不区分大小写，但建议使用小写。',
+    ],
+    returns_desc='dict {"view_type": 标准化后的视图名, "ok": True}',
 )
 def set_viewport_view(view_type='perspective'):
     """切换标准视图。

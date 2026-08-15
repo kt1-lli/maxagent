@@ -56,6 +56,41 @@ logger = get_logger(__name__)
     dangerous=True,
     wrap_undo=True,
     run_on_main_thread=True,
+    examples=[
+        {
+            'summary': '查询当前选中对象的名称',
+            'args': {
+                'code': (
+                    'local sel = selection as array\n'
+                    'if sel.count > 0 then (\n'
+                    '    return sel[1].name\n'
+                    ') else (\n'
+                    '    return "无选中对象"\n'
+                    ')'
+                ),
+            },
+        },
+        {
+            'summary': '获取场景中可见对象数量',
+            'args': {
+                'code': (
+                    'local visibleObjs = for o in objects where not o.isHidden collect o\n'
+                    'return visibleObjs.count'
+                ),
+            },
+        },
+    ],
+    notes=[
+        'code 必须是完整可执行的 MaxScript 代码片段，不能只有注释或空字符串。',
+        'MaxScript 数组索引从 1 开始，循环推荐用 `for o in objects collect o`。',
+        '本工具会经过安全扫描和语法校验，命中危险调用或 if-do-else 等硬性错误会被拒绝。',
+    ],
+    returns_desc=(
+        '成功时返回 {"success": true, "value": "<字符串化的 MaxScript 返回值>"}；'
+        '失败时返回 {"success": false, "error": "错误信息", '
+        '可选 "rejected_by_safety_scan" / "rejected_by_validator": true, '
+        '"traceback": "堆栈"}。'
+    ),
 )
 def run_maxscript(code):
     """执行 MaxScript 代码。
@@ -170,6 +205,34 @@ def run_maxscript(code):
     dangerous=True,
     wrap_undo=True,
     run_on_main_thread=True,
+    examples=[
+        {
+            'summary': '获取场景中对象总数',
+            'args': {
+                'code': 'result = len(rt.objects)\nprint("对象总数:", result)',
+            },
+        },
+        {
+            'summary': '列出当前选中对象的类名',
+            'args': {
+                'code': (
+                    'sel = rt.selection\n'
+                    'result = [o.__class__.__name__ for o in sel]\n'
+                    'print(result)'
+                ),
+            },
+        },
+    ],
+    notes=[
+        '代码中需要返回给调用方的值请赋值给变量 result，否则 result 字段为空。',
+        'print() 输出会被捕获到返回值的 stdout 字段，可用于调试。',
+        '执行环境已注入 pymxs 与 rt，无需再写 from pymxs import runtime as rt。',
+    ],
+    returns_desc=(
+        '成功时返回 {"success": true, "stdout": "print 输出", "result": "repr(result)"}；'
+        '失败时返回 {"success": false, "error": "错误信息", "traceback": "堆栈", '
+        '"stdout": "已捕获的输出"}。'
+    ),
 )
 def run_python(code):
     """执行 Python 代码。

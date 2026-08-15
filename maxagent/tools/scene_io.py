@@ -93,6 +93,9 @@ def _get_nodes(names):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "allow_overwrite": True}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def save_max_file(file_path, allow_overwrite=True):
     """保存场景。
@@ -116,6 +119,10 @@ def save_max_file(file_path, allow_overwrite=True):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "quiet": True}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['file_path 指向的文件必须存在']
 )
 def load_max_file(file_path, quiet=True):
     """加载场景。
@@ -138,6 +145,10 @@ def load_max_file(file_path, quiet=True):
     ),
     category='scene_io',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "mode": 'prompt'}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['file_path 指向的文件必须存在']
 )
 def merge_max_file(file_path, mode='prompt'):
     """合并另一个 max 文件。
@@ -166,6 +177,10 @@ def merge_max_file(file_path, mode='prompt'):
     ),
     category='scene_io',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max'}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['file_path 指向的文件必须存在']
 )
 def import_file(file_path):
     """导入外部模型文件。
@@ -188,6 +203,9 @@ def import_file(file_path):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "selected_only": False}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def export_file(file_path, selected_only=False):
     """导出文件。
@@ -216,6 +234,9 @@ def export_file(file_path, selected_only=False):
     ),
     category='scene_io',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"names": ['Box01', 'Box02']}}],
+notes=['names 支持对象名列表或逗号分隔字符串。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def delete_objects(names):
     """删除对象。
@@ -238,6 +259,9 @@ def delete_objects(names):
 @tool(
     description='隐藏或显示对象。',
     category='scene_io',
+    examples=[{"summary": "典型调用", "args": {"names": ['Box01', 'Box02'], "hidden": True}}],
+notes=['names 支持对象名列表或逗号分隔字符串。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def set_object_visibility(names, hidden=True):
     """设置可见性。
@@ -256,6 +280,9 @@ def set_object_visibility(names, hidden=True):
 @tool(
     description='冻结或解冻对象（冻结对象在视口中显示为灰色，无法选中）。',
     category='scene_io',
+    examples=[{"summary": "典型调用", "args": {"names": ['Box01', 'Box02'], "frozen": True}}],
+notes=['names 支持对象名列表或逗号分隔字符串。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def set_object_frozen(names, frozen=True):
     """设置冻结状态。
@@ -278,6 +305,9 @@ def set_object_frozen(names, frozen=True):
     ),
     category='scene_io',
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"names": ['Box01', 'Box02'], "add_to_selection": False}}],
+notes=['names 支持对象名列表或逗号分隔字符串。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def select_objects(names, add_to_selection=False):
     """设置选中对象。
@@ -300,6 +330,12 @@ def select_objects(names, add_to_selection=False):
     description='清空当前选中。',
     category='scene_io',
     wrap_undo=False,
+    examples=[{'summary': '取消所有对象选中', 'args': {}}],
+    notes=[
+        '调用后当前选择集为空。',
+        '此操作不会修改场景对象本身。',
+    ],
+    returns_desc='dict {"ok": True}',
 )
 def clear_selection():
     """清空选中。
@@ -314,6 +350,9 @@ def clear_selection():
 @tool(
     description='把多个对象组合成一个 Group（可整体移动/选择）。',
     category='scene_io',
+    examples=[{"summary": "典型调用", "args": {"names": ['Box01', 'Box02'], "group_name": 'AgentGroup'}}],
+notes=['names 支持对象名列表或逗号分隔字符串。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def group_objects(names, group_name='AgentGroup'):
     """创建分组。
@@ -331,6 +370,9 @@ def group_objects(names, group_name='AgentGroup'):
 @tool(
     description='重命名对象。',
     category='scene_io',
+    examples=[{"summary": "典型调用", "args": {"old_name": 'Box01', "new_name": 'Box02'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def rename_object(old_name, new_name):
     """重命名对象。
@@ -350,6 +392,9 @@ def rename_object(old_name, new_name):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"quiet": True}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def reset_scene(quiet=True):
     """重置场景。
@@ -370,6 +415,9 @@ def reset_scene(quiet=True):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "selected_only": False, "export_materials": True, "up_axis": 'Y'}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def export_usd(file_path, selected_only=False, export_materials=True, up_axis='Y'):
     """导出 USD 文件。
@@ -411,6 +459,10 @@ def export_usd(file_path, selected_only=False, export_materials=True, up_axis='Y
     ),
     category='scene_io',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "import_materials": True}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['file_path 指向的文件必须存在']
 )
 def import_usd(file_path, import_materials=True):
     """导入 USD 文件。
@@ -445,6 +497,9 @@ def import_usd(file_path, import_materials=True):
     category='scene_io',
     dangerous=True,
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "selected_only": False, "frame_range": 'value'}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def export_alembic(file_path, selected_only=False, frame_range=None):
     """导出 Alembic 文件。
@@ -485,6 +540,10 @@ def export_alembic(file_path, selected_only=False, frame_range=None):
     ),
     category='scene_io',
     dangerous=True,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "import_normals": True}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}",
+prerequisites=['file_path 指向的文件必须存在']
 )
 def import_alembic(file_path, import_normals=True):
     """导入 Alembic 文件。

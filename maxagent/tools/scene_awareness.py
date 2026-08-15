@@ -62,6 +62,9 @@ def _node_to_light_dict(node):
     ),
     category='scene_awareness',
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"object_names": 'value', "selected_only": False}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def check_mesh_quality(object_names=None, selected_only=False):
     """检查网格质量。
@@ -184,6 +187,12 @@ def check_mesh_quality(object_names=None, selected_only=False):
     ),
     category='scene_awareness',
     wrap_undo=False,
+    examples=[{'summary': '构建场景语义图', 'args': {}}],
+    notes=[
+        '构建场景语义图，用于理解对象之间的关系。',
+        '返回结果通常包含对象名、类型、父子关系、材质等。',
+    ],
+    returns_desc='dict {"roots": [...], "groups": {...}, "objects": [...]}',
 )
 def build_scene_semantic_graph():
     """构建场景语义图。
@@ -295,6 +304,9 @@ def _infer_object_tags(info):
     ),
     category='scene_awareness',
     wrap_undo=False,
+    examples=[{"summary": "典型调用", "args": {"before": 'value', "after": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def diff_scene_snapshots(before, after):
     """语义化对比两个场景快照。

@@ -96,6 +96,9 @@ def _default_approval(proposal):
     dangerous=True,
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"rule_id": 'value', "title": 'value', "content": 'value', "good_example": '', "bad_example": '', "tags": 'value', "rationale": ''}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def suggest_rule_addition(
     rule_id,
@@ -252,6 +255,12 @@ def suggest_rule_addition(
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出所有已学习规则', 'args': {}}],
+    notes=[
+        '返回已学习规则列表。',
+        '规则通常来自用户显式教导或自动反思沉淀。',
+    ],
+    returns_desc='dict {"count": 规则数量, "rules": [...]}',
 )
 def list_learned_rules():
     """列出已学规则。"""
@@ -275,6 +284,9 @@ def list_learned_rules():
     dangerous=True,
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[{"summary": "典型调用", "args": {"rule_id": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def delete_learned_rule(rule_id):
     """删除指定的规则。

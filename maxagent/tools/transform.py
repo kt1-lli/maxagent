@@ -57,8 +57,25 @@ def _set_prop_safe(node, prop_name, value):
 
 
 @tool(
-    description='移动对象。支持绝对位置（set）或相对位移（add）。',
+    description='移动对象到指定位置或按偏移量相对移动。',
     category='transform',
+    examples=[
+        {
+            'summary': '把对象移到世界坐标 (100, 0, 50)',
+            'args': {'name': 'Box001', 'x': 100.0, 'y': 0.0, 'z': 50.0, 'mode': 'set'},
+        },
+        {
+            'summary': '把对象沿 X 轴相对移动 10 个单位',
+            'args': {'name': 'Box001', 'x': 10.0, 'y': 0.0, 'z': 0.0, 'mode': 'add'},
+        },
+    ],
+    notes=[
+        'mode="set" 表示设置绝对世界坐标位置；mode="add" 表示在当前位置上叠加偏移量。',
+        'x/y/z 为世界空间坐标值，单位与当前场景一致。',
+        '函数返回最终世界空间位置 [x, y, z]。',
+    ],
+    returns_desc='dict {"name": 对象名, "position": [x, y, z]}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def move_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
     """移动对象。
@@ -89,8 +106,25 @@ def move_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
 
 
 @tool(
-    description='旋转对象。欧拉角单位为度。支持绝对（set）或叠加（add）。',
+    description='旋转对象到指定欧拉角或按偏移量相对旋转。',
     category='transform',
+    examples=[
+        {
+            'summary': '把对象设置为绕 Z 轴旋转 45 度',
+            'args': {'name': 'Box001', 'x': 0.0, 'y': 0.0, 'z': 45.0, 'mode': 'set'},
+        },
+        {
+            'summary': '把对象在当前旋转基础上再绕 X 轴转 15 度',
+            'args': {'name': 'Box001', 'x': 15.0, 'y': 0.0, 'z': 0.0, 'mode': 'add'},
+        },
+    ],
+    notes=[
+        'x/y/z 为欧拉角，单位为度，按 X->Y->Z 顺序应用。',
+        'mode="set" 表示设置绝对旋转；mode="add" 表示在当前旋转上叠加。',
+        '内部使用四元数存储，返回值为转换后的欧拉角 [x, y, z]。',
+    ],
+    returns_desc='dict {"name": 对象名, "rotation_euler": [x, y, z]}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def rotate_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
     """旋转对象。
@@ -122,8 +156,26 @@ def rotate_object(name, x=0.0, y=0.0, z=0.0, mode='set'):
 
 
 @tool(
-    description='缩放对象。支持各轴独立缩放，set/add/multiply 三种模式。',
+    description='缩放对象，支持各轴独立设置、相加或相乘。',
     category='transform',
+    examples=[
+        {
+            'summary': '把对象在 X 轴缩放到 2 倍',
+            'args': {'name': 'Box001', 'x': 2.0, 'y': 1.0, 'z': 1.0, 'mode': 'set'},
+        },
+        {
+            'summary': '把对象整体再放大 1.5 倍',
+            'args': {'name': 'Box001', 'x': 1.5, 'y': 1.5, 'z': 1.5, 'mode': 'multiply'},
+        },
+    ],
+    notes=[
+        'mode="set" 表示直接设置缩放值；mode="add" 表示在当前缩放上相加；'
+        'mode="multiply" 表示在当前缩放上相乘。',
+        '默认缩放基准为 1.0，设置为 2.0 表示该轴放大一倍。',
+        '返回最终缩放值 [x, y, z]。',
+    ],
+    returns_desc='dict {"name": 对象名, "scale": [x, y, z]}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def scale_object(name, x=1.0, y=1.0, z=1.0, mode='set'):
     """缩放对象。
@@ -161,8 +213,39 @@ def scale_object(name, x=1.0, y=1.0, z=1.0, mode='set'):
 
 
 @tool(
-    description='把一个对象对齐到另一个对象（位置/旋转/缩放可独立选择）。',
+    description='把一个对象对齐到另一个对象，可独立选择位置、旋转或缩放。',
     category='transform',
+    examples=[
+        {
+            'summary': '把 Box001 的位置对齐到 Box002',
+            'args': {
+                'source_name': 'Box001',
+                'target_name': 'Box002',
+                'align_position': True,
+                'align_rotation': False,
+                'align_scale': False,
+            },
+        },
+        {
+            'summary': '把 Box001 的位置和旋转都对齐到 Box002',
+            'args': {
+                'source_name': 'Box001',
+                'target_name': 'Box002',
+                'align_position': True,
+                'align_rotation': True,
+                'align_scale': False,
+            },
+        },
+    ],
+    notes=[
+        'source_name 是被修改的对象，target_name 是参考对象且不会被修改。',
+        '在世界空间下进行对齐，勾选对应布尔开关即可分别对齐位置、旋转、缩放。',
+        '三个布尔参数可以同时为 True，实现完整对齐。',
+    ],
+    returns_desc='dict {"source": 源对象名, "target": 目标对象名, "aligned": {...}}',
+    prerequisites=[
+        '场景中必须同时存在 source_name 和 target_name 对应的对象',
+    ],
 )
 def align_to(
     source_name,
@@ -201,13 +284,30 @@ def align_to(
 
 
 @tool(
-    description=(
-        '把对象的轴心（pivot）重置到指定位置。'
-        'mode="object_center" 重置到对象几何中心；'
-        '"world_origin" 重置到世界原点；'
-        '"custom" 时使用 x/y/z 参数。'
-    ),
+    description='把对象的轴心重置到几何中心、世界原点或自定义位置。',
     category='transform',
+    examples=[
+        {
+            'summary': '把对象轴心重置到几何中心',
+            'args': {'name': 'Box001', 'mode': 'object_center'},
+        },
+        {
+            'summary': '把对象轴心移动到世界原点',
+            'args': {'name': 'Box001', 'mode': 'world_origin'},
+        },
+        {
+            'summary': '把对象轴心设置到自定义位置 (10, 20, 30)',
+            'args': {'name': 'Box001', 'mode': 'custom', 'x': 10.0, 'y': 20.0, 'z': 30.0},
+        },
+    ],
+    notes=[
+        'mode="object_center" 调用 CenterPivot 将轴心重置到对象几何中心。',
+        'mode="world_origin" 把轴心移动到世界原点 (0, 0, 0)。',
+        'mode="custom" 时必须提供 x/y/z 参数，作为目标轴心位置。',
+        '轴心位置修改后，对象的视觉位置可能不变，但后续变换会围绕新轴心进行。',
+    ],
+    returns_desc='dict {"name": 对象名, "pivot": [x, y, z]}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def reset_pivot(name, mode='object_center', x=0.0, y=0.0, z=0.0):
     """重置轴心。

@@ -89,6 +89,17 @@ def _ensure_in_max():
     description="获取 3ds Max 当前版本与基本信息（版本号、产品名、当前打开的文件名等）。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '查询当前 Max 版本与文件路径',
+            'args': {},
+        },
+    ],
+    notes=[
+        '无需任何参数，返回结果可能包含 version_year / product / current_file / current_dir 等字段。',
+        '未保存场景时 current_file 通常为空白字符串或 "<未保存>"。',
+    ],
+    returns_desc='dict {"version_year": int | null, "product": str, "current_file": str, ...}',
 )
 def get_max_info():
     """获取 Max 基本信息。
@@ -130,6 +141,21 @@ def get_max_info():
     description="统计当前场景的对象总数、灯光数、相机数、面数等。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '获取当前场景的对象与面数统计',
+            'args': {},
+        },
+    ],
+    notes=[
+        '该工具为只读操作，不会修改场景。',
+        'total_faces 仅统计可获取 polygon 数量的几何体，部分对象可能未被计入。',
+    ],
+    returns_desc=(
+        'dict {"total": 总数, "geometry": 几何体数, "lights": 灯光数, '
+        '"cameras": 相机数, "shapes": 形数, "helpers": 辅助体数, '
+        '"others": 其他, "total_faces": 总面数}'
+    ),
 )
 def get_scene_stats():
     """统计场景规模。
@@ -179,6 +205,22 @@ def get_scene_stats():
     ),
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '列出前 20 个几何体',
+            'args': {'super_class': 'geometry', 'limit': 20, 'detail': False},
+        },
+        {
+            'summary': '列出所有灯光并返回详细信息',
+            'args': {'super_class': 'light', 'limit': -1, 'detail': True},
+        },
+    ],
+    notes=[
+        'super_class 为空字符串 "" 时返回全部类型对象。',
+        'limit <= 0 表示不限制返回数量，请谨慎在大型场景中使用。',
+        'detail=True 会返回对象的变换、材质、修改器栈与面数等详细信息。',
+    ],
+    returns_desc='dict {"count": 返回数, "total": 场景总数, "items": [对象信息 dict, ...]}',
 )
 def list_objects(super_class="", limit=50, detail=False):
     """列出场景对象。
@@ -219,6 +261,21 @@ def list_objects(super_class="", limit=50, detail=False):
     description="获取当前选中的对象列表。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '获取当前选中对象的详细信息',
+            'args': {'detail': True},
+        },
+        {
+            'summary': '仅获取选中对象的基本名称与类名',
+            'args': {'detail': False},
+        },
+    ],
+    notes=[
+        '若当前未选中任何对象，返回 {"count": 0, "items": []}。',
+        'detail=True 会包含位置、旋转、缩放、材质、修改器等信息。',
+    ],
+    returns_desc='dict {"count": 选中数量, "items": [对象信息 dict, ...]}',
 )
 def get_selection(detail=True):
     """获取当前选中的对象。
@@ -236,6 +293,22 @@ def get_selection(detail=True):
     description="按名字精确或模糊查找对象。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '模糊查找名称包含 Box 的对象',
+            'args': {'pattern': 'Box', 'exact': False, 'limit': 10},
+        },
+        {
+            'summary': '精确查找名为 Camera001 的相机',
+            'args': {'pattern': 'Camera001', 'exact': True, 'detail': True},
+        },
+    ],
+    notes=[
+        'exact=False 时进行不区分大小写的子串匹配。',
+        'pattern 为空字符串时直接返回空列表。',
+        'limit 控制最多返回的对象数，避免上下文过载。',
+    ],
+    returns_desc='dict {"count": 命中数, "items": [对象信息 dict, ...]}',
 )
 def find_objects_by_name(pattern, exact=False, limit=50, detail=False):
     """按名字查找对象。
@@ -272,6 +345,18 @@ def find_objects_by_name(pattern, exact=False, limit=50, detail=False):
     description="按名字获取单个对象的详细信息（变换、材质、修改器栈、面数等）。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '查询名为 MyBox 的对象详情',
+            'args': {'name': 'MyBox'},
+        },
+    ],
+    notes=[
+        'name 必须精确匹配场景中已存在的对象名。',
+        '找不到对象时返回 {"found": False, "name": 输入名称}。',
+    ],
+    returns_desc='dict {"found": True, "name": str, "class": str, "position": [...], ...}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
 )
 def get_object_info(name):
     """按名字获取对象详细信息。
@@ -292,6 +377,17 @@ def get_object_info(name):
     description="获取活动视口的相机/视角信息（视图类型、焦距、视点位置等）。",
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '获取当前活动视口信息',
+            'args': {},
+        },
+    ],
+    notes=[
+        '无需任何参数，返回结果可能包含 view_type / camera_name / fov / transform_row4 等字段。',
+        '当活动视口不是相机视角时，camera_name 为 null。',
+    ],
+    returns_desc='dict {"view_type": str, "camera_name": str | null, "fov": float | null, ...}',
 )
 def get_active_viewport():
     """获取活动视口信息。
@@ -329,6 +425,17 @@ def get_active_viewport():
     ),
     category="scene_query",
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '获取当前时间范围与帧率',
+            'args': {},
+        },
+    ],
+    notes=[
+        '无需任何参数，返回结果可能包含 start / end / current / fps 字段。',
+        '若场景未设置动画范围或无法读取，对应字段可能缺失。',
+    ],
+    returns_desc='dict {"start": int, "end": int, "current": int, "fps": int}',
 )
 def get_time_info():
     """获取时间/动画信息。

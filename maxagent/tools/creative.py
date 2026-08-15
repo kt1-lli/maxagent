@@ -113,6 +113,24 @@ def _color_to_rgb_list(color_value):
         '返回创建的新材质名列表（不会自动赋给对象）。'
     ),
     category='creative',
+    examples=[
+        {
+            'summary': '基于 Steel 材质生成 3 个更粗糙的变体',
+            'args': {'material_name': 'Steel', 'description': '更粗糙、更暗', 'count': 3},
+        },
+        {
+            'summary': '基于 Glass 材质生成 5 个更透明的变体',
+            'args': {'material_name': 'Glass', 'description': '更透明', 'count': 5},
+        },
+    ],
+    notes=[
+        'material_name 必须是已存在的材质名。',
+        'description 支持中文/英文自然语言关键词，用于调整金属度、粗糙度、亮度和透明度。',
+        'count 会被限制在 1-5 之间，变体名会自动处理重名冲突。',
+        '变体创建后会注册到材质编辑器并挂到隐藏 Dummy 上，避免被 GC 清除。',
+    ],
+    returns_desc='dict {"base": 基准材质名, "variants": [{"name": 新材质名, "params": {...}}, ...]}',
+    prerequisites=['基准材质 material_name 必须已存在'],
 )
 def generate_material_variants(material_name, description, count=3):
     """生成材质参数变体。
@@ -357,6 +375,31 @@ def _match_nodes(criteria):
         '如果 replace_existing=True，会先删除同类型修改器再添加新修改器。'
     ),
     category='creative',
+    examples=[
+        {
+            'summary': '给名字含 Box 的对象添加 Bend 修改器',
+            'args': {
+                'criteria': {'name_contains': 'Box'},
+                'modifier_type': 'bend',
+            },
+        },
+        {
+            'summary': '给选中对象替换为新的 TurboSmooth 修改器',
+            'args': {
+                'criteria': {'selected_only': True},
+                'modifier_type': 'turbo_smooth',
+                'replace_existing': True,
+                'params': {'iterations': 2},
+            },
+        },
+    ],
+    notes=[
+        'criteria 可传 dict 或 JSON 字符串；为空会命中场景全部对象。',
+        'modifier_type 使用 add_modifier 统一的类型别名，如 bend / turbo_smooth / shell 等。',
+        'replace_existing=True 时会在添加新修改器前先删除已有的同类型修改器。',
+        'params 会逐项 set 到修改器对象上，不合法的键会被静默忽略。',
+    ],
+    returns_desc='dict {"matched": 命中对象数, "modified": [{"object": ..., "modifier": ..., "stack_size": ...}, ...]}',
 )
 def smart_replace_modifier(
     criteria,
@@ -423,6 +466,22 @@ def smart_replace_modifier(
     ),
     category='creative',
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '生成创建 20 个随机位置球体的脚本',
+            'args': {'description': '创建 20 个随机位置的球体'},
+        },
+        {
+            'summary': '生成 5x5 Box 阵列脚本',
+            'args': {'description': '创建一个 5x5 的 box 阵列', 'language': 'python'},
+        },
+    ],
+    notes=[
+        '仅返回脚本字符串和说明，不会修改场景。',
+        '支持识别随机分布、阵列排布和常见几何体类型（sphere/box/cylinder/cone/teapot/plane）。',
+        '复杂意图建议由用户确认后再执行返回的脚本。',
+    ],
+    returns_desc='dict {"description": 原始描述, "language": 语言, "script": Python 脚本, "notes": [...]}',
 )
 def generate_script_from_description(description, language='python'):
     """解析生成意图并返回代码模板。
@@ -558,6 +617,29 @@ def generate_script_from_description(description, language='python'):
         'super_class / class_equals / has_modifier / material_contains / selected_only。'
     ),
     category='creative',
+    examples=[
+        {
+            'summary': '把名字含 Box 的对象材质替换为 RedMaterial',
+            'args': {
+                'criteria': {'name_contains': 'Box'},
+                'material_name': 'RedMaterial',
+            },
+        },
+        {
+            'summary': '给选中的对象赋上 MetalMaterial',
+            'args': {
+                'criteria': {'selected_only': True},
+                'material_name': 'MetalMaterial',
+            },
+        },
+    ],
+    notes=[
+        'criteria 可传 dict 或 JSON 字符串；为空会命中场景全部对象。',
+        'material_name 必须已存在，否则直接报错。',
+        '匹配对象会逐个设置 .material 属性，失败对象会被跳过。',
+    ],
+    returns_desc='dict {"matched": 命中对象数, "assigned": [实际赋上材质的对象名列表]}',
+    prerequisites=['目标材质 material_name 必须已存在'],
 )
 def smart_replace_material(criteria, material_name):
     """智能批量替换材质。

@@ -54,6 +54,9 @@ logger = get_logger(__name__)
     wrap_undo=False,
     # 纯字典查询，不需要主线程 pymxs
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"topic": 'value', "sub_key": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def lookup_max_knowledge(topic, sub_key=None):
     # type: (str, Optional[str]) -> Dict[str, Any]
@@ -88,6 +91,12 @@ def lookup_max_knowledge(topic, sub_key=None):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出知识库所有主题', 'args': {}}],
+    notes=[
+        '返回 Max 官方文档知识库中的主题列表。',
+        '如需检索具体内容，请使用 search_max_docs。',
+    ],
+    returns_desc='dict {"count": 主题数量, "topics": [...]}',
 )
 def list_max_knowledge_topics():
     # type: () -> Dict[str, Any]
@@ -170,6 +179,9 @@ def _format_hits(hits, max_chars_per_hit=500):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"query": 'Box.position', "topk": 5}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def search_max_docs(query, topk=3):
     # type: (str, int) -> Dict[str, Any]
@@ -213,6 +225,9 @@ def search_max_docs(query, topk=3):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"query": 'Box.position', "topk": 5}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def search_knowledge(query, topk=3):
     # type: (str, int) -> Dict[str, Any]
@@ -250,6 +265,12 @@ def search_knowledge(query, topk=3):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '列出知识库数据源', 'args': {}}],
+    notes=[
+        '返回当前已配置的知识源（文件/代码库）列表。',
+        '可通过 add_knowledge_source 新增知识源。',
+    ],
+    returns_desc='dict {"count": 数量, "sources": [...]}',
 )
 def list_knowledge_sources():
     # type: () -> Dict[str, Any]
@@ -288,6 +309,9 @@ def list_knowledge_sources():
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"path": 'value', "kind": 'auto', "display_name": 'value', "tags": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def add_knowledge_source(path, kind='auto', display_name=None, tags=None):
     # type: (str, str, Optional[str], Optional[List[str]]) -> Dict[str, Any]
@@ -325,6 +349,9 @@ def add_knowledge_source(path, kind='auto', display_name=None, tags=None):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"source_id": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def remove_knowledge_source(source_id):
     # type: (str) -> Dict[str, Any]

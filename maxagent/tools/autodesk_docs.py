@@ -57,6 +57,32 @@ logger = get_logger(__name__)
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[
+        {
+            'summary': '查询 Biped 相关类的官方文档',
+            'args': {
+                'query': 'Biped_Object class',
+            },
+        },
+        {
+            'summary': '用中文 locale 查询 MAXScript 数组用法',
+            'args': {
+                'query': 'MAXScript array',
+                'locale': 'CHS',
+                'limit': 3,
+            },
+        },
+    ],
+    notes=[
+        'query 越具体命中率越高，建议用英文关键词（如 "Biped_Object class"）。',
+        '远端单次响应上限约 16KB，若结果明显被截断，请收窄 query 或减少 limit。',
+        'locale 默认 ENU 覆盖最全；需要中文帮助时可传 CHS，但部分文档可能仍为英文。',
+    ],
+    returns_desc=(
+        'dict {"ok": bool, "text": str, "tool": str, "query": str, '
+        '"scope": "3ds Max", "locale": str, "limit": int?, "raw": Any, '
+        '"error": str?}'
+    ),
 )
 def autodesk_max_docs(query, locale=DEFAULT_LOCALE, limit=None, timeout=15.0):
     """检索 Autodesk 官方 3ds Max 文档。

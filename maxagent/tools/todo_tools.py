@@ -244,6 +244,9 @@ def _sanitize_content(text):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"items": []}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def todo_write(items):
     """写入完整清单（覆盖已有）。返回快照供 LLM 立即基于此推进。"""
@@ -322,6 +325,9 @@ def todo_write(items):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"id": 'value', "status": 'value', "note": 'value'}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def todo_update_status(id, status, note=''):  # pylint: disable=redefined-builtin
     """更新单项状态。"""
@@ -385,6 +391,12 @@ def todo_update_status(id, status, note=''):  # pylint: disable=redefined-builti
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{'summary': '查看当前任务清单', 'args': {}}],
+    notes=[
+        '无参数，直接调用即可。',
+        '若当前会话没有清单，会返回空 items。',
+    ],
+    returns_desc='dict {"ok": True, "items": [...], "total": 数量, "counts": {...}}',
 )
 def todo_read():
     """读取当前清单快照。"""

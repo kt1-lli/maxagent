@@ -154,6 +154,28 @@ def _find_material_by_name(material_name):
         '创建一个标准材质（Standard Material）。返回材质名供后续 assign_material 使用。'
     ),
     category='material',
+    examples=[
+        {
+            'summary': '创建默认灰色标准材质',
+            'args': {'name': 'MyStandard'},
+        },
+        {
+            'summary': '创建红色半透明自发光材质',
+            'args': {
+                'name': 'RedGlow',
+                'diffuse': '[255, 0, 0]',
+                'glossiness': 60.0,
+                'opacity': 80.0,
+                'self_illumination': 30.0,
+            },
+        },
+    ],
+    notes=[
+        'diffuse / specular 支持 JSON 字符串 "[r,g,b]"、"r,g,b" 或 Python 列表。',
+        '颜色分量可传 0-255 整数或 0-1 浮点，工具会自动判断。',
+        '创建后材质会自动注册到材质编辑器槽，确保后续 assign_material 可通过名字查找。',
+    ],
+    returns_desc='dict {"name": 实际材质名, "type": "Standardmaterial"}',
 )
 def create_standard_material(
     name='AgentStandard',
@@ -203,6 +225,27 @@ def create_standard_material(
         '若当前版本不支持，会自动降级为 Standardmaterial。'
     ),
     category='material',
+    examples=[
+        {
+            'summary': '创建默认粗糙塑料材质',
+            'args': {'name': 'Plastic'},
+        },
+        {
+            'summary': '创建金色金属材质',
+            'args': {
+                'name': 'GoldMetal',
+                'base_color': '[255, 215, 0]',
+                'roughness': 0.2,
+                'metalness': 1.0,
+            },
+        },
+    ],
+    notes=[
+        'base_color 支持 JSON 字符串 "[r,g,b]" 或 Python 列表；分量 0-255 或 0-1 均可。',
+        'roughness / metalness / transparency 为 0-1 的浮点值。',
+        '当 Max 版本低于 2017 或不存在 PhysicalMaterial 类时，返回 downgraded=true。',
+    ],
+    returns_desc='dict {"name": 材质名, "type": "PhysicalMaterial" | "Standardmaterial", "downgraded": bool}',
 )
 def create_physical_material(
     name='AgentPhysical',
@@ -258,6 +301,19 @@ def create_physical_material(
         'create_physical_material 创建，或者从场景中已有材质里查找。'
     ),
     category='material',
+    examples=[
+        {
+            'summary': '把名为 MyMaterial 的材质赋给 Box001',
+            'args': {'object_name': 'Box001', 'material_name': 'MyMaterial'},
+        },
+    ],
+    notes=[
+        'object_name 必须是场景中已存在的对象名。',
+        'material_name 必须已存在于材质簿、sceneMaterials 或材质编辑器槽位中。',
+        '材质被赋予后会自动进入 sceneMaterials，后续可直接复用。',
+    ],
+    returns_desc='dict {"object": 对象名, "material": 材质名, "ok": true}',
+    prerequisites=['对象 object_name 必须已存在于场景中'],
 )
 def assign_material(object_name, material_name):
     """把材质赋给对象。
@@ -290,6 +346,22 @@ def assign_material(object_name, material_name):
         '会按文件路径加载图片并连接到材质的 diffuse 通道。'
     ),
     category='material',
+    examples=[
+        {
+            'summary': '给 MyMaterial 添加漫反射贴图',
+            'args': {
+                'material_name': 'MyMaterial',
+                'image_path': 'C:/Textures/diffuse.jpg',
+            },
+        },
+    ],
+    notes=[
+        'image_path 必须是 Max 可读取的本地绝对路径（jpg/png/exr/tx 等）。',
+        'PhysicalMaterial 会连到 base_color_map，Standardmaterial 会连到 diffuseMap。',
+        '贴图加载成功后会再次读取该属性，确认连接已生效。',
+    ],
+    returns_desc='dict {"material": 材质名, "image": 图片路径, "ok": true}',
+    prerequisites=['材质 material_name 必须已存在'],
 )
 def add_diffuse_map(material_name, image_path):
     """加漫反射贴图。
@@ -345,6 +417,21 @@ def add_diffuse_map(material_name, image_path):
     description='列出场景中所有已使用的材质（含名字与类型）。',
     category='material',
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '列出全部场景材质',
+            'args': {},
+        },
+        {
+            'summary': '最多返回 10 条场景材质',
+            'args': {'limit': 10},
+        },
+    ],
+    notes=[
+        '仅返回已被对象引用的材质（sceneMaterials），未赋给对象的材质可能不在列表中。',
+        'limit <= 0 时返回所有材质。',
+    ],
+    returns_desc='dict {"count": 实际数量, "items": [{"name": ..., "type": ...}, ...]}',
 )
 def list_scene_materials(limit=50):
     """列出场景材质。
@@ -585,6 +672,17 @@ def _replace_texture_map_main(material_name, slot_name, new_image_path):
     description='列出材质编辑器 24 个槽位中当前存放的材质名与类型。',
     category='material',
     wrap_undo=False,
+    examples=[
+        {
+            'summary': '查看所有材质编辑器槽位',
+            'args': {},
+        },
+    ],
+    notes=[
+        '槽位编号 1-24，空槽通常显示为空名或默认 # 名称。',
+        '此工具只读，不会修改场景或材质。',
+    ],
+    returns_desc='dict {"count": 24, "items": [{"slot": 1, "name": ..., "type": ...}, ...]}',
 )
 def inspect_material_slots():
     """列出材质编辑器槽位。
@@ -614,6 +712,21 @@ def inspect_material_slots():
     category='material',
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[
+        {
+            'summary': '查看名为 MyMaterial 的材质结构',
+            'args': {'material_name': 'MyMaterial'},
+        },
+    ],
+    notes=[
+        '会递归读取材质的属性、贴图通道（map）和子材质（sub_material）。',
+        '贴图和子材质只做摘要序列化，避免循环引用导致递归过深。',
+    ],
+    returns_desc=(
+        'dict {"name": 材质名, "class": 类名, "channels": [...], '
+        '"sub_materials": [...], "basic_values": {...}, "properties_count": N}'
+    ),
+    prerequisites=['材质 material_name 必须已存在'],
 )
 def inspect_material(material_name: str):
     """自省材质节点网络。
@@ -635,6 +748,18 @@ def inspect_material(material_name: str):
     category='material',
     wrap_undo=False,
     run_on_main_thread=True,
+    examples=[
+        {
+            'summary': '列出 MyMaterial 上的所有 Bitmaptexture',
+            'args': {'material_name': 'MyMaterial'},
+        },
+    ],
+    notes=[
+        '会递归扫描子材质和贴图通道，已访问对象会被去重。',
+        '仅收集 classOf 为 Bitmaptexture 的贴图， procedural map 不在此列。',
+    ],
+    returns_desc='dict {"count": N, "maps": [{"name": ..., "path": ..., "channel": ...}, ...]}',
+    prerequisites=['材质 material_name 必须已存在'],
 )
 def list_texture_maps(material_name: str):
     """列出材质上的贴图。
@@ -655,6 +780,31 @@ def list_texture_maps(material_name: str):
     ),
     category='material',
     run_on_main_thread=True,
+    examples=[
+        {
+            'summary': '替换 MyMaterial 的漫反射贴图',
+            'args': {
+                'material_name': 'MyMaterial',
+                'slot_name': 'diffuseMap',
+                'new_image_path': 'C:/Textures/new_diffuse.png',
+            },
+        },
+        {
+            'summary': '替换物理材质的基础色贴图',
+            'args': {
+                'material_name': 'MyPhysical',
+                'slot_name': 'base_color_map',
+                'new_image_path': 'C:/Textures/basecolor.exr',
+            },
+        },
+    ],
+    notes=[
+        'slot_name 必须是材质上实际存在的贴图属性名，如 diffuseMap / base_color_map / bumpMap。',
+        'new_image_path 必须是本地存在的文件路径。',
+        '当前属性值若不是 Bitmaptexture 也会被替换为新的 Bitmaptexture。',
+    ],
+    returns_desc='dict {"material": 材质名, "slot": 属性名, "old_map": 旧类型, "new_image": 新路径, "ok": true}',
+    prerequisites=['材质 material_name 必须已存在'],
 )
 def replace_texture_map(material_name: str, slot_name: str, new_image_path: str):
     """替换材质贴图。

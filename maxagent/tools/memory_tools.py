@@ -52,6 +52,9 @@ logger = get_logger(__name__)
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"file_path": 'C:/Work/scene.max', "offset": '[10, 0, 0]', "limit": 10}}],
+notes=['坐标/旋转类参数优先使用 JSON 字符串 "[x,y,z]" 格式。', 'file_path 建议使用绝对路径，目录不存在会自动创建。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def memory_read(file_path='MEMORY.md', offset=None, limit=None):
     """读取记忆文件。"""
@@ -89,6 +92,9 @@ def memory_read(file_path='MEMORY.md', offset=None, limit=None):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"query": 'Box.position', "keyword": '材质', "topk": 5}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def memory_search(query='', keyword='', topk=10):
     """搜索长期记忆。"""
@@ -135,6 +141,9 @@ def memory_search(query='', keyword='', topk=10):
     dangerous=True,  # 写入型工具，走危险确认流
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"action": 'value', "file_path": 'C:/Work/scene.max', "old_content": '', "new_content": ''}}],
+notes=['file_path 建议使用绝对路径，目录不存在会自动创建。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def memory_write(action, file_path, old_content='', new_content=''):
     """写入长期记忆。"""
@@ -203,6 +212,9 @@ def _parse_iso_date(text):
     dangerous=False,
     wrap_undo=False,
     run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"query": 'Box.position', "keyword": '材质', "start_date": '', "end_date": '', "kind": '', "topk": 5}}],
+notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+returns_desc="dict {\"ok\": True, ...}"
 )
 def event_search_tool(query='', keyword='', start_date='', end_date='',
                       kind='', topk=10):

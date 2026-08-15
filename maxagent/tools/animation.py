@@ -160,6 +160,23 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
 @tool(
     description="删除对象指定帧的关键帧。controller 不传则删除 transform 关键帧。",
     category="animation",
+    examples=[
+        {
+            'summary': '删除对象在 30 帧的位置关键帧',
+            'args': {'name': 'Box01', 'frame': 30, 'controller': 'position'},
+        },
+        {
+            'summary': '删除对象在 60 帧的所有 transform 关键帧',
+            'args': {'name': 'Box01', 'frame': 60},
+        },
+    ],
+    notes=[
+        "controller 可选 'position' / 'rotation' / 'scale' / 'transform'。",
+        "不传 controller 时默认删除位置、旋转、缩放三类关键帧。",
+        "若指定帧无对应关键帧，Max 通常静默忽略，不会报错。",
+    ],
+    returns_desc='dict {"name": 对象名, "frame": 帧号, "controller": 控制器类型, "deleted": true}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
@@ -208,6 +225,23 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
 @tool(
     description="获取对象在指定帧的 transform 关键帧值（如果有的话）。",
     category="animation",
+    examples=[
+        {
+            'summary': '读取对象在 30 帧的位置关键帧值',
+            'args': {'name': 'Box01', 'frame': 30, 'controller': 'position'},
+        },
+        {
+            'summary': '读取对象在 60 帧的旋转关键帧值',
+            'args': {'name': 'Box01', 'frame': 60, 'controller': 'rotation'},
+        },
+    ],
+    notes=[
+        "controller 只能是 'position' / 'rotation' / 'scale' 之一，不能传 'transform'。",
+        "返回的 value 为 [x, y, z] 列表；如果控制器值不可分解，则返回字符串。",
+        "指定帧无关键帧时返回的是该帧当前属性值，而非关键帧本身。",
+    ],
+    returns_desc='dict {"name": 对象名, "frame": 帧号, "controller": 控制器类型, "value": [x,y,z] 或字符串}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def get_keyframe_value(name: str, frame: float, controller: str = "position"):
@@ -263,6 +297,33 @@ def get_keyframe_value(name: str, frame: float, controller: str = "position"):
         "常用于眼睛注视、武器瞄准、灯光跟随等。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '让 Light01 始终注视 Box01',
+            'args': {
+                'source_name': 'Light01',
+                'target_name': 'Box01',
+                'weight': 1.0,
+            },
+        },
+        {
+            'summary': '使用 50% 权重添加注视约束',
+            'args': {
+                'source_name': 'Eye_L',
+                'target_name': 'LookAtTarget',
+                'weight': 0.5,
+            },
+        },
+    ],
+    notes=[
+        "weight 取值范围为 0.0-1.0，决定约束影响力。",
+        "该工具会直接替换 source_name 对象的 rotation.controller。",
+        "注视轴向依赖 Max 默认设置，通常需要后续手动校正 up-vector。",
+    ],
+    returns_desc='dict {"source": 源对象名, "target": 目标对象名, "constraint": "LookAt_Constraint"}',
+    prerequisites=[
+        'source_name 和 target_name 必须已存在于场景中',
+    ],
     run_on_main_thread=True,
 )
 def add_lookat_constraint(source_name: str, target_name: str, weight: float = 1.0):
@@ -290,6 +351,33 @@ def add_lookat_constraint(source_name: str, target_name: str, weight: float = 1.
         "给对象添加 Position 约束，使其位置跟随目标对象。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '让 Box01 位置跟随 Box02',
+            'args': {
+                'source_name': 'Box01',
+                'target_name': 'Box02',
+                'weight': 1.0,
+            },
+        },
+        {
+            'summary': '使用 30% 权重进行位置约束',
+            'args': {
+                'source_name': 'Accessory',
+                'target_name': 'Character',
+                'weight': 0.3,
+            },
+        },
+    ],
+    notes=[
+        "weight 取值范围为 0.0-1.0，决定位置跟随程度。",
+        "该工具会直接替换 source_name 对象的 position.controller。",
+        "约束后 source_name 仍可被其它工具移动，但会受目标位置牵引。",
+    ],
+    returns_desc='dict {"source": 源对象名, "target": 目标对象名, "constraint": "Position_Constraint"}',
+    prerequisites=[
+        'source_name 和 target_name 必须已存在于场景中',
+    ],
     run_on_main_thread=True,
 )
 def add_position_constraint(source_name: str, target_name: str, weight: float = 1.0):
@@ -317,6 +405,33 @@ def add_position_constraint(source_name: str, target_name: str, weight: float = 
         "给对象添加 Orientation 约束，使其旋转跟随目标对象。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '让 Box01 旋转跟随 Box02',
+            'args': {
+                'source_name': 'Box01',
+                'target_name': 'Box02',
+                'weight': 1.0,
+            },
+        },
+        {
+            'summary': '使用 70% 权重进行旋转约束',
+            'args': {
+                'source_name': 'Prop',
+                'target_name': 'Hand',
+                'weight': 0.7,
+            },
+        },
+    ],
+    notes=[
+        "weight 取值范围为 0.0-1.0，决定旋转跟随程度。",
+        "该工具会直接替换 source_name 对象的 rotation.controller。",
+        "与 LookAt 约束不同，Orientation 约束复制目标旋转而非注视目标。",
+    ],
+    returns_desc='dict {"source": 源对象名, "target": 目标对象名, "constraint": "Orientation_Constraint"}',
+    prerequisites=[
+        'source_name 和 target_name 必须已存在于场景中',
+    ],
     run_on_main_thread=True,
 )
 def add_orientation_constraint(source_name: str, target_name: str, weight: float = 1.0):
@@ -339,6 +454,19 @@ def add_orientation_constraint(source_name: str, target_name: str, weight: float
         "查询对象当前的控制器栈。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '查询 Box01 的 position/rotation/scale 控制器',
+            'args': {'name': 'Box01'},
+        },
+    ],
+    notes=[
+        "返回的 class 字段显示控制器类名，例如 'Position_XYZ' 或 'Position_Constraint'。",
+        "若某类控制器获取失败，结果中会包含 error 字段说明原因。",
+        "该工具只查询不修改场景。",
+    ],
+    returns_desc='dict {"name": 对象名, "controllers": {"position": ..., "rotation": ..., "scale": ...}}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def get_controllers(name: str):
@@ -368,6 +496,37 @@ def get_controllers(name: str):
         "例如让 'Wheel.rotation.x' 驱动 'Car.position.x'。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '让 Wheel 的旋转 X 驱动 Car 的位置 X',
+            'args': {
+                'source_name': 'Wheel',
+                'source_prop': 'rotation.x',
+                'target_name': 'Car',
+                'target_prop': 'position.x',
+            },
+        },
+        {
+            'summary': '建立带表达式的双向参数线',
+            'args': {
+                'source_name': 'Slider',
+                'source_prop': 'position.x',
+                'target_name': 'Door',
+                'target_prop': 'rotation.z',
+                'expression': 'value * 2',
+                'bidirectional': True,
+            },
+        },
+    ],
+    notes=[
+        "source_prop / target_prop 使用点分路径，例如 'rotation.x'、'position.y'。",
+        "expression 使用源属性值作为 'value'，例如 'value * 2'。",
+        "bidirectional 仅作为记录，当前实现仍为单向连接。",
+    ],
+    returns_desc='dict {"source": 源属性路径, "target": 目标属性路径, "expression": 表达式, "bidirectional": 是否双向}',
+    prerequisites=[
+        'source_name 和 target_name 必须已存在于场景中',
+    ],
     run_on_main_thread=True,
 )
 def wire_parameter(
@@ -416,6 +575,19 @@ def wire_parameter(
 @tool(
     description="查询对象现有的参数线连接。",
     category="animation",
+    examples=[
+        {
+            'summary': '列出 Box01 现有的参数线连接',
+            'args': {'name': 'Box01'},
+        },
+    ],
+    notes=[
+        "返回的 from/to 字段分别表示连接的来源和目标对象名。",
+        "若对象没有参数线，count 为 0，connections 为空列表。",
+        "该工具只查询不修改场景。",
+    ],
+    returns_desc='dict {"name": 对象名, "count": 连接数, "connections": [...]}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def list_wire_parameters(name: str):
@@ -445,10 +617,19 @@ def list_wire_parameters(name: str):
 
 @tool(
     description="设置动画时间范围（start/end 帧）。",
-    category="animation",
+    category='animation',
+    examples=[
+        {'summary': '设置动画时间范围为 0 到 120 帧', 'args': {'start': 0, 'end': 120}},
+    ],
+    notes=[
+        'start 必须小于或等于 end。',
+        '设置后会同步更新时间滑块的有效范围。',
+    ],
+    returns_desc='dict {"start": 起始帧, "end": 结束帧}',
     run_on_main_thread=True,
 )
 def set_time_range(start: int, end: int):
+
     """设置动画范围。"""
     _ensure_in_max()
     rt.animationRange = rt.interval(start, end)
@@ -457,10 +638,19 @@ def set_time_range(start: int, end: int):
 
 @tool(
     description="设置当前时间到指定帧。",
-    category="animation",
+    category='animation',
+    examples=[
+        {'summary': '跳到第 30 帧', 'args': {'frame': 30}},
+    ],
+    notes=[
+        'frame 必须在当前动画时间范围内。',
+        '设置后时间滑块和场景当前帧会同步更新。',
+    ],
+    returns_desc='dict {"frame": 当前帧号}',
     run_on_main_thread=True,
 )
 def set_current_frame(frame: int):
+
     """设置当前帧。"""
     _ensure_in_max()
     # 实测：rt.currentTime 不改变时间滑块，rt.sliderTime 才同步 UI 与场景
@@ -470,10 +660,20 @@ def set_current_frame(frame: int):
 
 @tool(
     description="播放/停止动画。",
-    category="animation",
+    category='animation',
+    examples=[
+        {'summary': '开始播放动画', 'args': {'play': True}},
+        {'summary': '停止播放动画', 'args': {'play': False}},
+    ],
+    notes=[
+        'play=True 开始播放，play=False 停止播放。',
+        '播放会在 Max 主线程阻塞执行，直到用户手动停止或播放结束。',
+    ],
+    returns_desc='dict {"playing": True/False}',
     run_on_main_thread=True,
 )
 def play_animation(play: bool = True):
+
     """播放或停止动画。"""
     _ensure_in_max()
     if play:
@@ -493,6 +693,23 @@ def play_animation(play: bool = True):
         "默认烘焙 position/rotation/scale。"
     ),
     category="animation",
+    examples=[
+        {
+            'summary': '烘焙 Box01 当前时间范围的动画',
+            'args': {'name': 'Box01'},
+        },
+        {
+            'summary': '指定范围和步长进行烘焙',
+            'args': {'name': 'Box01', 'start': 0, 'end': 100, 'step': 2},
+        },
+    ],
+    notes=[
+        "不传 start/end 时，使用当前 animationRange 作为烘焙范围。",
+        "step 为采样步长（帧），值越大关键帧越稀疏。",
+        "烘焙会塌陷 position/rotation/scale 控制器，约束和参数线将失效。",
+    ],
+    returns_desc='dict {"name": 对象名, "start": 开始帧, "end": 结束帧, "step": 步长, "baked": true}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def bake_animation(
