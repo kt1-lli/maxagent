@@ -39,13 +39,12 @@ def _get_node(name: str):
 def _get_controller(node, controller_name: str):
     """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
 
-    知识库 "Working with Controllers" 章节推荐通过 ``getPropertyController``
-    访问子动画控制器：
+    经过 Max 2022 实测，``getPropertyController(node.controller, 'Position')``
+    在某些版本/对象上不稳定。更可靠的方式是直接用属性名字符串访问：
 
-        sphr_pos_ctrl = rt.getPropertyController(s.controller, 'Position')
+        ctrl = node['pos'].controller
 
-    这是 Autodesk 官方支持的 pymxs 访问路径，比直接 ``node.pos.controller``
-    稳定可靠。
+    这种字典式访问与 MAXScript 的 ``obj.pos.controller`` 语义一致。
 
     :param node: pymxs 节点对象
     :param controller_name: 'position' / 'rotation' / 'scale'
@@ -54,16 +53,16 @@ def _get_controller(node, controller_name: str):
     if not controller_name:
         raise ValueError("controller_name 不能为空")
     prop_map = {
-        "position": "Position",
-        "rotation": "Rotation",
-        "scale": "Scale",
+        "position": "pos",
+        "rotation": "rotation",
+        "scale": "scale",
     }
     mxs_prop = prop_map.get(controller_name)
     if mxs_prop is None:
         raise ValueError("未知控制器名: {}".format(controller_name))
 
     try:
-        ctrl = rt.getPropertyController(node.controller, mxs_prop)
+        ctrl = node[mxs_prop].controller
     except Exception as exc:  # pylint: disable=broad-except
         raise ValueError(
             "获取控制器失败: {}.{} ({})".format(node.name, controller_name, exc),
@@ -110,17 +109,21 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
     # 在函数内部延迟导入 pymxs，非 Max 环境测试不会触发
     import pymxs  # pylint: disable=import-error,import-outside-toplevel
 
+    # 实测验证的可靠路径：在 pymxs.animate(True) + pymxs.attime(frame)
+    # 上下文中将当前 controller 值写回自身，即可自动记录关键帧。
     with pymxs.animate(True):
-        for ctrl_name in controllers:
-            ctrl = _get_controller(node, ctrl_name)
-            try:
-                rt.addNewKey(ctrl, frame)
-            except Exception as exc:  # pylint: disable=broad-except
-                raise RuntimeError(
-                    "设置关键帧失败: {}.{} @ frame {} ({})".format(
-                        name, ctrl_name, frame, exc,
-                    ),
-                ) from exc
+        with pymxs.attime(frame):
+            for ctrl_name in controllers:
+                ctrl = _get_controller(node, ctrl_name)
+                try:
+                    # 读取当前值再写回，触发关键帧记录
+                    ctrl.value = ctrl.value
+                except Exception as exc:  # pylint: disable=broad-except
+                    raise RuntimeError(
+                        "设置关键帧失败: {}.{} @ frame {} ({})".format(
+                            name, ctrl_name, frame, exc,
+                        ),
+                    ) from exc
     return {
         "name": name,
         "frame": frame,
@@ -156,17 +159,18 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
     import pymxs  # pylint: disable=import-error,import-outside-toplevel
 
     with pymxs.animate(True):
-        for ctrl_name in controllers:
-            ctrl = _get_controller(node, ctrl_name)
-            # deleteKey 删除控制器在指定帧的关键帧；若该帧无关键帧不报错
-            try:
-                rt.deleteKey(ctrl, frame)
-            except Exception as exc:  # pylint: disable=broad-except
-                raise RuntimeError(
-                    "删除关键帧失败: {}.{} @ frame {} ({})".format(
-                        name, ctrl_name, frame, exc,
-                    ),
-                ) from exc
+        with pymxs.attime(frame):
+            for ctrl_name in controllers:
+                ctrl = _get_controller(node, ctrl_name)
+                # deleteKey 删除控制器在指定帧的关键帧；若该帧无关键帧不报错
+                try:
+                    rt.deleteKey(ctrl, frame)
+                except Exception as exc:  # pylint: disable=broad-except
+                    raise RuntimeError(
+                        "删除关键帧失败: {}.{} @ frame {} ({})".format(
+                            name, ctrl_name, frame, exc,
+                        ),
+                    ) from exc
     return {
         "name": name,
         "frame": frame,
@@ -198,7 +202,7 @@ def get_keyframe_value(name: str, frame: float, controller: str = "position"):
 
     ctrl = _get_controller(node, controller)
     try:
-        with pymxs.attime(frame):
+        with pymxs.animate(False), pymxs.attime(frame):
             val = ctrl.value
     except Exception as exc:  # pylint: disable=broad-except
         raise RuntimeError(
@@ -433,7 +437,8 @@ def set_time_range(start: int, end: int):
 def set_current_frame(frame: int):
     """设置当前帧。"""
     _ensure_in_max()
-    rt.currentTime = frame
+    # 实测：rt.currentTime 不改变时间滑块，rt.sliderTime 才同步 UI 与场景
+    rt.sliderTime = frame
     return {"frame": frame}
 
 

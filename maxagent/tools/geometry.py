@@ -5,27 +5,23 @@
 提供给 agent 的"创建"能力：box / sphere / cylinder / cone / torus / plane / teapot。
 所有工具都会返回创建出来的对象名（如果有重名 Max 会自动加后缀），方便 agent 后续操作。
 
-**关于 position / rotation 参数的官方正确用法（源自 Autodesk pymxs 官方文档）：**
+**关于 position / rotation 参数的正确用法**
 
-Autodesk 官方文档 "Accessing Object Properties and Controllers" 指出：
+经过多轮 Max 2022 实测验证，Autodesk 官方 pymxs 文档推荐的
+``rt.setProperty(node, 'pos', rt.Point3(...))`` 是可靠路径：
 
-    Python and MAXScript treat properties indicated with dot notation differently:
-    Python always returns a reference to the indicated property, while MAXScript
-    returns a copy of the value. Attempting to assign a value may not work as
-    intended in pymxs.
+.. code-block:: python
 
-    There are three solutions to this problem:
-      1. Use the MAXScript getProperty() and setProperty() functions
-      2. Use the pymxs MXSWrapperBase getmxsprop() and setmxsprop() functions
-      3. Work on a copy of the target property, and assign the object back
+    obj = rt.Box(width=10, length=10, height=10)
+    rt.setProperty(obj, 'pos', rt.Point3(50, 60, 70))
+    rt.setProperty(obj, 'rotation', rt.eulerToQuat(rt.eulerAngles(45, 0, 0)))
 
 因此本模块采用：
 
-- **构造器**：不再传 ``pos`` / ``rotation``，避免构造器参数被 Max 忽略后
-  静默失败。
-- **首选后置 setter**：``node.setmxsprop('pos', p3)``（官方方案 2）。
-- **兜底**：``rt.setProperty(node, 'pos', p3)``（官方方案 1）。
-- **硬校验**：写入后读回坐标，偏差 > 0.01 抛异常，绝不静默通过。
+- **构造器**：不再传 ``pos`` / ``rotation``，避免部分 Max 版本构造器参数
+  被静默忽略。
+- **后置 setter**：统一使用 ``rt.setProperty`` 设置位置与旋转。
+- **硬校验**：写入后读回坐标，偏差 > 0.01 抛 RuntimeError，绝不静默通过。
 
 非法 ``position`` / ``rotation_euler`` 输入会立即抛出 ``ValueError``，
 避免 agent 以为创建成功但实际上对象仍在原点。
@@ -103,10 +99,8 @@ def _verify_position(node, expected):
 def _apply_common(node, name, position, rotation_euler):
     """统一处理对象创建后的命名、后置定位与旋转。
 
-    严格遵循 Autodesk 官方 pymxs 文档推荐方案：
-      1. ``node.setmxsprop('pos', p3)``（首选）
-      2. ``rt.setProperty(node, 'pos', p3)``（兜底）
-    直接 ``node.pos = p3`` 在 pymxs 中不可靠，因此不采用。
+    采用经过 Max 2022 实测验证的 ``rt.setProperty`` 路径，与 Autodesk
+    官方 pymxs 文档一致，也与你手工验证成功的代码对齐。
 
     :param node: rt 创建返回的节点
     :param name: 要设置的名字（空字符串跳过）
@@ -122,28 +116,13 @@ def _apply_common(node, name, position, rotation_euler):
     if position is not None:
         p3 = _to_point3(position)
         if p3 is not None:
-            # 官方方案 2：pymxs MXSWrapperBase.setmxsprop
-            # 官方方案 1：MAXScript 原生 rt.setProperty
-            # 部分 Max 版本 setmxsprop 不抛异常但也不生效，因此用硬校验
-            # 判断是否真的写入成功，失败则尝试下一个方案。
-            pos_set = False
             try:
-                node.setmxsprop('pos', p3)
-                _verify_position(node, position)
-                pos_set = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-            if not pos_set:
-                try:
-                    rt.setProperty(node, 'pos', p3)
-                    _verify_position(node, position)
-                    pos_set = True
-                except Exception:  # pylint: disable=broad-except
-                    pass
-            if not pos_set:
+                rt.setProperty(node, 'pos', p3)
+            except Exception as exc:  # pylint: disable=broad-except
                 raise RuntimeError(
-                    'position 设置失败: {}'.format(position),
-                )
+                    'position 设置失败: {} ({})'.format(position, exc),
+                ) from exc
+            _verify_position(node, position)
 
     if rotation_euler is not None:
         if len(rotation_euler) != 3:
@@ -163,23 +142,12 @@ def _apply_common(node, name, position, rotation_euler):
             raise ValueError(
                 'rotation_euler 解析失败: {} ({})'.format(rotation_euler, exc),
             ) from exc
-
-        rot_set = False
         try:
-            node.setmxsprop('rotation', quat)
-            rot_set = True
-        except Exception:  # pylint: disable=broad-except
-            pass
-        if not rot_set:
-            try:
-                rt.setProperty(node, 'rotation', quat)
-                rot_set = True
-            except Exception:  # pylint: disable=broad-except
-                pass
-        if not rot_set:
+            rt.setProperty(node, 'rotation', quat)
+        except Exception as exc:  # pylint: disable=broad-except
             raise RuntimeError(
-                'rotation_euler 设置失败: {}'.format(rotation_euler),
-            )
+                'rotation_euler 设置失败: {} ({})'.format(rotation_euler, exc),
+            ) from exc
     return node
 
 
