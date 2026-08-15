@@ -39,12 +39,10 @@ def _get_node(name: str):
 def _get_controller(node, controller_name: str):
     """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
 
-    经过 Max 2022 实测，``getPropertyController(node.controller, 'Position')``
-    在某些版本/对象上不稳定。更可靠的方式是直接用属性名字符串访问：
-
-        ctrl = node['pos'].controller
-
-    这种字典式访问与 MAXScript 的 ``obj.pos.controller`` 语义一致。
+    经过 Max 2022 实测，``node['pos']`` 在 pymxs 中并不等价于 ``node.pos``，
+    反而可能返回 ``None``；``getPropertyController`` 在某些版本上也不稳定。
+    最可靠的方式是直接用 ``getattr(node, 'pos').controller``，
+    这与 MAXScript 的 ``obj.pos.controller`` 语义一致。
 
     :param node: pymxs 节点对象
     :param controller_name: 'position' / 'rotation' / 'scale'
@@ -62,7 +60,7 @@ def _get_controller(node, controller_name: str):
         raise ValueError("未知控制器名: {}".format(controller_name))
 
     try:
-        ctrl = node[mxs_prop].controller
+        ctrl = getattr(node, mxs_prop).controller
     except Exception as exc:  # pylint: disable=broad-except
         raise ValueError(
             "获取控制器失败: {}.{} ({})".format(node.name, controller_name, exc),

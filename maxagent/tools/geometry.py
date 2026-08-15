@@ -47,20 +47,32 @@ def _ensure_in_max():
 
 
 def _to_point3(position):
-    """把 [x, y, z] 列表/元组转为 rt.Point3，非法输入抛出 ValueError。
+    """把 [x, y, z] 列表/元组/JSON字符串转为 rt.Point3，非法输入抛 ValueError。
 
-    之前返回 None 会导致非法 position 被静默忽略，agent 以为创建成功。
-    现在改为显式报错，让调用方能立即感知参数错误。
+    create_* 工具 schema 对外暴露为 string（如 '[50,60,70]'），因此内部需要
+    同时支持字符串 JSON 和原生列表/元组。
     """
+    import json  # pylint: disable=import-outside-toplevel
+
     if position is None:
         return None
+
+    coords = position
+    if isinstance(coords, str):
+        try:
+            coords = json.loads(coords)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                'position 字符串不是合法 JSON: {} ({})'.format(position, exc),
+            ) from exc
+
     try:
-        if len(position) != 3:
+        if len(coords) != 3:
             raise ValueError(
                 'position 必须是包含 3 个数值的列表/元组: {}'.format(position),
             )
         return rt.Point3(
-            float(position[0]), float(position[1]), float(position[2]),
+            float(coords[0]), float(coords[1]), float(coords[2]),
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(
