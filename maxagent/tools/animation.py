@@ -39,9 +39,13 @@ def _get_node(name: str):
 def _get_controller(node, controller_name: str):
     """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
 
-    pymxs 中 ``node.pos.controller`` 等点号访问不稳定，容易报 AttributeError。
-    经过回归测试验证，通过 ``rt.execute`` 在 MAXScript 环境里访问
-    ``(getNodeByName \"...\").pos.controller`` 最为可靠。
+    知识库 "Working with Controllers" 章节推荐通过 ``getPropertyController``
+    访问子动画控制器：
+
+        sphr_pos_ctrl = rt.getPropertyController(s.controller, 'Position')
+
+    这是 Autodesk 官方支持的 pymxs 访问路径，比直接 ``node.pos.controller``
+    稳定可靠。
 
     :param node: pymxs 节点对象
     :param controller_name: 'position' / 'rotation' / 'scale'
@@ -50,20 +54,16 @@ def _get_controller(node, controller_name: str):
     if not controller_name:
         raise ValueError("controller_name 不能为空")
     prop_map = {
-        "position": "pos",
-        "rotation": "rotation",
-        "scale": "scale",
+        "position": "Position",
+        "rotation": "Rotation",
+        "scale": "Scale",
     }
     mxs_prop = prop_map.get(controller_name)
     if mxs_prop is None:
         raise ValueError("未知控制器名: {}".format(controller_name))
 
-    node_name = str(node.name).replace('"', '\\"')
-    script = 'ctrl = (getNodeByName "{}").{}.controller\nctrl'.format(
-        node_name, mxs_prop,
-    )
     try:
-        ctrl = rt.execute(script)
+        ctrl = rt.getPropertyController(node.controller, mxs_prop)
     except Exception as exc:  # pylint: disable=broad-except
         raise ValueError(
             "获取控制器失败: {}.{} ({})".format(node.name, controller_name, exc),
@@ -99,7 +99,7 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
     frame = float(frame)
 
     if controller is None or controller == "transform":
-        controllers = ["pos", "rotation", "scale"]
+        controllers = ["position", "rotation", "scale"]
     elif controller in ("position", "rotation", "scale"):
         controllers = [controller]
     else:
@@ -107,20 +107,20 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
             "controller 必须是 position/rotation/scale/transform 之一",
         )
 
-    node_name = str(node.name).replace('"', '\\"')
-    for ctrl_name in controllers:
-        mxs_prop = "pos" if ctrl_name == "position" else ctrl_name
-        script = 'addNewKey (getNodeByName "{}").{}.controller {}'.format(
-            node_name, mxs_prop, frame,
-        )
-        try:
-            rt.execute(script)
-        except Exception as exc:  # pylint: disable=broad-except
-            raise RuntimeError(
-                "设置关键帧失败: {}.{} @ frame {} ({})".format(
-                    name, ctrl_name, frame, exc,
-                ),
-            ) from exc
+    # 在函数内部延迟导入 pymxs，非 Max 环境测试不会触发
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
+
+    with pymxs.animate(True):
+        for ctrl_name in controllers:
+            ctrl = _get_controller(node, ctrl_name)
+            try:
+                rt.addNewKey(ctrl, frame)
+            except Exception as exc:  # pylint: disable=broad-except
+                raise RuntimeError(
+                    "设置关键帧失败: {}.{} @ frame {} ({})".format(
+                        name, ctrl_name, frame, exc,
+                    ),
+                ) from exc
     return {
         "name": name,
         "frame": frame,
@@ -145,7 +145,7 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
     frame = float(frame)
 
     if controller is None or controller == "transform":
-        controllers = ["pos", "rotation", "scale"]
+        controllers = ["position", "rotation", "scale"]
     elif controller in ("position", "rotation", "scale"):
         controllers = [controller]
     else:
@@ -153,21 +153,20 @@ def delete_keyframe(name: str, frame: float, controller: Optional[str] = None):
             "controller 必须是 position/rotation/scale/transform 之一",
         )
 
-    node_name = str(node.name).replace('"', '\\"')
-    for ctrl_name in controllers:
-        mxs_prop = "pos" if ctrl_name == "position" else ctrl_name
-        # deleteKey 删除控制器在指定帧的关键帧；若该帧无关键帧不报错
-        script = 'deleteKey (getNodeByName "{}").{}.controller {}'.format(
-            node_name, mxs_prop, frame,
-        )
-        try:
-            rt.execute(script)
-        except Exception as exc:  # pylint: disable=broad-except
-            raise RuntimeError(
-                "删除关键帧失败: {}.{} @ frame {} ({})".format(
-                    name, ctrl_name, frame, exc,
-                ),
-            ) from exc
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
+
+    with pymxs.animate(True):
+        for ctrl_name in controllers:
+            ctrl = _get_controller(node, ctrl_name)
+            # deleteKey 删除控制器在指定帧的关键帧；若该帧无关键帧不报错
+            try:
+                rt.deleteKey(ctrl, frame)
+            except Exception as exc:  # pylint: disable=broad-except
+                raise RuntimeError(
+                    "删除关键帧失败: {}.{} @ frame {} ({})".format(
+                        name, ctrl_name, frame, exc,
+                    ),
+                ) from exc
     return {
         "name": name,
         "frame": frame,
@@ -195,13 +194,12 @@ def get_keyframe_value(name: str, frame: float, controller: str = "position"):
         raise ValueError("controller 必须是 position/rotation/scale 之一")
     frame = float(frame)
 
-    node_name = str(node.name).replace('"', '\\"')
-    mxs_prop = "pos" if controller == "position" else controller
-    script = (
-        'at time {frame} val = (getNodeByName "{name}").{prop}.value\nval'
-    ).format(frame=frame, name=node_name, prop=mxs_prop)
+    import pymxs  # pylint: disable=import-error,import-outside-toplevel
+
+    ctrl = _get_controller(node, controller)
     try:
-        val = rt.execute(script)
+        with pymxs.attime(frame):
+            val = ctrl.value
     except Exception as exc:  # pylint: disable=broad-except
         raise RuntimeError(
             "读取关键帧值失败: {}.{} @ frame {} ({})".format(
