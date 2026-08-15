@@ -271,7 +271,12 @@ class Message(object):
                  reasoning_content=None):
         # type: (str, Optional[str], Optional[List[Dict]], Optional[str], Optional[str], Optional[float], Optional[List], Optional[str]) -> None
         self.role = role
-        # OpenAI 协议允许 content 为 None（仅当 assistant 只发 tool_calls 时）
+        # OpenAI 协议允许 content 为 None（仅当 assistant 只发 tool_calls 时）。
+        # 防御性归一化：对 assistant 角色而言，空字符串 '' 与 None 语义相同，
+        # 但 Moonshot/Kimi 接口会拒绝空字符串（HTTP 400 message must not
+        # be empty）。在构造时统一把空串转成 None，避免任何调用方遗漏。
+        if role == 'assistant' and content == '':
+            content = None
         self.content = content
         self.tool_calls = tool_calls
         self.tool_call_id = tool_call_id
