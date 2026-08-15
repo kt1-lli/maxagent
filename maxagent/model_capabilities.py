@@ -240,6 +240,30 @@ def requires_temperature_one(model_id):
     return False
 
 
+# 已知支持 OpenAI 协议 reasoning_content 字段（DeepSeek 风格）的模型。
+# Moonshot/Kimi 等服务商不识别该字段，且会把 content=null + 无 tool_calls
+# 的 assistant 消息判定为 "message must not be empty"。
+_REASONING_CONTENT_MODELS = [
+    'deepseek',
+]
+
+
+def model_supports_reasoning_content(model_id):
+    # type: (str) -> bool
+    """判断目标模型/服务商是否原生支持 reasoning_content 字段。
+
+    :param model_id: 原始 model 字符串。
+    :return: True 表示服务端会识别并正确处理 reasoning_content。
+    """
+    if not model_id:
+        return False
+    norm = _normalize_model_id(model_id)
+    for candidate in _REASONING_CONTENT_MODELS:
+        if candidate in norm or norm.startswith(candidate):
+            return True
+    return False
+
+
 def recommend_history_budget(ctx_window):
     # type: (int) -> int
     """把 context window 换算为推荐的 ``max_history_tokens``。

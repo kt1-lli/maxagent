@@ -385,6 +385,53 @@ class LLMClient(object):
         # 默认触发指数退避重试的 HTTP 状态码：429 rate limit / 502 / 503 / 504 服务端过载。
         self._retryable_status_codes = retryable_status_codes or _DEFAULT_RETRYABLE_STATUS_CODES
 
+    @staticmethod
+    def _sanitize_messages_for_provider(messages, supports_reasoning=False):
+        # type: (List[Dict[str, Any]], bool) -> List[Dict[str, Any]]
+        """按目标模型/服务商清洗消息列表。
+
+        主要解决跨服务商历史兼容问题：DeepSeek 会返回并需要回传
+        ``reasoning_content`` 字段，但 Moonshot/Kimi 等不识别该字段，
+        且会把 content 为空/null 又无 tool_calls 的 assistant 消息视为
+        "message must not be empty" 直接返回 HTTP 400。
+
+        :param messages: 待发送的 OpenAI 格式消息列表（会被浅拷贝，不
+            修改原列表条目外的容器）。
+        :param supports_reasoning: 目标模型是否原生支持 reasoning_content。
+        :return: 清洗后的消息列表。
+        """
+        out = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                out.append(msg)
+                continue
+            new_msg = dict(msg)
+            if not supports_reasoning and 'reasoning_content' in new_msg:
+                del new_msg['reasoning_content']
+            if new_msg.get('role') == 'assistant':
+                content = new_msg.get('content')
+                tool_calls = new_msg.get('tool_calls')
+                has_content = bool(
+                    content if isinstance(content, str) else False,
+                )
+                # 无有效 content 且无 tool_calls：对 Moonshot 等服务商
+                # 属于 empty message。若目标模型不支持 reasoning_content，
+                # 则把该字段内容复制到 content 避免消息为空；仍为空时
+                # 填充一个空格（保留消息结构同时满足非空校验）。
+                # 支持 reasoning_content 的模型保持 content 原样，仅当
+                # 二者皆空时填充空格兜底。
+                if not has_content and not tool_calls:
+                    if supports_reasoning:
+                        new_msg['content'] = ' '
+                    else:
+                        fallback = msg.get('reasoning_content') or ''
+                        if isinstance(fallback, str) and fallback.strip():
+                            new_msg['content'] = fallback.strip()
+                        else:
+                            new_msg['content'] = ' '
+            out.append(new_msg)
+        return out
+
     # ------------------------------------------------------------------ #
     # 公共方法
     # ------------------------------------------------------------------ #
@@ -470,6 +517,22 @@ class LLMClient(object):
         # 不支持的后端会忽略）
         if stream:
             payload["stream_options"] = {"include_usage": True}
+
+        # 服务商适配清洗：避免把 DeepSeek 风格的 reasoning_content 消息
+        # 直接发给 Moonshot/Kimi 等不识别该字段的服务商。这些服务商会将
+        # content=null 且无 tool_calls 的 assistant 消息判定为
+        # "message must not be empty"（HTTP 400）。
+        # 清洗规则：非 reasoning_content 模型删除该字段；若 assistant
+        # 消息 content 为空且无 tool_calls，则用原始 reasoning_content
+        # 兜底，仍为空时填充一个空格保证消息非空。
+        try:
+            from .model_capabilities import model_supports_reasoning_content
+            supports_reasoning = model_supports_reasoning_content(self._model)
+        except Exception:  # pylint: disable=broad-except
+            supports_reasoning = False
+        payload["messages"] = self._sanitize_messages_for_provider(
+            payload["messages"], supports_reasoning=supports_reasoning,
+        )
 
         url = self._base_url + "/chat/completions"
         headers = self._build_headers()
