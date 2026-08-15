@@ -39,10 +39,14 @@ def _get_node(name: str):
 def _get_controller(node, controller_name: str):
     """通过字符串名取对象的 transform 子控制器，例如 'position', 'rotation', 'scale'。
 
-    经过 Max 2022 实测，``node['pos']`` 在 pymxs 中并不等价于 ``node.pos``，
-    反而可能返回 ``None``；``getPropertyController`` 在某些版本上也不稳定。
-    最可靠的方式是直接用 ``getattr(node, 'pos').controller``，
-    这与 MAXScript 的 ``obj.pos.controller`` 语义一致。
+    注意：pymxs 节点的公开属性名是 ``pos`` 而不是 ``position``；``node['pos']``
+    和 ``node.position`` 都可能返回 ``None``。``getPropertyController`` 在某些版本上
+    也不稳定。最可靠的方式是 ``getattr(node, 'pos').controller``，这与
+    MAXScript 的 ``obj.pos.controller`` 语义一致。
+
+    该函数目前保留给需要直接操作 controller 的场景（如 get_keyframe_value、
+    delete_keyframe、约束相关工具）；set_keyframe 已改用
+    ``pymxs.animate(True) + pymxs.attime(frame) + setattr`` 路径，避免 controller 访问。
 
     :param node: pymxs 节点对象
     :param controller_name: 'position' / 'rotation' / 'scale'
@@ -68,6 +72,16 @@ def _get_controller(node, controller_name: str):
     if ctrl is None:
         raise ValueError("控制器为空: {}.{}".format(node.name, controller_name))
     return ctrl
+
+
+def _prop_name(controller_name: str) -> str:
+    """把对外的 'position'/'rotation'/'scale' 映射到 pymxs 节点真实属性名。"""
+    mapping = {
+        "position": "pos",
+        "rotation": "rotation",
+        "scale": "scale",
+    }
+    return mapping.get(controller_name, controller_name)
 
 
 # ---------------------------------------------------------------------- #
@@ -108,14 +122,15 @@ def set_keyframe(name: str, frame: float, controller: Optional[str] = None):
     import pymxs  # pylint: disable=import-error,import-outside-toplevel
 
     # 实测验证的可靠路径：在 pymxs.animate(True) + pymxs.attime(frame)
-    # 上下文中将当前 controller 值写回自身，即可自动记录关键帧。
+    # 上下文中将当前 transform 属性值写回自身，即可自动记录关键帧。
+    # 这种方式不直接访问 .controller，避开 position vs pos 的属性名陷阱。
     with pymxs.animate(True):
         with pymxs.attime(frame):
             for ctrl_name in controllers:
-                ctrl = _get_controller(node, ctrl_name)
+                prop_name = _prop_name(ctrl_name)
                 try:
-                    # 读取当前值再写回，触发关键帧记录
-                    ctrl.value = ctrl.value
+                    current_value = getattr(node, prop_name)
+                    setattr(node, prop_name, current_value)
                 except Exception as exc:  # pylint: disable=broad-except
                     raise RuntimeError(
                         "设置关键帧失败: {}.{} @ frame {} ({})".format(

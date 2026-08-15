@@ -46,38 +46,44 @@ def _ensure_in_max():
         raise RuntimeError('非 3ds Max 环境')
 
 
-def _to_point3(position):
-    """把 [x, y, z] 列表/元组/JSON字符串转为 rt.Point3，非法输入抛 ValueError。
+def _to_xyz_list(value, name='position'):
+    """把 [x, y, z] 列表/元组/JSON字符串转为三元组，非法输入抛 ValueError。
 
     create_* 工具 schema 对外暴露为 string（如 '[50,60,70]'），因此内部需要
-    同时支持字符串 JSON 和原生列表/元组。
+    同时支持字符串 JSON 和原生列表/元组。被 position / rotation_euler 共用。
     """
     import json  # pylint: disable=import-outside-toplevel
 
-    if position is None:
+    if value is None:
         return None
 
-    coords = position
+    coords = value
     if isinstance(coords, str):
         try:
             coords = json.loads(coords)
         except json.JSONDecodeError as exc:
             raise ValueError(
-                'position 字符串不是合法 JSON: {} ({})'.format(position, exc),
+                '{} 字符串不是合法 JSON: {} ({})'.format(name, value, exc),
             ) from exc
 
     try:
         if len(coords) != 3:
             raise ValueError(
-                'position 必须是包含 3 个数值的列表/元组: {}'.format(position),
+                '{} 必须是包含 3 个数值的列表/元组: {}'.format(name, value),
             )
-        return rt.Point3(
-            float(coords[0]), float(coords[1]), float(coords[2]),
-        )
+        return (float(coords[0]), float(coords[1]), float(coords[2]))
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            'position 参数解析失败: {} ({})'.format(position, exc),
+            '{} 参数解析失败: {} ({})'.format(name, value, exc),
         ) from exc
+
+
+def _to_point3(position):
+    """把 position 转为 rt.Point3。"""
+    coords = _to_xyz_list(position, name='position')
+    if coords is None:
+        return None
+    return rt.Point3(coords[0], coords[1], coords[2])
 
 
 def _verify_position(node, expected):
@@ -137,18 +143,9 @@ def _apply_common(node, name, position, rotation_euler):
             _verify_position(node, position)
 
     if rotation_euler is not None:
-        if len(rotation_euler) != 3:
-            raise ValueError(
-                'rotation_euler 必须是包含 3 个数值的列表/元组: {}'.format(
-                    rotation_euler,
-                ),
-            )
+        rx, ry, rz = _to_xyz_list(rotation_euler, name='rotation_euler')
         try:
-            euler = rt.eulerAngles(
-                float(rotation_euler[0]),
-                float(rotation_euler[1]),
-                float(rotation_euler[2]),
-            )
+            euler = rt.eulerAngles(rx, ry, rz)
             quat = rt.eulerToQuat(euler)
         except Exception as exc:  # pylint: disable=broad-except
             raise ValueError(
