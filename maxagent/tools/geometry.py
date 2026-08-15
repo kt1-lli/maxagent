@@ -163,6 +163,34 @@ def _apply_common(node, name, position, rotation_euler):
 @tool(
     description='在场景中创建一个长方体（Box）。',
     category='geometry',
+    examples=[
+        {
+            'summary': '在原点创建默认大小的 Box',
+            'args': {'length': 10, 'width': 10, 'height': 10},
+        },
+        {
+            'summary': '在指定位置创建 Box',
+            'args': {
+                'name': 'MyBox',
+                'length': 20, 'width': 10, 'height': 5,
+                'position': '[50, 0, 0]',
+            },
+        },
+        {
+            'summary': '创建并设置旋转',
+            'args': {
+                'name': 'RotatedBox',
+                'length': 10, 'width': 10, 'height': 10,
+                'rotation_euler': '[45, 0, 0]',
+            },
+        },
+    ],
+    notes=[
+        'position 和 rotation_euler 支持 JSON 字符串 "[x,y,z]" 或 Python list/tuple。',
+        'length 对应 Y 方向，width 对应 X 方向，height 对应 Z 方向。',
+        '创建后若需精确摆放，可继续使用 move_object / rotate_object。',
+    ],
+    returns_desc='dict {"name": 实际对象名, "class": "Box"}',
 )
 def create_box(
     length=10.0,

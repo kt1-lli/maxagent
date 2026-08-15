@@ -13,6 +13,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import inspect
+import json
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -37,6 +38,10 @@ class ToolSpec(object):
         dangerous=False,            # type: bool
         wrap_undo=True,             # type: bool
         run_on_main_thread=True,    # type: bool
+        examples=None,              # type: Optional[List[Dict[str, Any]]]
+        notes=None,                 # type: Optional[List[str]]
+        returns_desc=None,          # type: Optional[str]
+        prerequisites=None,         # type: Optional[List[str]]
     ):
         self.name = name
         self.func = func
@@ -46,14 +51,45 @@ class ToolSpec(object):
         self.dangerous = dangerous
         self.wrap_undo = wrap_undo
         self.run_on_main_thread = run_on_main_thread
+        self.examples = examples or []
+        self.notes = notes or []
+        self.returns_desc = returns_desc or ""
+        self.prerequisites = prerequisites or []
 
     def to_openai_schema(self):
         """生成 OpenAI tools 协议的单条 schema。"""
+        parts = [self.description.strip()]
+
+        if self.prerequisites:
+            parts.append("\n前置条件:")
+            for item in self.prerequisites:
+                parts.append("- " + item)
+
+        if self.examples:
+            parts.append("\n调用示例:")
+            for idx, ex in enumerate(self.examples, 1):
+                summary = ex.get("summary", "")
+                args = ex.get("args", {})
+                args_text = json.dumps(args, ensure_ascii=False)
+                if summary:
+                    parts.append("{}. {} 参数: {}".format(idx, summary, args_text))
+                else:
+                    parts.append("{}. 参数: {}".format(idx, args_text))
+
+        if self.notes:
+            parts.append("\n注意事项:")
+            for item in self.notes:
+                parts.append("- " + item)
+
+        if self.returns_desc:
+            parts.append("\n返回值: " + self.returns_desc)
+
+        full_description = "\n".join(parts)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": full_description,
                 "parameters": self.parameters,
             },
         }
@@ -67,16 +103,24 @@ def tool(
     dangerous=False,            # type: bool
     wrap_undo=True,             # type: bool
     run_on_main_thread=True,    # type: bool
+    examples=None,              # type: Optional[List[Dict[str, Any]]]
+    notes=None,                 # type: Optional[List[str]]
+    returns_desc=None,          # type: Optional[str]
+    prerequisites=None,         # type: Optional[List[str]]
 ):
     """工具注册装饰器。
 
     :param name: 工具名（不传则用函数名）
-    :param description: 给 LLM 看的功能描述
+    :param description: 给 LLM 看的核心功能描述
     :param parameters: OpenAI 风格的 JSON Schema；不传则按函数签名自动推导
     :param category: 工具分组，便于 UI 展示
     :param dangerous: 是否危险（如删除场景、执行任意代码），UI 会高亮提醒
     :param wrap_undo: 执行时是否包 undo 上下文
     :param run_on_main_thread: 是否需要 marshal 回主线程执行（pymxs 调用必须 True）
+    :param examples: 调用示例列表，每项 {"summary": "简述", "args": {...}}
+    :param notes: 给 LLM 的注意事项列表
+    :param returns_desc: 返回值说明
+    :param prerequisites: 调用前必须满足的条件（如对象必须存在）
     """
 
     def _decorator(func):
@@ -96,6 +140,10 @@ def tool(
             dangerous=dangerous,
             wrap_undo=wrap_undo,
             run_on_main_thread=run_on_main_thread,
+            examples=examples,
+            notes=notes,
+            returns_desc=returns_desc,
+            prerequisites=prerequisites,
         )
         _REGISTRY[tool_name] = spec
         # 让被装饰函数仍可直接调用
@@ -274,6 +322,42 @@ def build_openai_tools_schema(category=None, include_dangerous=True):
 def clear_registry():
     """清空注册表（仅测试用）。"""
     _REGISTRY.clear()
+
+
+# ---------------------------------------------------------------------- #
+# 工具 description 质量校验
+# ---------------------------------------------------------------------- #
+
+
+MIN_DESCRIPTION_LENGTH = 6  # type: int
+
+
+def validate_tool_spec(spec):
+    # type: (ToolSpec) -> List[str]
+    """检查单个 ToolSpec 的 description 质量，返回问题列表。
+
+    当前为建议级校验（返回 warning 但不阻断注册）。后续规范成熟后可
+    升级为注册期强制检查。
+    """
+    warnings = []
+    if not spec.description or len(spec.description.strip()) < MIN_DESCRIPTION_LENGTH:
+        warnings.append("{}: description 过短或为空".format(spec.name))
+    if not spec.examples:
+        warnings.append("{}: 缺少调用示例（examples）".format(spec.name))
+    if not spec.notes:
+        warnings.append("{}: 缺少注意事项（notes）".format(spec.name))
+    if not spec.returns_desc:
+        warnings.append("{}: 缺少返回值说明（returns_desc）".format(spec.name))
+    return warnings
+
+
+def scan_tool_description_quality():
+    # type: () -> List[str]
+    """扫描注册表中所有工具，返回 description 质量问题列表。"""
+    warnings = []
+    for spec in _REGISTRY.values():
+        warnings.extend(validate_tool_spec(spec))
+    return warnings
 
 
 # ---------------------------------------------------------------------- #

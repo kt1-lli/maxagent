@@ -89,12 +89,25 @@ def _prop_name(controller_name: str) -> str:
 # ---------------------------------------------------------------------- #
 
 @tool(
-    description=(
-        "给对象在指定帧设置关键帧。"
-        "controller 可选 'position'/'rotation'/'scale'/'transform'，"
-        "不传则对所有 transform 属性打关键帧。"
-    ),
-    category="animation",
+    description='给对象在指定帧设置关键帧。',
+    category='animation',
+    examples=[
+        {
+            'summary': '在 30 帧记录 Box 的位置关键帧',
+            'args': {'name': 'Box01', 'frame': 30, 'controller': 'position'},
+        },
+        {
+            'summary': '在 60 帧同时记录位置、旋转、缩放关键帧',
+            'args': {'name': 'Box01', 'frame': 60, 'controller': 'transform'},
+        },
+    ],
+    notes=[
+        "controller 可选 'position' / 'rotation' / 'scale' / 'transform'。",
+        "不传 controller 时默认对所有 transform 属性（位置/旋转/缩放）打关键帧。",
+        "调用前对象必须已存在；会复用当前属性的值作为关键帧值。",
+    ],
+    returns_desc='dict {"name": 对象名, "frame": 帧号, "controller": 控制器类型}',
+    prerequisites=['对象 name 必须已存在于场景中'],
     run_on_main_thread=True,
 )
 def set_keyframe(name: str, frame: float, controller: Optional[str] = None):

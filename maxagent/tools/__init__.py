@@ -103,6 +103,18 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True):
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning('用户工具扫描异常: %s', exc)
 
+    # 扫描 description 质量，提醒缺少说明的工具
+    try:
+        from .registry import scan_tool_description_quality
+        warnings = scan_tool_description_quality()
+        if warnings:
+            logger.warning(
+                '以下工具缺少完整说明（详见 docs/tool_description_guide.md）：\n%s',
+                '\n'.join('  - ' + w for w in warnings),
+            )
+    except Exception:  # pylint: disable=broad-except
+        pass
+
     _LOADED = True
     return len(list_tools())
 
