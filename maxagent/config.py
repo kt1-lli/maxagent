@@ -331,7 +331,7 @@ class AppConfig:
     enable_project_memory: bool = True
 
     # ---------- 共享资源目录 ---------- #
-    # 团队外挂资产库根目录。指向一个只读 Git 工作区，里面可放
+    # 团队共享资源库根目录。指向一个只读 Git 工作区，里面可放
     # skills / user_tools / user_rules / reflections / knowledge sources。
     # 空字符串表示未启用。
     shared_resources_dir: str = ""
