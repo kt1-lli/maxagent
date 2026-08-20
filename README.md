@@ -283,6 +283,7 @@ set MAXAGENT_SHARED_DIR=C:\\TeamAssets\\shared-maxagent-assets
 - 同名资产默认**使用共享版本**；首次冲突会弹出对话框，也可在设置页切换默认策略
 - 共享的 `user_tool` 会自动加 `shared_` 前缀，避免和本地工具冲突
 - 共享工具首次调用前会做语法检查，团队入库前建议先在本地验证
+- 设置面板提供「拉取最新」按钮，可对共享目录一键执行 `git pull --ff-only`
 
 ---
 
