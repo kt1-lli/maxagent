@@ -1963,6 +1963,15 @@ class SettingsDialog(QtWidgets.QDialog):
         self.shared_open_dir_btn.clicked.connect(self._on_shared_open_dir)
         op_row.addWidget(self.shared_open_dir_btn)
 
+        self.shared_pull_btn = QtWidgets.QPushButton(
+            _btn_label('⬇️', '拉取最新'),
+        )
+        self.shared_pull_btn.setToolTip(
+            '对共享资源目录执行 git pull --ff-only，同步团队最新资产。'
+        )
+        self.shared_pull_btn.clicked.connect(self._on_shared_pull)
+        op_row.addWidget(self.shared_pull_btn)
+
         self.shared_refresh_btn = QtWidgets.QPushButton(
             _btn_label('🔄', '刷新统计'),
         )
@@ -2118,6 +2127,50 @@ class SettingsDialog(QtWidgets.QDialog):
                 self, '目录',
                 '请手动打开以下目录:\n{}'.format(path),
             )
+
+    def _on_shared_pull(self):
+        """对共享资源目录执行 git pull --ff-only。"""
+        from ..shared_resources import (
+            get_git_remote_url,
+            get_shared_resources_dir,
+            is_git_repository,
+            pull_shared_resources,
+        )
+
+        path = get_shared_resources_dir()
+        if not path:
+            QtWidgets.QMessageBox.information(
+                self, '拉取', '共享资源目录未启用，请先配置路径。',
+            )
+            return
+        if not is_git_repository(path):
+            QtWidgets.QMessageBox.warning(
+                self,
+                '拉取失败',
+                '当前目录不是 Git 仓库，无法自动拉取。\n{}'.format(path),
+            )
+            return
+
+        remote = get_git_remote_url(path) or 'origin'
+        self.shared_status_lbl.setText(
+            '状态：<span style="color:#ffd166;">正在拉取 {} ...</span>'.format(
+                remote,
+            ),
+        )
+        self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        # 强制刷新状态文字，避免在 git 执行期间界面卡死无反馈
+        QtWidgets.QApplication.processEvents()
+
+        ok, msg = pull_shared_resources(path)
+        if ok:
+            QtWidgets.QMessageBox.information(
+                self, '拉取成功', msg,
+            )
+        else:
+            QtWidgets.QMessageBox.warning(
+                self, '拉取失败', msg,
+            )
+        self._refresh_shared_page()
 
     # ================================================================== #
     # Page 5: 帮助
@@ -2365,7 +2418,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<p><b>典型工作流</b>：'
             '<br>① 团队 TA 或 TD 把写好的 Skill / 工具提交到 Git 仓库\n'
-            '② 美术 pull 到本地共享目录\n'
+            '② 美术 pull 到本地共享目录（或在设置页点击「拉取最新」一键同步）\n'
             '③ 重启 MaxAgent 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
             '④ 共享工具首次被调用前会经过语法检查，执行时与本地工具一样受脚本确认开关约束'
             '</p>'

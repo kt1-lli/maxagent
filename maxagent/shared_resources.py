@@ -24,12 +24,14 @@ from __future__ import print_function
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 
 from .config import get_config_dir
 from .config import load_config
@@ -345,6 +347,67 @@ def scan_shared_stats() -> SharedAssetStats:
     return stats
 
 
+def is_git_repository(path: str) -> bool:
+    """判断指定路径是否为 Git 仓库工作区。"""
+    if not path or not os.path.isdir(path):
+        return False
+    git_dir = os.path.join(path, '.git')
+    return os.path.isdir(git_dir)
+
+
+def get_git_remote_url(path: str) -> Optional[str]:
+    """获取 Git 仓库的 origin remote URL；非仓库或失败返回 None。"""
+    if not is_git_repository(path):
+        return None
+    try:
+        result = subprocess.run(
+            ['git', 'remote', 'get-url', 'origin'],
+            cwd=path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+    except OSError:
+        pass
+    return None
+
+
+def pull_shared_resources(
+    shared_dir: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """对共享资源目录执行 ``git pull``，返回 (成功, 消息)。
+
+    若目录未启用或不是 Git 仓库，返回失败原因。
+    使用 ``--ff-only`` 避免自动合并非快进提交，降低冲突风险。
+    """
+    target = shared_dir or get_shared_resources_dir()
+    if not target:
+        return False, '共享资源目录未启用'
+    if not is_git_repository(target):
+        return False, '共享资源目录不是 Git 仓库，无法自动拉取'
+
+    try:
+        result = subprocess.run(
+            ['git', 'pull', '--ff-only'],
+            cwd=target,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            text=True,
+        )
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            return True, output or '已是最新'
+        return False, result.stdout.strip()
+    except FileNotFoundError:
+        return False, '未找到 git 命令，请确保系统已安装 Git 并加入 PATH'
+    except OSError as exc:
+        return False, '拉取失败: {}'.format(exc)
+
+
 __all__ = [
     'ASSET_SUBDIRS',
     'CONFLICT_RESOLUTIONS',
@@ -360,4 +423,7 @@ __all__ = [
     'list_shared_files',
     'list_shared_knowledge_sources',
     'scan_shared_stats',
+    'is_git_repository',
+    'get_git_remote_url',
+    'pull_shared_resources',
 ]
