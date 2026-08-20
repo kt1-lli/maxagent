@@ -202,9 +202,9 @@ class SharedConflictResolver:
 
     FILENAME = 'shared_conflict_resolutions.json'
 
-    def __init__(self):
-        # type: () -> None
-        self._config_dir = get_config_dir()
+    def __init__(self, config_dir=None):
+        # type: (Optional[str]) -> None
+        self._config_dir = config_dir or get_config_dir()
         self._path = os.path.join(self._config_dir, self.FILENAME)
         self._records = {}  # type: Dict[str, ConflictResolution]
         self._load()

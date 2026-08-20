@@ -275,9 +275,10 @@ class Skill(object):
 class SkillManager(object):
     """技能 CRUD + 触发匹配。"""
 
-    def __init__(self, base_dir=None):
-        # type: (Optional[str]) -> None
+    def __init__(self, base_dir=None, config_dir=None):
+        # type: (Optional[str], Optional[str]) -> None
         self._base = base_dir or get_skills_dir()
+        self._config_dir = config_dir or os.path.dirname(self._base)
         if not os.path.isdir(self._base):
             os.makedirs(self._base)
 
@@ -322,6 +323,11 @@ class SkillManager(object):
         else:
             skill.impl_path = None
 
+    def _conflict_resolver(self):
+        # type: () -> SharedConflictResolver
+        """返回与当前 SkillManager 同 config_dir 的冲突解决器。"""
+        return SharedConflictResolver(config_dir=self._config_dir)
+
     # ------------------------------------------------------------------ #
     # 共享资源合并
     # ------------------------------------------------------------------ #
@@ -332,7 +338,7 @@ class SkillManager(object):
         if not shared_dir or not os.path.isdir(shared_dir):
             return []
         out = []
-        resolver = SharedConflictResolver()
+        resolver = self._conflict_resolver()
         for full in list_shared_files('skills', '.json'):
             fname = os.path.basename(full)
             try:
@@ -377,7 +383,7 @@ class SkillManager(object):
         """
         if not shared_skills:
             return list(local_skills)
-        resolver = SharedConflictResolver()
+        resolver = self._conflict_resolver()
         local_map = {s.name: s for s in local_skills}
         shared_map = {s.name: s for s in shared_skills}
         out_map = dict(local_map)

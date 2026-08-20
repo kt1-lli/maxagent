@@ -1860,7 +1860,13 @@ class SettingsDialog(QtWidgets.QDialog):
         intro = QtWidgets.QLabel(
             '把团队共享的技能 / 工具 / 规则 / 反思 / 知识源放到一个只读目录，'
             '通过 Git 同步后 MaxAgent 会自动挂载。共享资源对当前实例<b>只读</b>，'
-            '同名资产默认<b>使用共享版本</b>，也可人工选择处理方式。'
+            '同名资产默认<b>使用共享版本</b>，也可人工选择处理方式。<br><br>'
+            '目录结构：\n'
+            '<code>&lt;共享目录&gt;/skills</code>、'
+            '<code>user_tools</code>、'
+            '<code>user_rules</code>、'
+            '<code>reflections</code>、'
+            '<code>knowledge</code>'
         )
         intro.setTextFormat(QtCore.Qt.TextFormat.RichText)
         intro.setWordWrap(True)
@@ -1931,8 +1937,11 @@ class SettingsDialog(QtWidgets.QDialog):
         for label, _v in self._shared_conflict_options:
             self.shared_conflict_combo.addItem(label)
         self.shared_conflict_combo.setToolTip(
-            '默认策略仅作用于未来新出现的冲突；已记录人工决策的冲突'
-            '仍优先使用其单独记录的策略。',
+            '默认策略仅作用于未来新出现的冲突；已记录人工决策的冲突仍优先使用其单独记录的策略。'
+            '\n· 使用共享（默认）：共享版本生效，本地版本被忽略'
+            '\n· 使用本地：本地版本生效，共享版本被忽略'
+            '\n· 保留两者：对工具自动加 shared_ 前缀；其他资源同时保留两份'
+            '\n· 用共享覆盖本地：把共享版本复制到本地 config_dir 覆盖同名文件'
         )
         conflict_layout.addWidget(self.shared_conflict_combo)
 
@@ -2333,6 +2342,43 @@ class SettingsDialog(QtWidgets.QDialog):
             'execute_python 完全开放，仅限本机使用。</p>'
             '<p class="tip">完整指南见 '
             '<code>maxagent/docs/IDE_MCP_USAGE.md</code></p>'
+
+            '<hr>'
+
+            # ---- 共享资源目录 ----
+            '<h4>共享资源目录 🧰</h4>'
+            '<p>把团队共享的 <b>技能 / 用户工具 / 规则 / 反思 / 知识源</b> 放到一个'
+            '只读目录，通过 Git 同步后 MaxAgent 会自动挂载。共享资源对当前实例'
+            '<b>只读</b>，不会污染你的本地资源。</p>'
+
+            '<p><b>配置方式</b>：'
+            '<br>· 在"共享资源"Tab 点击「浏览…」选择目录；或启动 Max 前设置环境变量 '
+            '<code>MAXAGENT_SHARED_DIR</code>，两者会互相覆盖（以环境变量为优先）。'
+            '<br>· 目录结构与本地 <code>{config_dir}</code> 一致，只需保持子目录名 '
+            '<code>skills / user_tools / user_rules / reflections / knowledge</code>。'
+            '</p>'
+
+            '<p><b>同名资产冲突</b>：当本地与共享目录存在同名资源时，会按策略处理。'
+            '默认策略为<b>"使用共享"</b>，也可以在设置页切换为：使用本地、保留两者、'
+            '用共享覆盖本地。首次遇到冲突时会弹出对话框让你逐条确认；确认后的决策会'
+            '被记住，下次启动直接应用。</p>'
+
+            '<p><b>典型工作流</b>：'
+            '<br>① 团队 TA 或 TD 把写好的 Skill / 工具提交到 Git 仓库\n'
+            '② 美术 pull 到本地共享目录\n'
+            '③ 重启 MaxAgent 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
+            '④ 共享工具首次被调用前会经过语法检查，执行时与本地工具一样受脚本确认开关约束'
+            '</p>'
+
+            '<p class="warn"><b>⚠ 注意</b>：</p>'
+            '<p>· 共享目录对当前实例<b>只读</b>：不能在里面创建、修改、删除资源，'
+            '这些操作必须回到本地资源或到共享仓库源端进行。'
+            '<br>· 共享的 <b>user_tool</b> 会自动加上 <code>shared_</code> 前缀，'
+            '避免和本地工具同名；Skill、规则、反思、知识源则按原名加载。'
+            '<br>· 共享 user_tool 在首次调用前会做语法检查，建议团队内部在入库前'
+            '先在本机本地资源中验证通过。'
+            '<br>· 如果把共享目录设为自己的本地 <code>config_dir</code>，'
+            '所有写操作都会被拒绝，请确保该目录是独立的外挂目录而不是个人配置目录。</p>'
 
             '<hr>'
 

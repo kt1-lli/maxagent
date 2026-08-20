@@ -1,0 +1,139 @@
+# -*- coding: utf-8 -*-
+# AnimalRetargeter: 3ds Max 类 Human IK 重定向系统（动物骨骼重定向）
+# 构建系统：CMake (>= 3.20)
+# 编译器：MSVC 2022 BuildTools
+# 目标产物：Max SDK 插件 (.dlm)，注册 MaxScript 全局函数供 pymxs 调用
+
+cmake_minimum_required(VERSION 3.20)
+project(AnimalRetargeter
+    VERSION 0.1.0
+    DESCRIPTION "Skeleton-agnostic retargeting system for 3ds Max (Human IK-like, animal rigs)"
+    LANGUAGES CXX
+)
+
+# ----------------------------------------------------------------------------
+# 1. 全局 C++ 标准与编译选项
+# ----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
+# ----------------------------------------------------------------------------
+# 2. 路径配置（可由 -D 覆盖，默认指向用户给定的 Windows 路径）
+# ----------------------------------------------------------------------------
+# MSVC 2022 BuildTools
+if(NOT DEFINED ENV{VS2022_BUILDTOOLS})
+    set(VS2022_BUILDTOOLS "D:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools"
+        CACHE PATH "MSVC 2022 BuildTools 安装根目录")
+else()
+    set(VS2022_BUILDTOOLS $ENV{VS2022_BUILDTOOLS})
+endif()
+
+# Max SDK 2022
+if(NOT DEFINED ENV{MAX_SDK_2022})
+    set(MAX_SDK_2022 "D:/ProgramFiles/Autodesk/3DSMAX_SDK_2022"
+        CACHE PATH "Autodesk 3ds Max 2022 SDK 安装根目录")
+else()
+    set(MAX_SDK_2022 $ENV{MAX_SDK_2022})
+endif()
+
+# Max 可执行文件目录（用于部署 .dlm，可选）
+set(MAX_APP_DIR "C:/Program Files/Autodesk/3ds Max 2022"
+    CACHE PATH "3ds Max 2022 安装目录（用于部署插件）")
+
+# ----------------------------------------------------------------------------
+# 3. 校验关键路径
+# ----------------------------------------------------------------------------
+if(NOT EXISTS "${MAX_SDK_2022}/maxsdk/include")
+    message(FATAL_ERROR
+        "未找到 Max SDK 头文件目录: ${MAX_SDK_2022}/maxsdk/include\n"
+        "请通过 -DMAX_SDK_2022=<path> 指定正确的 SDK 路径。")
+endif()
+
+find_path(MAXSDK_INCLUDE_DIR
+    NAMES max.h
+    PATHS "${MAX_SDK_2022}/maxsdk/include"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+# ----------------------------------------------------------------------------
+# 4. 收集源文件
+# ----------------------------------------------------------------------------
+file(GLOB_RECURSE ANIMALRETARGETER_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c"
+)
+file(GLOB_RECURSE ANIMALRETARGETER_HEADERS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
+)
+
+# ----------------------------------------------------------------------------
+# 5. 插件目标（.dlm）
+# ----------------------------------------------------------------------------
+add_library(AnimalRetargeter SHARED
+    ${ANIMALRETARGETER_SOURCES}
+    ${ANIMALRETARGETER_HEADERS}
+)
+
+target_include_directories(AnimalRetargeter PRIVATE
+    "${MAX_SDK_2022}/maxsdk/include"
+    "${MAX_SDK_2022}/maxsdk/include/MaxSDK"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+# Max SDK 链接库（lib 目录区分 arch）
+set(MAXSDK_LIB_DIR "${MAX_SDK_2022}/maxsdk/lib/x64/Release")
+target_link_directories(AnimalRetargeter PRIVATE "${MAXSDK_LIB_DIR}")
+
+target_link_libraries(AnimalRetargeter PRIVATE
+    core.lib
+    geom.lib
+    mesh.lib
+    maxutil.lib
+    maxscrpt.lib
+)
+
+# MSVC 特定编译选项
+target_compile_definitions(AnimalRetargeter PRIVATE
+    WIN32
+    _CRT_SECURE_NO_WARNINGS
+    _ANIMALRETARGETER_EXPORTS
+)
+
+target_compile_options(AnimalRetargeter PRIVATE
+    /W3
+    /EHsc
+    /MP
+)
+
+# 输出文件名：Max 2022 插件约定 .dlm
+set_target_properties(AnimalRetargeter PROPERTIES
+    PREFIX ""
+    SUFFIX ".dlm"
+    OUTPUT_NAME "AnimalRetargeter"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+# ----------------------------------------------------------------------------
+# 6. 安装/部署规则（可选：拷贝到 Max 插件目录）
+# ----------------------------------------------------------------------------
+install(TARGETS AnimalRetargeter
+    RUNTIME DESTINATION "${MAX_APP_DIR}/plugins"
+    OPTIONAL
+)
+
+# ----------------------------------------------------------------------------
+# 7. Python UI（PySide2/6）不进入 CMake 构建，仅做拷贝资源
+# ----------------------------------------------------------------------------
+file(GLOB PY_UI_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ui/*.py")
+install(FILES ${PY_UI_SOURCES}
+    DESTINATION "${MAX_APP_DIR}/scripts/AnimalRetargeter"
+    OPTIONAL
+)
