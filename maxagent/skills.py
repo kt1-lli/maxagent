@@ -46,6 +46,12 @@ from typing import Optional
 
 from .config import get_config_dir
 from .logger import get_logger
+from .shared_resources import ConflictResolution
+from .shared_resources import get_shared_subdir
+from .shared_resources import guard_shared_write
+from .shared_resources import list_shared_files
+from .shared_resources import SharedConflictResolver
+from .shared_resources import SHARED_NAME_PREFIX
 
 
 SKILLS_DIRNAME = 'skills'
@@ -145,8 +151,9 @@ class Skill(object):
     def __init__(self, name, description='', trigger_keywords=None,
                  instructions='', created_at=None, updated_at=None,
                  use_count=0, source_session_sid='', file_path=None,
-                 impl_path=None, status='stable', patches=None):
-        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]]) -> None
+                 impl_path=None, status='stable', patches=None,
+                 shared=False, readonly=False):
+        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]], bool, bool) -> None
         self.name = name
         self.description = description or ''
         self.trigger_keywords = _normalize_trigger_keywords(trigger_keywords)
@@ -165,6 +172,9 @@ class Skill(object):
         self.fail_count = 0
         # 补丁列表：每次用户/Agent 对参数的修正建议
         self.patches = list(patches) if patches else []
+        # 共享资源标记：来自共享目录 / 对当前实例只读
+        self.shared = bool(shared)
+        self.readonly = bool(readonly)
 
     def to_dict(self):
         return {
@@ -182,6 +192,8 @@ class Skill(object):
             'success_count': self.success_count,
             'fail_count': self.fail_count,
             'patches': list(self.patches),
+            'shared': self.shared,
+            'readonly': self.readonly,
         }
 
     @classmethod
@@ -199,6 +211,8 @@ class Skill(object):
             impl_path=data.get('impl_path'),
             status=data.get('status', 'stable'),
             patches=data.get('patches') or [],
+            shared=bool(data.get('shared', False)),
+            readonly=bool(data.get('readonly', False)),
         )
         s.success_count = int(data.get('success_count', 0) or 0)
         s.fail_count = int(data.get('fail_count', 0) or 0)
@@ -275,8 +289,11 @@ class SkillManager(object):
 
     def _file_path_for(self, skill):
         # type: (Skill) -> str
-        if skill.file_path and os.path.dirname(skill.file_path) == self._base:
-            return skill.file_path
+        if skill.file_path:
+            # 共享只读资源禁止通过 save 写回共享目录
+            guard_shared_write(skill.file_path)
+            if os.path.dirname(skill.file_path) == self._base:
+                return skill.file_path
         return os.path.join(
             self._base, '{}.json'.format(_safe_filename(skill.name)),
         )
@@ -286,6 +303,13 @@ class SkillManager(object):
         """根据 skill 名推断同目录 impl.py 路径。"""
         base = os.path.splitext(self._file_path_for(skill))[0]
         return base + '.impl.py'
+
+    def _impl_path_for_shared(self, shared_json_path):
+        # type: (str) -> str
+        """根据共享 skill json 路径推断同目录 impl.py 路径。"""
+        if not shared_json_path:
+            return ''
+        return os.path.splitext(shared_json_path)[0] + '.impl.py'
 
     def _attach_impl_path(self, skill):
         # type: (Skill) -> None
@@ -297,6 +321,142 @@ class SkillManager(object):
             skill.impl_path = impl_path
         else:
             skill.impl_path = None
+
+    # ------------------------------------------------------------------ #
+    # 共享资源合并
+    # ------------------------------------------------------------------ #
+    def _scan_shared_skills(self):
+        # type: () -> List[Skill]
+        """扫描共享目录中的 skill，返回未经过禁用过滤的 Skill 列表。"""
+        shared_dir = get_shared_subdir('skills')
+        if not shared_dir or not os.path.isdir(shared_dir):
+            return []
+        out = []
+        resolver = SharedConflictResolver()
+        for full in list_shared_files('skills', '.json'):
+            fname = os.path.basename(full)
+            try:
+                with open(full, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+                s = Skill.from_dict(data)
+                s.file_path = full
+                # 共享 skill 的 impl.py 也放在共享目录
+                impl_path = self._impl_path_for_shared(full)
+                if os.path.isfile(impl_path):
+                    s.impl_path = impl_path
+                else:
+                    s.impl_path = None
+                # 标记为共享只读资产
+                s.shared = True
+                s.readonly = True
+                # 同步更新冲突记录中的路径信息（用于 UI 展示和诊断）
+                rec = resolver.get(s.name, 'skills')
+                if rec is not None:
+                    rec.shared_path = full
+                    resolver.set(
+                        s.name, 'skills', rec.resolution,
+                        shared_path=full, local_path=rec.local_path,
+                        confirmed=rec.confirmed,
+                    )
+                out.append(s)
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    'skip 损坏的共享 skill 文件 %s: %s', fname, exc,
+                )
+        return out
+
+    def _merge_local_and_shared(self, local_skills, shared_skills):
+        # type: (List[Skill], List[Skill]) -> List[Skill]
+        """合并本地与共享 skill，按冲突解决记录处理同名资产。
+
+        处理策略：
+        - use_shared（默认）：使用共享版本，本地版本对 LLM 不可见
+        - use_local：使用本地版本，忽略共享版本
+        - keep_both：同时保留，共享版本改名为 shared_<name>
+        - overwrite_local：共享版本覆盖本地文件（写入本地目录）
+        """
+        if not shared_skills:
+            return list(local_skills)
+        resolver = SharedConflictResolver()
+        local_map = {s.name: s for s in local_skills}
+        shared_map = {s.name: s for s in shared_skills}
+        out_map = dict(local_map)
+        # 先记录所有存在本地同名资产的共享项
+        for s in shared_skills:
+            if s.name in local_map:
+                rec = resolver.get(s.name, 'skills')
+                if rec is None:
+                    rec = ConflictResolution(
+                        name=s.name,
+                        asset_type='skills',
+                        resolution='use_shared',
+                        shared_path=s.file_path or '',
+                        local_path=local_map[s.name].file_path or '',
+                        confirmed=False,
+                    )
+                    resolver.set(
+                        s.name, 'skills', 'use_shared',
+                        shared_path=s.file_path or '',
+                        local_path=local_map[s.name].file_path or '',
+                        confirmed=False,
+                    )
+        for s in shared_skills:
+            rec = resolver.get(s.name, 'skills')
+            resolution = rec.resolution if rec else 'use_shared'
+            if s.name not in local_map:
+                # 纯共享资产：直接挂载
+                out_map[s.name] = s
+                continue
+            local_path = local_map[s.name].file_path or ''
+            shared_path = s.file_path or ''
+            if resolution == 'use_local':
+                # 显式保留本地，共享不可见
+                continue
+            if resolution == 'keep_both':
+                # 保留本地，共享版本重命名后一起出现
+                renamed = SHARED_NAME_PREFIX + s.name
+                s.name = renamed
+                s.file_path = shared_path
+                out_map[renamed] = s
+                continue
+            if resolution == 'overwrite_local':
+                # 把共享版本拷贝到本地目录（保留共享原始文件只读）
+                try:
+                    self._copy_shared_to_local(s, local_path)
+                except (OSError, ValueError) as exc:
+                    logger.warning(
+                        '共享 skill 覆盖本地失败 %s: %s', s.name, exc,
+                    )
+                # 覆盖后仍使用本地扫描结果
+                continue
+            # 默认 use_shared：共享版本优先，本地版本对 LLM 不可见
+            out_map[s.name] = s
+        return list(out_map.values())
+
+    def _copy_shared_to_local(self, shared_skill, local_path):
+        # type: (Skill, str) -> None
+        """把共享 skill 内容写入本地路径（用于 overwrite_local）。"""
+        if not local_path:
+            local_path = os.path.join(
+                self._base, '{}.json'.format(
+                    _safe_filename(shared_skill.name),
+                ),
+            )
+        guard_shared_write(local_path)
+        tmp = local_path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(shared_skill.to_dict(), fh, ensure_ascii=False, indent=2)
+        if os.path.exists(local_path):
+            os.replace(tmp, local_path)
+        else:
+            os.rename(tmp, local_path)
+        # 同步拷贝 impl.py（如存在）
+        src_impl = shared_skill.impl_path or ''
+        if src_impl and os.path.isfile(src_impl):
+            dst_impl = os.path.splitext(local_path)[0] + '.impl.py'
+            guard_shared_write(dst_impl)
+            import shutil
+            shutil.copy2(src_impl, dst_impl)
 
     # ------------------------------------------------------------------ #
     # 索引（损坏时扫描重建）
@@ -312,6 +472,7 @@ class SkillManager(object):
             disabled = get_disabled_skills_set()
         except Exception:  # pylint: disable=broad-except
             disabled = set()
+        local_skills = []
         for fname in os.listdir(self._base):
             if fname == INDEX_FILENAME or not fname.endswith('.json'):
                 continue
@@ -322,17 +483,24 @@ class SkillManager(object):
                 s = Skill.from_dict(data)
                 # 自动绑定同目录 impl.py
                 self._attach_impl_path(s)
-                # 禁用项对 LLM 完全不可见——既不进 system prompt，也不
-                # 出现在 list_skills 工具的返回；但仍然保留磁盘文件，
-                # 用户在「我的资源」面板能看到并随时启用。
-                if s.name in disabled:
-                    continue
-                s.file_path = full
-                out.append(s)
+                s.shared = False
+                s.readonly = False
+                local_skills.append(s)
             except (OSError, ValueError) as exc:
                 logger.warning(
                     'skip 损坏的 skill 文件 %s: %s', fname, exc,
                 )
+        shared_skills = self._scan_shared_skills()
+        merged = self._merge_local_and_shared(local_skills, shared_skills)
+        for s in merged:
+            # 禁用项对 LLM 完全不可见——既不进 system prompt，也不
+            # 出现在 list_skills 工具的返回；但仍然保留磁盘文件，
+            # 用户在「我的资源」面板能看到并随时启用。
+            if s.name in disabled:
+                continue
+            if s.file_path is None:
+                s.file_path = self._file_path_for(s)
+            out.append(s)
         out.sort(key=lambda s: s.updated_at, reverse=True)
         return out
 
@@ -441,15 +609,16 @@ class SkillManager(object):
 
     def list_all_skills(self):
         # type: () -> List[Skill]
-        """列出所有技能（**含被禁用**），仅供管理 UI / 导入导出使用。
+        """列出所有技能（**含被禁用 + 共享技能**），仅供管理 UI 使用。
 
         与 ``list_skills`` 的差异：``list_skills`` 走 ``_scan`` 会过滤
-        掉禁用项（保证 LLM 看不到）；本方法绕过过滤直接读盘，让设置
-        面板能展示完整清单并提供"启用"开关。
+        掉禁用项（保证 LLM 看不到）并处理冲突；本方法绕过过滤直接读盘，
+        让设置面板能展示完整清单并提供"启用"开关。
         """
         out = []
         if not os.path.isdir(self._base):
             return out
+        local_skills = []
         for fname in os.listdir(self._base):
             if fname == INDEX_FILENAME or not fname.endswith('.json'):
                 continue
@@ -459,12 +628,20 @@ class SkillManager(object):
                     data = json.load(fh)
                 s = Skill.from_dict(data)
                 self._attach_impl_path(s)
+                s.shared = False
+                s.readonly = False
                 s.file_path = full
-                out.append(s)
+                local_skills.append(s)
             except (OSError, ValueError) as exc:
                 logger.warning(
                     'skip 损坏的 skill 文件 %s: %s', fname, exc,
                 )
+        shared_skills = self._scan_shared_skills()
+        merged = self._merge_local_and_shared(local_skills, shared_skills)
+        for s in merged:
+            if s.file_path is None:
+                s.file_path = self._file_path_for(s)
+            out.append(s)
         out.sort(key=lambda s: s.updated_at, reverse=True)
         return out
 
@@ -513,6 +690,8 @@ class SkillManager(object):
         skill.file_path = path
         # 若已有同目录 impl.py 则自动关联
         self._attach_impl_path(skill)
+        # 共享只读资源禁止写入
+        guard_shared_write(path)
         tmp = path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as fh:
             json.dump(skill.to_dict(), fh, ensure_ascii=False, indent=2)
@@ -532,8 +711,9 @@ class SkillManager(object):
             return False
         if s.file_path and os.path.exists(s.file_path):
             try:
+                guard_shared_write(s.file_path)
                 os.remove(s.file_path)
-            except OSError as exc:
+            except (OSError, PermissionError) as exc:
                 logger.warning('删除 skill 失败: %s', exc)
                 return False
         # 删除后重建语义索引

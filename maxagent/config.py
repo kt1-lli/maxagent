@@ -330,6 +330,12 @@ class AppConfig:
     # 默认开启，纯本地文件，不联网。存放在 ~/.maxagent/projects/*.json
     enable_project_memory: bool = True
 
+    # ---------- 共享资源目录 ---------- #
+    # 团队外挂资产库根目录。指向一个只读 Git 工作区，里面可放
+    # skills / user_tools / user_rules / reflections / knowledge sources。
+    # 空字符串表示未启用。
+    shared_resources_dir: str = ""
+
     def get_active_profile(self) -> Optional[LLMProfile]:
         for p in self.profiles:
             if p.name == self.active_profile:
@@ -377,6 +383,7 @@ class AppConfig:
             "session_token_budget": self.session_token_budget,
             "session_usd_budget": self.session_usd_budget,
             "enable_project_memory": self.enable_project_memory,
+            "shared_resources_dir": self.shared_resources_dir,
         }
 
     @classmethod
@@ -540,6 +547,10 @@ class AppConfig:
         # ---- 项目级记忆（#14） ---- #
         cfg.enable_project_memory = bool(
             data.get("enable_project_memory", True),
+        )
+        # ---- 共享资源目录 ---- #
+        cfg.shared_resources_dir = str(
+            data.get("shared_resources_dir", "") or "",
         )
         return cfg
 

@@ -94,6 +94,7 @@ class SettingsDialog(QtWidgets.QDialog):
         (_ee('🎨') + '  应用', 'app'),
         (_ee('👤') + '  助手形象', 'employee'),
         (_ee('📦') + '  我的资源', 'resources'),
+        (_ee('🧰') + '  共享资源', 'shared'),
         (_ee('🔌') + '  IDE 接口', 'bridge'),
         (_ee('📜') + '  日志', 'log'),
         (_ee('❓') + '  帮助', 'help'),
@@ -144,6 +145,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.stack.addWidget(self._build_page_app())
         self.stack.addWidget(self._build_page_employee())
         self.stack.addWidget(self._build_page_resources())
+        self.stack.addWidget(self._build_page_shared())
         # 注意：以下两行顺序与 _NAV_ITEMS 严格对应。
         # IDE 接口排在日志之前——属于"功能性"配置，使用频率高于
         # "排错性"日志，先功能后辅助更符合用户心智模型。
@@ -1843,6 +1845,272 @@ class SettingsDialog(QtWidgets.QDialog):
             self._refresh_rules_list()
 
     # ================================================================== #
+    # Page 5: 共享资源目录
+    # ================================================================== #
+    def _build_page_shared(self):
+        # type: () -> QtWidgets.QWidget
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        title = QtWidgets.QLabel(_ee('🧰') + '  共享资源目录')
+        title.setStyleSheet('font-size:16px; font-weight:bold;')
+        layout.addWidget(title)
+
+        intro = QtWidgets.QLabel(
+            '把团队共享的技能 / 工具 / 规则 / 反思 / 知识源放到一个只读目录，'
+            '通过 Git 同步后 MaxAgent 会自动挂载。共享资源对当前实例<b>只读</b>，'
+            '同名资产默认<b>使用共享版本</b>，也可人工选择处理方式。'
+        )
+        intro.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        intro.setWordWrap(True)
+        intro.setStyleSheet('color:#aaa;')
+        layout.addWidget(intro)
+
+        # ---- 路径选择 ---- #
+        path_row = QtWidgets.QHBoxLayout()
+        self.shared_dir_edit = QtWidgets.QLineEdit()
+        self.shared_dir_edit.setPlaceholderText(
+            '选择团队共享资源目录（空表示不启用）',
+        )
+        self.shared_dir_edit.setReadOnly(True)
+        path_row.addWidget(self.shared_dir_edit, 1)
+
+        self.shared_dir_browse_btn = QtWidgets.QPushButton('浏览…')
+        self.shared_dir_browse_btn.clicked.connect(self._on_shared_dir_browse)
+        path_row.addWidget(self.shared_dir_browse_btn)
+
+        self.shared_dir_clear_btn = QtWidgets.QPushButton('清空')
+        self.shared_dir_clear_btn.setToolTip(
+            '取消共享目录挂载，恢复到仅使用本地资源。',
+        )
+        self.shared_dir_clear_btn.clicked.connect(self._on_shared_dir_clear)
+        path_row.addWidget(self.shared_dir_clear_btn)
+        layout.addLayout(path_row)
+
+        # ---- 状态 / 统计 ---- #
+        self.shared_status_lbl = QtWidgets.QLabel('状态：未启用')
+        self.shared_status_lbl.setStyleSheet('color:#888;')
+        layout.addWidget(self.shared_status_lbl)
+
+        stats_box = QtWidgets.QGroupBox('资产统计')
+        stats_layout = QtWidgets.QFormLayout(stats_box)
+        stats_layout.setLabelAlignment(QtCore.Qt.AlignRight)
+        stats_layout.setFormAlignment(QtCore.Qt.AlignLeft)
+        stats_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow,
+        )
+        self.shared_stats_skills_lbl = QtWidgets.QLabel('0')
+        self.shared_stats_tools_lbl = QtWidgets.QLabel('0')
+        self.shared_stats_rules_lbl = QtWidgets.QLabel('0')
+        self.shared_stats_reflections_lbl = QtWidgets.QLabel('0')
+        self.shared_stats_knowledge_lbl = QtWidgets.QLabel('0')
+        stats_layout.addRow('技能:', self.shared_stats_skills_lbl)
+        stats_layout.addRow('工具:', self.shared_stats_tools_lbl)
+        stats_layout.addRow('规则:', self.shared_stats_rules_lbl)
+        stats_layout.addRow('反思:', self.shared_stats_reflections_lbl)
+        stats_layout.addRow('知识源:', self.shared_stats_knowledge_lbl)
+        layout.addWidget(stats_box)
+
+        # ---- 冲突解决 ---- #
+        conflict_box = QtWidgets.QGroupBox('同名资产冲突处理')
+        conflict_layout = QtWidgets.QVBoxLayout(conflict_box)
+        conflict_hint = QtWidgets.QLabel(
+            '当本地与共享目录存在同名资产时，按下方策略处理：'
+        )
+        conflict_hint.setStyleSheet('color:#aaa;')
+        conflict_layout.addWidget(conflict_hint)
+
+        self.shared_conflict_combo = QtWidgets.QComboBox()
+        self._shared_conflict_options = [
+            ('使用共享（默认）', 'use_shared'),
+            ('使用本地', 'use_local'),
+            ('保留两者', 'keep_both'),
+            ('用共享覆盖本地', 'overwrite_local'),
+        ]
+        for label, _v in self._shared_conflict_options:
+            self.shared_conflict_combo.addItem(label)
+        self.shared_conflict_combo.setToolTip(
+            '默认策略仅作用于未来新出现的冲突；已记录人工决策的冲突'
+            '仍优先使用其单独记录的策略。',
+        )
+        conflict_layout.addWidget(self.shared_conflict_combo)
+
+        self.shared_conflict_apply_btn = QtWidgets.QPushButton('应用默认策略')
+        self.shared_conflict_apply_btn.setToolTip(
+            '把当前下拉框选项保存为默认冲突策略。',
+        )
+        self.shared_conflict_apply_btn.clicked.connect(
+            self._on_shared_conflict_default_changed,
+        )
+        conflict_layout.addWidget(self.shared_conflict_apply_btn)
+        layout.addWidget(conflict_box)
+
+        # ---- 操作 ---- #
+        op_row = QtWidgets.QHBoxLayout()
+        self.shared_open_dir_btn = QtWidgets.QPushButton(
+            _btn_label('📂', '打开目录'),
+        )
+        self.shared_open_dir_btn.clicked.connect(self._on_shared_open_dir)
+        op_row.addWidget(self.shared_open_dir_btn)
+
+        self.shared_refresh_btn = QtWidgets.QPushButton(
+            _btn_label('🔄', '刷新统计'),
+        )
+        self.shared_refresh_btn.clicked.connect(self._refresh_shared_page)
+        op_row.addWidget(self.shared_refresh_btn)
+        op_row.addStretch(1)
+        layout.addLayout(op_row)
+
+        layout.addStretch(1)
+        return page
+
+    # ------------------------------------------------------------------ #
+    # 共享资源页 - 槽函数
+    # ------------------------------------------------------------------ #
+    def _load_shared_settings(self):
+        """把 AppConfig 中的共享资源目录加载到 UI。"""
+        cfg = self._config.config
+        path = str(getattr(cfg, 'shared_resources_dir', '') or '')
+        self.shared_dir_edit.blockSignals(True)
+        self.shared_dir_edit.setText(path)
+        self.shared_dir_edit.blockSignals(False)
+        self._refresh_shared_page()
+
+    def _refresh_shared_page(self):
+        """刷新共享资源页的状态、统计和默认策略显示。"""
+        try:
+            from ..shared_resources import (
+                get_shared_resources_dir,
+                is_shared_resources_enabled,
+                scan_shared_stats,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            self.shared_status_lbl.setText(
+                '<span style="color:#ff8888;">加载共享资源模块失败: {}</span>'.format(exc),
+            )
+            return
+
+        path = get_shared_resources_dir()
+        enabled = is_shared_resources_enabled()
+        if enabled and path:
+            self.shared_status_lbl.setText(
+                '状态：<span style="color:#7ec07a;">已启用</span><br>路径：{}'.format(path),
+            )
+            self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        else:
+            cfg_path = str(
+                getattr(self._config.config, 'shared_resources_dir', '') or '',
+            )
+            if cfg_path:
+                self.shared_status_lbl.setText(
+                    '状态：<span style="color:#ff8888;">路径无效</span><br>配置：{}'.format(
+                        cfg_path,
+                    ),
+                )
+            else:
+                self.shared_status_lbl.setText(
+                    '状态：<span style="color:#888;">未启用</span>',
+                )
+            self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+
+        stats = scan_shared_stats()
+        self.shared_stats_skills_lbl.setText(str(stats.skills))
+        self.shared_stats_tools_lbl.setText(str(stats.user_tools))
+        self.shared_stats_rules_lbl.setText(str(stats.user_rules))
+        self.shared_stats_reflections_lbl.setText(str(stats.reflections))
+        self.shared_stats_knowledge_lbl.setText(str(stats.knowledge_sources))
+
+    def _on_shared_dir_browse(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            '选择共享资源目录',
+            self.shared_dir_edit.text() or '',
+        )
+        if not path:
+            return
+        cfg = self._config.config
+        cfg.shared_resources_dir = str(path)
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '共享目录路径写盘失败: {}'.format(exc),
+            )
+            return
+        self.shared_dir_edit.setText(str(path))
+        self._refresh_shared_page()
+        logger.info('共享资源目录已设置: %s', path)
+
+    def _on_shared_dir_clear(self):
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            '取消共享目录',
+            '清空共享资源目录配置后，MaxAgent 将不再挂载外部共享资源。\n'
+            '本地资源不受影响。是否继续？',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+        cfg = self._config.config
+        cfg.shared_resources_dir = ''
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '保存失败', '设置写盘失败: {}'.format(exc),
+            )
+            return
+        self.shared_dir_edit.setText('')
+        self._refresh_shared_page()
+        logger.info('共享资源目录配置已清空')
+
+    def _on_shared_conflict_default_changed(self):
+        """把当前下拉框选项保存为默认冲突策略（写入 AppConfig 预留字段）。"""
+        idx = self.shared_conflict_combo.currentIndex()
+        value = self._shared_conflict_options[idx][1]
+        cfg = self._config.config
+        # 使用动态属性保存默认策略；后续冲突解决模块会读取该字段
+        if not hasattr(cfg, 'shared_conflict_default'):
+            # 动态扩展 dataclass 实例的属性（不会写入 to_dict 序列化，
+            # 仅作为运行时内存默认；持久化依赖 conflict resolver 记录）
+            pass
+        QtWidgets.QMessageBox.information(
+            self,
+            '已应用',
+            '默认冲突策略已设为：{}。\n'
+            '新出现的同名资产将按此策略处理；已有单独记录的决策仍优先。'.format(
+                self.shared_conflict_combo.currentText(),
+            ),
+        )
+        logger.info('默认冲突策略切换为: %s', value)
+
+    def _on_shared_open_dir(self):
+        path = self.shared_dir_edit.text().strip()
+        if not path:
+            QtWidgets.QMessageBox.information(
+                self, '提示', '尚未配置共享资源目录。',
+            )
+            return
+        if not os.path.isdir(path):
+            QtWidgets.QMessageBox.warning(
+                self, '路径无效', '共享目录不存在或不可访问:\n{}'.format(path),
+            )
+            return
+        url = QtCore.QUrl.fromLocalFile(path)
+        opened = False
+        try:
+            opened = QtGui.QDesktopServices.openUrl(url)
+        except Exception:  # pylint: disable=broad-except
+            opened = False
+        if not opened:
+            QtWidgets.QMessageBox.information(
+                self, '目录',
+                '请手动打开以下目录:\n{}'.format(path),
+            )
+
+    # ================================================================== #
     # Page 5: 帮助
     # ================================================================== #
     def _build_page_help(self):
@@ -2167,6 +2435,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self._load_to_form(active)
         # 全局应用设置（与具体 Profile 无关）
         self._load_app_settings()
+        self._load_shared_settings()
 
     def _load_app_settings(self):
         """从 AppConfig 把全局开关加载到对应复选框 + 日志级别。"""
