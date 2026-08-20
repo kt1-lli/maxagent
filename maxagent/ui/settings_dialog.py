@@ -1899,6 +1899,12 @@ class SettingsDialog(QtWidgets.QDialog):
         self.shared_status_lbl.setStyleSheet('color:#888;')
         layout.addWidget(self.shared_status_lbl)
 
+        self.shared_git_status_lbl = QtWidgets.QLabel('')
+        self.shared_git_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self.shared_git_status_lbl.setStyleSheet('color:#aaa;')
+        self.shared_git_status_lbl.setWordWrap(True)
+        layout.addWidget(self.shared_git_status_lbl)
+
         stats_box = QtWidgets.QGroupBox('资产统计')
         stats_layout = QtWidgets.QFormLayout(stats_box)
         stats_layout.setLabelAlignment(QtCore.Qt.AlignRight)
@@ -1957,6 +1963,13 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # ---- 操作 ---- #
         op_row = QtWidgets.QHBoxLayout()
+        self.shared_clone_btn = QtWidgets.QPushButton(
+            _btn_label('📥', '克隆仓库'),
+        )
+        self.shared_clone_btn.setToolTip('从远程 Git 仓库克隆共享资源到本地目录。')
+        self.shared_clone_btn.clicked.connect(self._on_shared_clone)
+        op_row.addWidget(self.shared_clone_btn)
+
         self.shared_open_dir_btn = QtWidgets.QPushButton(
             _btn_label('📂', '打开目录'),
         )
@@ -1967,7 +1980,7 @@ class SettingsDialog(QtWidgets.QDialog):
             _btn_label('⬇️', '拉取最新'),
         )
         self.shared_pull_btn.setToolTip(
-            '对共享资源目录执行 git pull --ff-only，同步团队最新资产。'
+            '先 fetch 检测更新，再安全拉取团队最新资产。'
         )
         self.shared_pull_btn.clicked.connect(self._on_shared_pull)
         op_row.addWidget(self.shared_pull_btn)
@@ -1999,7 +2012,9 @@ class SettingsDialog(QtWidgets.QDialog):
         """刷新共享资源页的状态、统计和默认策略显示。"""
         try:
             from ..shared_resources import (
+                get_git_status,
                 get_shared_resources_dir,
+                is_git_repository,
                 is_shared_resources_enabled,
                 scan_shared_stats,
             )
@@ -2016,6 +2031,36 @@ class SettingsDialog(QtWidgets.QDialog):
                 '状态：<span style="color:#7ec07a;">已启用</span><br>路径：{}'.format(path),
             )
             self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            git_lines = []
+            if is_git_repository(path):
+                git = get_git_status(path)
+                if git.error:
+                    git_lines.append('<span style="color:#ff8888;">Git: {}</span>'.format(
+                        git.error,
+                    ))
+                else:
+                    branch_text = '{} ({})'.format(git.branch, git.commit_hash)
+                    if git.is_dirty:
+                        branch_text += ' <span style="color:#ff8888;">[有未提交改动]</span>'
+                    git_lines.append('分支: {}'.format(branch_text))
+                    if git.remote_url:
+                        git_lines.append('远程: {}'.format(git.remote_url))
+                    if git.commit_subject:
+                        git_lines.append('最新提交: {}'.format(git.commit_subject))
+                    if git.has_unpulled:
+                        git_lines.append(
+                            '<span style="color:#ffd166;">有 {} 个未拉取提交</span>'.format(
+                                git.unpulled_count,
+                            ),
+                        )
+                    else:
+                        git_lines.append('<span style="color:#7ec07a;">已是最新</span>')
+            else:
+                git_lines.append(
+                    '<span style="color:#ff8888;">当前目录不是 Git 仓库，'
+                    '无法使用「拉取最新」功能。</span>',
+                )
+            self.shared_git_status_lbl.setText('<br>'.join(git_lines))
         else:
             cfg_path = str(
                 getattr(self._config.config, 'shared_resources_dir', '') or '',
@@ -2031,6 +2076,7 @@ class SettingsDialog(QtWidgets.QDialog):
                     '状态：<span style="color:#888;">未启用</span>',
                 )
             self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            self.shared_git_status_lbl.setText('')
 
         stats = scan_shared_stats()
         self.shared_stats_skills_lbl.setText(str(stats.skills))
@@ -2129,9 +2175,10 @@ class SettingsDialog(QtWidgets.QDialog):
             )
 
     def _on_shared_pull(self):
-        """对共享资源目录执行 git pull --ff-only。"""
+        """先 fetch 检测更新，再提示用户，最后执行 git pull --ff-only。"""
         from ..shared_resources import (
-            get_git_remote_url,
+            fetch_shared_resources,
+            get_git_status,
             get_shared_resources_dir,
             is_git_repository,
             pull_shared_resources,
@@ -2151,26 +2198,132 @@ class SettingsDialog(QtWidgets.QDialog):
             )
             return
 
-        remote = get_git_remote_url(path) or 'origin'
-        self.shared_status_lbl.setText(
-            '状态：<span style="color:#ffd166;">正在拉取 {} ...</span>'.format(
-                remote,
-            ),
+        # 检查 dirty
+        status = get_git_status(path)
+        if status.is_dirty:
+            QtWidgets.QMessageBox.warning(
+                self,
+                '本地有未提交改动',
+                '共享资源目录存在未提交改动，拉取可能失败或覆盖本地修改。\n'
+                '请先在 Git 客户端中提交或暂存这些改动，再执行拉取。',
+            )
+            return
+
+        self.shared_git_status_lbl.setText(
+            '<span style="color:#ffd166;">正在检测远程更新...</span>',
         )
-        self.shared_status_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        # 强制刷新状态文字，避免在 git 执行期间界面卡死无反馈
+        QtWidgets.QApplication.processEvents()
+
+        ok, msg = fetch_shared_resources(path)
+        if not ok:
+            QtWidgets.QMessageBox.warning(self, 'fetch 失败', msg)
+            self._refresh_shared_page()
+            return
+
+        status = get_git_status(path)
+        if not status.has_unpulled:
+            QtWidgets.QMessageBox.information(
+                self, '已是最新', '共享资源目录已经是远程最新状态。',
+            )
+            self._refresh_shared_page()
+            return
+
+        commits_text = '\n'.join(status.unpulled_commits[:20])
+        if status.unpulled_count > 20:
+            commits_text += '\n... 共 {} 个提交'.format(status.unpulled_count)
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            '检测到远程更新',
+            '发现 {} 个未拉取提交，是否立即拉取？\n\n{}'.format(
+                status.unpulled_count,
+                commits_text,
+            ),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            self._refresh_shared_page()
+            return
+
+        self.shared_git_status_lbl.setText(
+            '<span style="color:#ffd166;">正在拉取更新...</span>',
+        )
         QtWidgets.QApplication.processEvents()
 
         ok, msg = pull_shared_resources(path)
         if ok:
-            QtWidgets.QMessageBox.information(
-                self, '拉取成功', msg,
-            )
+            QtWidgets.QMessageBox.information(self, '拉取成功', msg)
         else:
-            QtWidgets.QMessageBox.warning(
-                self, '拉取失败', msg,
-            )
+            QtWidgets.QMessageBox.warning(self, '拉取失败', msg)
         self._refresh_shared_page()
+
+    def _on_shared_clone(self):
+        """打开克隆向导，从远程 Git 仓库拉取共享资源。"""
+        from ..shared_resources import clone_shared_resources
+
+        url, ok = QtWidgets.QInputDialog.getText(
+            self,
+            '克隆共享资源仓库',
+            '请输入 Git 仓库 URL：',
+        )
+        if not ok or not url.strip():
+            return
+        url = url.strip()
+
+        dest = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            '选择本地存放目录（将在此目录下创建仓库文件夹）',
+            '',
+        )
+        if not dest:
+            return
+
+        repo_name = url.rstrip('/').rsplit('/', 1)[-1].replace('.git', '')
+        if not repo_name:
+            QtWidgets.QMessageBox.warning(
+                self, '无效仓库名', '无法从 URL 解析仓库名称。',
+            )
+            return
+        target = os.path.join(str(dest), repo_name)
+        if os.path.exists(target):
+            ret = QtWidgets.QMessageBox.question(
+                self,
+                '目录已存在',
+                '目标目录已存在，是否覆盖？\n{}'.format(target),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if ret != QtWidgets.QMessageBox.Yes:
+                return
+
+        self.shared_git_status_lbl.setText(
+            '<span style="color:#ffd166;">正在克隆 {} ...</span>'.format(url),
+        )
+        QtWidgets.QApplication.processEvents()
+
+        ok, msg = clone_shared_resources(url, target)
+        if ok:
+            QtWidgets.QMessageBox.information(
+                self,
+                '克隆成功',
+                '{0}\n\n是否将该目录设为共享资源目录？'.format(msg),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            cfg = self._config.config
+            cfg.shared_resources_dir = target
+            try:
+                self._config.save()
+            except Exception as exc:  # pylint: disable=broad-except
+                QtWidgets.QMessageBox.warning(
+                    self, '保存失败', '共享目录路径写盘失败: {}'.format(exc),
+                )
+                return
+            self.shared_dir_edit.setText(target)
+            self._refresh_shared_page()
+            logger.info('共享资源仓库克隆并启用: %s', target)
+        else:
+            QtWidgets.QMessageBox.warning(self, '克隆失败', msg)
 
     # ================================================================== #
     # Page 5: 帮助
@@ -2418,9 +2571,11 @@ class SettingsDialog(QtWidgets.QDialog):
 
             '<p><b>典型工作流</b>：'
             '<br>① 团队 TA 或 TD 把写好的 Skill / 工具提交到 Git 仓库\n'
-            '② 美术 pull 到本地共享目录（或在设置页点击「拉取最新」一键同步）\n'
-            '③ 重启 MaxAgent 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
-            '④ 共享工具首次被调用前会经过语法检查，执行时与本地工具一样受脚本确认开关约束'
+            '② 美术在设置页点击「克隆仓库」输入 URL，或 pull 到本地共享目录后点击「浏览…」\n'
+            '③ 日常使用点击「拉取最新」：先 <code>git fetch</code> 检测更新，'
+            '发现新提交后列出摘要，确认后再 <code>git pull --ff-only</code>\n'
+            '④ 重启 MaxAgent 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
+            '⑤ 共享工具首次被调用前会经过语法检查，执行时与本地工具一样受脚本确认开关约束'
             '</p>'
 
             '<p class="warn"><b>⚠ 注意</b>：</p>'
@@ -2430,6 +2585,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '避免和本地工具同名；Skill、规则、反思、知识源则按原名加载。'
             '<br>· 共享 user_tool 在首次调用前会做语法检查，建议团队内部在入库前'
             '先在本机本地资源中验证通过。'
+            '<br>· 如果共享目录存在未提交改动，「拉取最新」会被阻止，需先在 Git 客户端处理。'
             '<br>· 如果把共享目录设为自己的本地 <code>config_dir</code>，'
 '所有写操作都会被拒绝，请确保该目录是独立的共享资源目录而不是个人配置目录。</p>'
 
