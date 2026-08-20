@@ -171,6 +171,37 @@ class ConflictResolution:
     confirmed: bool = False
     resolved_at: float = field(default_factory=lambda: 0.0)
 
+
+@dataclass
+class GitStatus:
+    """共享资源目录的 Git 状态摘要。"""
+
+    is_git_repo: bool = False
+    remote_url: Optional[str] = None
+    branch: str = ''
+    commit_hash: str = ''
+    commit_subject: str = ''
+    is_dirty: bool = False
+    unpulled_count: int = 0
+    unpulled_commits: List[str] = field(default_factory=list)
+    has_unpulled: bool = False
+    error: Optional[str] = None
+
+
+@dataclass
+class ConflictResolution:
+    """单条同名资产的冲突解决记录。"""
+
+    name: str
+    asset_type: str
+    resolution: str = 'use_shared'
+    shared_path: str = ''
+    local_path: str = ''
+    # confirmed 表示该记录是否经过用户/调用方显式确认；
+    # False 时代表由系统按默认策略自动生成的记录，UI 应继续提示用户选择。
+    confirmed: bool = False
+    resolved_at: float = field(default_factory=lambda: 0.0)
+
     def __post_init__(self):
         if self.resolution not in CONFLICT_RESOLUTIONS:
             self.resolution = 'use_shared'
@@ -347,6 +378,29 @@ def scan_shared_stats() -> SharedAssetStats:
     return stats
 
 
+def _git_run(path, args, capture=True):
+    # type: (str, List[str], bool) -> subprocess.CompletedProcess[str]
+    """在指定路径下运行 git 命令，统一处理 FileNotFoundError。"""
+    try:
+        return subprocess.run(
+            ['git'] + args,
+            cwd=path,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.STDOUT if capture else None,
+            check=False,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        # 包装为 CompletedProcess 以便上层统一处理
+        result = subprocess.CompletedProcess(
+            args=['git'] + args,
+            returncode=-1,
+            stdout='未找到 git 命令，请确保系统已安装 Git 并加入 PATH',
+        )
+        result._exception = exc  # type: ignore[attr-defined]
+        return result
+
+
 def is_git_repository(path: str) -> bool:
     """判断指定路径是否为 Git 仓库工作区。"""
     if not path or not os.path.isdir(path):
@@ -359,20 +413,87 @@ def get_git_remote_url(path: str) -> Optional[str]:
     """获取 Git 仓库的 origin remote URL；非仓库或失败返回 None。"""
     if not is_git_repository(path):
         return None
-    try:
-        result = subprocess.run(
-            ['git', 'remote', 'get-url', 'origin'],
-            cwd=path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            text=True,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip() or None
-    except OSError:
-        pass
+    result = _git_run(path, ['remote', 'get-url', 'origin'])
+    if result.returncode == 0:
+        return result.stdout.strip() or None
     return None
+
+
+def get_git_status(path: str) -> GitStatus:
+    """获取共享资源目录的 Git 状态摘要。"""
+    status = GitStatus()
+    if not path or not os.path.isdir(path):
+        status.error = '路径无效'
+        return status
+    if not is_git_repository(path):
+        status.error = '当前目录不是 Git 仓库'
+        return status
+
+    # 分支
+    branch_res = _git_run(path, ['rev-parse', '--abbrev-ref', 'HEAD'])
+    if branch_res.returncode == 0:
+        status.branch = branch_res.stdout.strip()
+    else:
+        status.error = '无法获取当前分支: {}'.format(branch_res.stdout.strip())
+        return status
+
+    # 当前 commit hash 和 message
+    log_res = _git_run(path, ['log', '-1', '--format=%H\n%s'])
+    if log_res.returncode == 0:
+        parts = log_res.stdout.strip().split('\n', 1)
+        status.commit_hash = parts[0][:8] if parts else ''
+        status.commit_subject = parts[1] if len(parts) > 1 else ''
+
+    # dirty 状态
+    diff_res = _git_run(path, ['diff', '--stat'])
+    status.is_dirty = diff_res.returncode == 0 and bool(diff_res.stdout.strip())
+
+    # remote URL
+    status.remote_url = get_git_remote_url(path)
+    status.is_git_repo = True
+
+    # 未拉取提交数（需要已设置 upstream）
+    ahead_behind_res = _git_run(
+        path,
+        ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'],
+    )
+    if ahead_behind_res.returncode == 0:
+        line = ahead_behind_res.stdout.strip()
+        try:
+            ahead, behind = line.split('\t')
+            status.unpulled_count = int(behind)
+        except ValueError:
+            status.unpulled_count = 0
+    status.has_unpulled = status.unpulled_count > 0
+
+    # 未拉取提交摘要
+    if status.has_unpulled:
+        log_range_res = _git_run(
+            path,
+            ['log', '--oneline', 'HEAD..@{upstream}'],
+        )
+        if log_range_res.returncode == 0:
+            status.unpulled_commits = [
+                line.strip()
+                for line in log_range_res.stdout.splitlines()
+                if line.strip()
+            ]
+    return status
+
+
+def fetch_shared_resources(
+    shared_dir: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """对共享资源目录执行 ``git fetch``，返回 (成功, 消息)。"""
+    target = shared_dir or get_shared_resources_dir()
+    if not target:
+        return False, '共享资源目录未启用'
+    if not is_git_repository(target):
+        return False, '共享资源目录不是 Git 仓库，无法拉取'
+    result = _git_run(target, ['fetch'])
+    if result.returncode == 0:
+        return True, 'fetch 成功'
+    return False, result.stdout.strip() or 'fetch 失败'
 
 
 def pull_shared_resources(
@@ -389,23 +510,31 @@ def pull_shared_resources(
     if not is_git_repository(target):
         return False, '共享资源目录不是 Git 仓库，无法自动拉取'
 
-    try:
-        result = subprocess.run(
-            ['git', 'pull', '--ff-only'],
-            cwd=target,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            text=True,
-        )
-        if result.returncode == 0:
-            output = result.stdout.strip()
-            return True, output or '已是最新'
-        return False, result.stdout.strip()
-    except FileNotFoundError:
-        return False, '未找到 git 命令，请确保系统已安装 Git 并加入 PATH'
-    except OSError as exc:
-        return False, '拉取失败: {}'.format(exc)
+    result = _git_run(target, ['pull', '--ff-only'])
+    if result.returncode == 0:
+        output = result.stdout.strip()
+        return True, output or '已是最新'
+    return False, result.stdout.strip()
+
+
+def clone_shared_resources(
+    repo_url: str,
+    dest_dir: str,
+) -> Tuple[bool, str]:
+    """将远程仓库克隆到目标目录，返回 (成功, 消息)。"""
+    if not repo_url:
+        return False, '仓库 URL 不能为空'
+    parent = os.path.dirname(os.path.abspath(dest_dir))
+    if not os.path.isdir(parent):
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError as exc:
+            return False, '无法创建目标父目录: {}'.format(exc)
+
+    result = _git_run(parent, ['clone', repo_url, dest_dir])
+    if result.returncode == 0:
+        return True, '克隆成功: {}'.format(dest_dir)
+    return False, result.stdout.strip()
 
 
 __all__ = [
@@ -425,5 +554,9 @@ __all__ = [
     'scan_shared_stats',
     'is_git_repository',
     'get_git_remote_url',
+    'GitStatus',
+    'get_git_status',
+    'fetch_shared_resources',
     'pull_shared_resources',
+    'clone_shared_resources',
 ]
