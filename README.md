@@ -28,6 +28,7 @@ MaxAgent 是运行在 3ds Max 内部的 AI Agent 插件。它通过 Function Cal
 - **Agent 自愈**：Todo 规划 + Verify 校验 + BudgetGuard 预算保护
 - **项目记忆**：跨会话记录项目背景、决策与约束
 - **观察式学习**：录制用户手动操作并沉淀为 Skill 或规则
+- **团队共享资源目录**：把 Skill / 用户工具 / 规则 / 反思 / 知识源放到一个只读 Git 目录，团队其他成员重启 MaxAgent 即可自动挂载使用
 - **IDE Bridge**：HTTP 服务，可与外部 IDE Agent 联动
 - **主线程隔离**：工具在 Max 主线程执行并自动 undo，LLM 请求跑在子线程
 - **零外部依赖**：LLM 客户端、MCP、知识库均基于 Python stdlib
@@ -204,6 +205,7 @@ maxagent/
 │   ├── runtime_helpers.py         # pymxs 版本探测 + 主线程调度
 │   ├── qt_compat.py
 │   ├── logger.py
+│   ├── shared_resources.py      # 共享只读资源扫描、冲突解决、写保护
 │   ├── skills.py                  # Skill 加载与语义召回
 │   ├── macro_recorder.py
 │   ├── reflections_loader.py
@@ -257,6 +259,30 @@ def my_cool_op(target: str, count: int = 1) -> dict:
 ```
 
 工具默认在 Max 主线程执行并包裹 `pymxs.undo`。纯查询工具加 `wrap_undo=False`。
+
+---
+
+**团队共享资源目录**
+
+把 Skill / 用户工具 / 规则 / 反思 / 知识源作为团队共享资产：
+
+```bash
+# 1. 团队 TA/TD 维护一个 Git 仓库
+shared-maxagent-assets/
+├── skills/
+├── user_tools/
+├── user_rules/
+├── reflections/
+└── knowledge/
+
+# 2. 美术在本地 clone 后，通过环境变量或设置面板挂载
+set MAXAGENT_SHARED_DIR=C:\\TeamAssets\\shared-maxagent-assets
+```
+
+- 共享资源对当前实例**只读**，不会污染本地 `config_dir`
+- 同名资产默认**使用共享版本**；首次冲突会弹出对话框，也可在设置页切换默认策略
+- 共享的 `user_tool` 会自动加 `shared_` 前缀，避免和本地工具冲突
+- 共享工具首次调用前会做语法检查，团队入库前建议先在本地验证
 
 ---
 
