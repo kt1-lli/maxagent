@@ -52,6 +52,7 @@ from typing import List
 from typing import Optional
 
 from .config import get_config_dir
+from .dcc.runtime import current_dcc
 from .logger import get_logger
 
 
@@ -147,6 +148,35 @@ def validate_code(code):
         raise ValueError('代码语法错误: {}'.format(exc))
 
 
+def _normalize_dcc(dcc):
+    # type: (Any) -> Optional[List[str]]
+    """标准化 dcc 字段为字符串列表或 None（通用）。"""
+    if dcc is None or dcc == []:
+        return None
+    if isinstance(dcc, str):
+        return [dcc.strip()]
+    if isinstance(dcc, (list, tuple)):
+        out = [str(x).strip() for x in dcc if x is not None and str(x).strip()]
+        return out if out else None
+    return None
+
+
+def _is_compatible(tool_dcc, current):
+    # type: (Optional[List[str]], str) -> bool
+    """判断 tool_dcc 是否与当前 DCC 兼容。
+
+    - tool_dcc 为 None / [] 时视为通用，任何 DCC 都兼容
+    - current 为 'unknown' 时：只要 tool_dcc 包含 3dsmax/maya 中任一，
+      就放行（测试/未知环境保留资产可见性）
+    """
+    if not tool_dcc:
+        return True
+    normalized = set(str(x).strip().lower() for x in tool_dcc)
+    if current == 'unknown':
+        return bool(normalized & {'3dsmax', 'maya'})
+    return current.lower() in normalized
+
+
 def write_tool(name, code, meta):
     # type: (str, str, Dict[str, Any]) -> str
     """落盘单个工具的源码 + 元数据，返回 .py 路径。"""
@@ -187,6 +217,13 @@ def write_tool(name, code, meta):
     full_meta.setdefault('created_at', time.time())
     full_meta.setdefault('use_count', 0)
     full_meta.setdefault('approved_by_user', True)
+    # 未指定 dcc 时，默认绑定到当前 DCC
+    if 'dcc' not in full_meta or full_meta['dcc'] is None:
+        current = current_dcc()
+        if current in ('3dsmax', 'maya'):
+            full_meta['dcc'] = [current]
+    else:
+        full_meta['dcc'] = _normalize_dcc(full_meta['dcc'])
     tmp_meta = meta_path + '.tmp'
     with open(tmp_meta, 'w', encoding='utf-8') as fh:
         json.dump(full_meta, fh, ensure_ascii=False, indent=2)
@@ -197,11 +234,15 @@ def write_tool(name, code, meta):
     return py_path
 
 
-def list_user_tools(include_meta=True):
-    # type: (bool) -> List[Dict[str, Any]]
-    """列出所有用户学习工具的元数据 + 路径。"""
+def list_user_tools(include_meta=True, filter_dcc=True):
+    # type: (bool, bool) -> List[Dict[str, Any]]
+    """列出用户学习工具的元数据 + 路径。
+
+    :param filter_dcc: 是否按当前 DCC 过滤；False 则返回所有（管理用）
+    """
     base = get_user_tools_dir()
     out = []
+    current = current_dcc()
     for fname in sorted(os.listdir(base)):
         if not fname.endswith('.py') or fname == '__init__.py':
             continue
@@ -219,6 +260,12 @@ def list_user_tools(include_meta=True):
                     item['meta'] = json.load(fh)
             except (OSError, ValueError):
                 item['meta'] = {}
+        # 按 dcc 过滤：通用或兼容当前 DCC 才保留
+        if filter_dcc:
+            meta = item.get('meta') or {}
+            tool_dcc = meta.get('dcc')
+            if not _is_compatible(tool_dcc, current):
+                continue
         out.append(item)
     return out
 
@@ -317,17 +364,29 @@ def _import_tool_module(py_path, force_reload=False):
 
 def load_user_tools(stop_on_error=False):
     # type: (bool) -> Dict[str, Any]
-    """启动时扫盘并 import 所有 user tools。
+    """启动时扫盘并 import 当前 DCC 兼容的 user tools。
 
     :returns: ``{"loaded": [...], "errors": {name: error_msg, ...}}``
     """
     base = get_user_tools_dir()
     loaded = []
     errors = {}
+    current = current_dcc()
     for fname in sorted(os.listdir(base)):
         if not fname.endswith('.py') or fname == '__init__.py':
             continue
         name = fname[:-3]
+        meta_path = _tool_meta_path(name, base)
+        # 先按 dcc 过滤，避免加载当前环境不兼容的工具
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as fh:
+                    meta = json.load(fh)
+                tool_dcc = meta.get('dcc')
+                if not _is_compatible(tool_dcc, current):
+                    continue
+            except (OSError, ValueError):
+                pass
         py_path = os.path.join(base, fname)
         try:
             _import_tool_module(py_path, force_reload=True)
@@ -360,4 +419,6 @@ __all__ = [
     'validate_code',
     'set_user_tools_dir_override',
     'MAX_CODE_BYTES',
+    '_is_compatible',
+    '_normalize_dcc',
 ]

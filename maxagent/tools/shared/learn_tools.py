@@ -30,6 +30,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ...dcc.runtime import current_dcc
 from ...logger import get_logger
 from ...user_tools_loader import delete_user_tool
 from ...user_tools_loader import list_user_tools
@@ -182,6 +183,8 @@ def propose_new_tool(name, description, code, rationale=''):
         'created_at': time.time(),
         'approved_by_user': True,
         'use_count': 0,
+        # 默认绑定到当前 DCC；write_tool 内部会兜底，这里显式写入更明确
+        'dcc': [current_dcc()] if current_dcc() in ('3dsmax', 'maya') else None,
     }
     try:
         py_path = write_tool(name, final_code, meta)
@@ -234,7 +237,7 @@ def propose_new_tool(name, description, code, rationale=''):
 )
 def list_learned_tools():
     """列出已学习的工具。"""
-    items = list_user_tools(include_meta=True)
+    items = list_user_tools(include_meta=True, filter_dcc=False)
     out = []
     for it in items:
         meta = it.get('meta') or {}
@@ -291,7 +294,7 @@ def patch_learned_tool(name, new_code, rationale):
             'stage': 'validate_name',
         }
 
-    items = list_user_tools(include_meta=False)
+    items = list_user_tools(include_meta=False, filter_dcc=False)
     existing = next((it for it in items if it['name'] == name), None)
     if existing is None:
         logger.warning('patch_learned_tool 拒绝：工具不存在 name=%s', name)
@@ -389,13 +392,19 @@ def patch_learned_tool(name, new_code, rationale):
             'stage': 'post_edit_validate',
         }
 
-    # 复用原 meta 关键字段（保留 created_at / use_count 历史，
+    # 复用原 meta 关键字段（保留 created_at / use_count / dcc 历史，
     # 仅刷新 patched_at 标识本次修补）。
     new_meta = dict(old_meta)
     new_meta['name'] = name
     new_meta['approved_by_user'] = True
     new_meta['patched_at'] = time.time()
     new_meta['patch_rationale'] = rationale
+    # 确保 dcc 字段标准化，避免旧 meta 缺失该字段时被改写为当前 DCC
+    if 'dcc' not in new_meta or new_meta['dcc'] is None:
+        new_meta['dcc'] = None
+    else:
+        from ...user_tools_loader import _normalize_dcc
+        new_meta['dcc'] = _normalize_dcc(new_meta['dcc'])
 
     try:
         new_py_path = write_tool(name, final_code, new_meta)
