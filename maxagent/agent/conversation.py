@@ -28,7 +28,25 @@ from typing import Optional
 
 from .coding_rules import get_coding_rules
 from .few_shot_examples import get_few_shot_examples
-from .max_knowledge import get_basic_knowledge
+from .knowledge.dcc import get_dcc_knowledge
+from .knowledge.dcc.base import COMMON_KNOWLEDGE
+from .knowledge.dcc.base import DCCKnowledge
+from .knowledge.dcc.max import MAX_KNOWLEDGE as MAX_DCC_KNOWLEDGE
+from .knowledge.dcc.maya import MAYA_KNOWLEDGE as MAYA_DCC_KNOWLEDGE
+
+
+def _dcc_knowledge_by_name(dcc):
+    # type: (str) -> DCCKnowledge
+    """按名称返回 DCC 知识库，供 force_dcc 使用。"""
+    if dcc == '3dsmax':
+        return MAX_DCC_KNOWLEDGE
+    if dcc == 'maya':
+        return MAYA_DCC_KNOWLEDGE
+    return DCCKnowledge(
+        dcc_name='unknown',
+        basic_knowledge=COMMON_KNOWLEDGE,
+        topics={},
+    )
 
 
 # 默认对外身份名（员工名缺省时的回退值）
@@ -38,8 +56,8 @@ from .max_knowledge import get_basic_knowledge
 DEFAULT_EMPLOYEE_NAME = 'MaxAgent'
 
 
-def build_default_system_prompt(employee_name=None):
-    # type: (Optional[str]) -> str
+def build_default_system_prompt(employee_name=None, force_dcc=None):
+    # type: (Optional[str], Optional[str]) -> str
     """构造带"员工身份"注入的默认 system prompt。
 
     设计模型（岗位 / 员工分离）：
@@ -61,6 +79,8 @@ def build_default_system_prompt(employee_name=None):
 
     :param employee_name: 员工对外显示名，None / 空串时回落到
         ``DEFAULT_EMPLOYEE_NAME``（'MaxAgent'）。
+    :param force_dcc: 强制指定当前 DCC，主要用于测试；None 时由
+        ``current_dcc()`` 自动探测。
     :returns: 完整 system prompt 字符串。
     """
     name = (employee_name or '').strip() or DEFAULT_EMPLOYEE_NAME
@@ -114,8 +134,8 @@ def build_default_system_prompt(employee_name=None):
         )
 
     body = (
-        '你是 3ds Max 内嵌的智能助手 MaxAgent，专门帮助美术 / TA '
-        '通过自然语言操作 3ds Max 场景。你可以调用提供给你的工具'
+        '你是 DCC 软件内嵌的智能助手 MaxAgent，当前运行在 3ds Max 环境中。'
+        '你专门帮助美术 / TA 通过自然语言操作场景。你可以调用提供给你的工具'
         '完成创建几何体、修改对象、添加修改器、设置材质灯光、渲染、'
         '保存场景等操作。\n\n'
         + identity_line
@@ -248,8 +268,12 @@ def build_default_system_prompt(employee_name=None):
         '若不确定对象存在，先用 list_scene_objects / find_objects_by_name '
         '确认。\n'
     )
+    dcc_knowledge = (
+        get_dcc_knowledge() if force_dcc is None
+        else _dcc_knowledge_by_name(force_dcc)
+    )
     return (
-        body + '\n' + get_basic_knowledge() + '\n'
+        body + '\n' + dcc_knowledge.get_basic_knowledge() + '\n'
         + get_few_shot_examples() + '\n' + get_coding_rules()
     )
 
