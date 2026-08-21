@@ -609,7 +609,7 @@ class AgentWorker(QObject):
         if not bool(getattr(profile, 'vision_supported', False)):
             return
         try:
-            from ..tools.viewport_capture import capture_viewport_attachment
+            from ..tools.max.viewport_capture import capture_viewport_attachment
             att = capture_viewport_attachment(name='auto_viewport.png')
             if att is None:
                 logger.debug('自动视口截图返回空，跳过')

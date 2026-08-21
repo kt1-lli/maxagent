@@ -42,6 +42,7 @@ class ToolSpec(object):
         notes=None,                 # type: Optional[List[str]]
         returns_desc=None,          # type: Optional[str]
         prerequisites=None,         # type: Optional[List[str]]
+        dcc=None,                   # type: Optional[List[str]]
     ):
         self.name = name
         self.func = func
@@ -55,6 +56,8 @@ class ToolSpec(object):
         self.notes = notes or []
         self.returns_desc = returns_desc or ""
         self.prerequisites = prerequisites or []
+        # dcc 为空列表或 None 表示通用工具，所有 DCC 都注册
+        self.dcc = list(dcc) if dcc else []
 
     def to_openai_schema(self):
         """生成 OpenAI tools 协议的单条 schema。"""
@@ -107,6 +110,7 @@ def tool(
     notes=None,                 # type: Optional[List[str]]
     returns_desc=None,          # type: Optional[str]
     prerequisites=None,         # type: Optional[List[str]]
+    dcc=None,                   # type: Optional[List[str]]
 ):
     """工具注册装饰器。
 
@@ -121,11 +125,23 @@ def tool(
     :param notes: 给 LLM 的注意事项列表
     :param returns_desc: 返回值说明
     :param prerequisites: 调用前必须满足的条件（如对象必须存在）
+    :param dcc: 适用 DCC 列表，如 ['3dsmax'] / ['maya'] / ['3dsmax', 'maya']；
+        为空或 None 表示通用工具
     """
 
     def _decorator(func):
         tool_name = name or func.__name__
-        if tool_name in _REGISTRY:
+        # 同函数重复注册时静默忽略，避免 reload 模块时抛出"工具名重复"错误。
+        # 不同函数同名仍然需要报错，防止真正的命名冲突被掩盖。
+        existing = _REGISTRY.get(tool_name)
+        if existing is not None:
+            same_source = (
+                existing.func.__module__ == func.__module__
+                and existing.func.__name__ == func.__name__
+            )
+            if same_source:
+                func.__tool_spec__ = existing
+                return func
             raise ValueError("工具名重复: {}".format(tool_name))
 
         desc = description or (inspect.getdoc(func) or "").split("\n\n")[0].strip()
@@ -144,6 +160,7 @@ def tool(
             notes=notes,
             returns_desc=returns_desc,
             prerequisites=prerequisites,
+            dcc=dcc,
         )
         _REGISTRY[tool_name] = spec
         # 让被装饰函数仍可直接调用
@@ -280,11 +297,12 @@ def get_tool(name):
     return _REGISTRY.get(name)
 
 
-def list_tools(category=None, include_dangerous=True):
+def list_tools(category=None, include_dangerous=True, dcc=None):
     """列出已注册工具。
 
     :param category: 仅列出指定分组（None 表示全部）
     :param include_dangerous: 是否包含 dangerous=True 的工具
+    :param dcc: 指定 DCC 过滤，例如 '3dsmax' / 'maya'；只返回对该 DCC 可见的工具
     """
     out = []
     for spec in _REGISTRY.values():
@@ -292,11 +310,13 @@ def list_tools(category=None, include_dangerous=True):
             continue
         if not include_dangerous and spec.dangerous:
             continue
+        if dcc is not None and spec.dcc and dcc not in spec.dcc:
+            continue
         out.append(spec)
     return out
 
 
-def build_openai_tools_schema(category=None, include_dangerous=True):
+def build_openai_tools_schema(category=None, include_dangerous=True, dcc=None):
     """生成 OpenAI tools 数组，可直接塞给 chat.completions。
 
     会过滤掉「我的资源 → 工具」里被用户禁用的项，让 LLM 完全感知不到
@@ -313,7 +333,7 @@ def build_openai_tools_schema(category=None, include_dangerous=True):
     return [
         spec.to_openai_schema()
         for spec in list_tools(
-            category=category, include_dangerous=include_dangerous,
+            category=category, include_dangerous=include_dangerous, dcc=dcc,
         )
         if spec.name not in disabled
     ]

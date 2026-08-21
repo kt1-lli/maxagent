@@ -1562,14 +1562,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         """
         try:
             from .learn_approval_dialog import make_approval_callback
-            from ..tools.learn_tools import set_approval_callback
+            from ..tools.shared.learn_tools import set_approval_callback
             set_approval_callback(make_approval_callback(parent_widget=self))
         except Exception as exc:  # pylint: disable=broad-except
             logger.warning('注册学习审批回调失败: %s', exc)
         # 同时安装规则学习审批回调（同样要求主线程）
         try:
             from .rule_approval_dialog import make_rule_approval_callback
-            from ..tools.learn_rules import set_rule_approval_callback
+            from ..tools.shared.learn_rules import set_rule_approval_callback
             set_rule_approval_callback(
                 make_rule_approval_callback(parent_widget=self),
             )
