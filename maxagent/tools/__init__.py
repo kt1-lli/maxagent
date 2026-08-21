@@ -64,8 +64,13 @@ _MAX_MODULES = [
     'maxagent.tools.max.viewport_capture',
 ]
 
-# Maya 专用工具模块（占位，后续 Phase 实现）
+# Maya 专用工具模块
 _MAYA_MODULES = [
+    'maxagent.tools.maya.deformer',
+    'maxagent.tools.maya.geometry',
+    'maxagent.tools.maya.light_camera',
+    'maxagent.tools.maya.scene_query',
+    'maxagent.tools.maya.transform',
 ]
 
 
