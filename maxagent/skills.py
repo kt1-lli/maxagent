@@ -45,6 +45,7 @@ from typing import List
 from typing import Optional
 
 from .config import get_config_dir
+from .dcc.runtime import current_dcc
 from .logger import get_logger
 from .shared_resources import ConflictResolution
 from .shared_resources import get_shared_subdir
@@ -152,8 +153,8 @@ class Skill(object):
                  instructions='', created_at=None, updated_at=None,
                  use_count=0, source_session_sid='', file_path=None,
                  impl_path=None, status='stable', patches=None,
-                 shared=False, readonly=False):
-        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]], bool, bool) -> None
+                 shared=False, readonly=False, dcc=None):
+        # type: (str, str, Optional[List[str]], str, Optional[float], Optional[float], int, str, Optional[str], Optional[str], str, Optional[List[Dict]], bool, bool, Optional[List[str]]) -> None
         self.name = name
         self.description = description or ''
         self.trigger_keywords = _normalize_trigger_keywords(trigger_keywords)
@@ -175,6 +176,37 @@ class Skill(object):
         # 共享资源标记：来自共享目录 / 对当前实例只读
         self.shared = bool(shared)
         self.readonly = bool(readonly)
+        # DCC 适用范围：['3dsmax'] / ['maya'] / ['3dsmax', 'maya'] / None(通用)
+        self.dcc = self._normalize_dcc(dcc)
+
+    @staticmethod
+    def _normalize_dcc(dcc):
+        # type: (Any) -> Optional[List[str]]
+        """标准化 dcc 字段为字符串列表或 None（通用）。"""
+        if dcc is None or dcc == []:
+            return None
+        if isinstance(dcc, str):
+            return [dcc.strip()]
+        if isinstance(dcc, (list, tuple)):
+            out = [str(x).strip() for x in dcc if x is not None and str(x).strip()]
+            return out if out else None
+        return None
+
+    @staticmethod
+    def _is_compatible(skill_dcc, current):
+        # type: (Optional[List[str]], str) -> bool
+        """判断 skill_dcc 是否与当前 DCC 兼容。
+
+        - skill_dcc 为 None / [] 时视为通用，任何 DCC 都兼容
+        - current 为 'unknown' 时：只要 skill_dcc 包含 3dsmax/maya 中任一，
+          就放行（测试/未知环境保留资产可见性）
+        """
+        if not skill_dcc:
+            return True
+        normalized = set(str(x).strip().lower() for x in skill_dcc)
+        if current == 'unknown':
+            return bool(normalized & {'3dsmax', 'maya'})
+        return current.lower() in normalized
 
     def to_dict(self):
         return {
@@ -194,6 +226,7 @@ class Skill(object):
             'patches': list(self.patches),
             'shared': self.shared,
             'readonly': self.readonly,
+            'dcc': list(self.dcc) if self.dcc else None,
         }
 
     @classmethod
@@ -213,6 +246,7 @@ class Skill(object):
             patches=data.get('patches') or [],
             shared=bool(data.get('shared', False)),
             readonly=bool(data.get('readonly', False)),
+            dcc=data.get('dcc'),
         )
         s.success_count = int(data.get('success_count', 0) or 0)
         s.fail_count = int(data.get('fail_count', 0) or 0)
@@ -250,6 +284,12 @@ class Skill(object):
             raise RuntimeError('impl.py 缺少 run(ctx, **kwargs) 入口')
         return run
 
+    def dcc_tag(self):
+        """返回用于 UI 展示的 DCC 标签文本。"""
+        if not self.dcc:
+            return '[通用]'
+        return '[{}]'.format('/'.join(self.dcc))
+
     def brief(self):
         """简短一行描述，给 system prompt 用。"""
         desc = self.description.strip().replace('\n', ' ')
@@ -260,7 +300,8 @@ class Skill(object):
         if self.status != 'stable':
             status_tag = '[{}]'.format(self.status)
         impl_tag = '[code]' if self.has_impl() else ''
-        tags = ' '.join(filter(None, [status_tag, impl_tag]))
+        dcc_tag = self.dcc_tag()
+        tags = ' '.join(filter(None, [dcc_tag, status_tag, impl_tag]))
         if tags:
             tags = ' ' + tags
         if kws:
@@ -467,6 +508,12 @@ class SkillManager(object):
     # ------------------------------------------------------------------ #
     # 索引（损坏时扫描重建）
     # ------------------------------------------------------------------ #
+    def _filter_by_dcc(self, skills):
+        # type: (List[Skill]) -> List[Skill]
+        """按当前 DCC 过滤 skill 列表。"""
+        current = current_dcc()
+        return [s for s in skills if Skill._is_compatible(s.dcc, current)]
+
     def _scan(self):
         # type: () -> List[Skill]
         out = []
@@ -498,6 +545,8 @@ class SkillManager(object):
                 )
         shared_skills = self._scan_shared_skills()
         merged = self._merge_local_and_shared(local_skills, shared_skills)
+        # 按当前 DCC 过滤
+        merged = self._filter_by_dcc(merged)
         for s in merged:
             # 禁用项对 LLM 完全不可见——既不进 system prompt，也不
             # 出现在 list_skills 工具的返回；但仍然保留磁盘文件，
@@ -611,6 +660,7 @@ class SkillManager(object):
     # ------------------------------------------------------------------ #
     def list_skills(self):
         # type: () -> List[Skill]
+        """列出当前 DCC 下可用的技能（不含禁用项）。"""
         return self._scan()
 
     def list_all_skills(self):
@@ -644,6 +694,8 @@ class SkillManager(object):
                 )
         shared_skills = self._scan_shared_skills()
         merged = self._merge_local_and_shared(local_skills, shared_skills)
+        # 管理面板也按当前 DCC 过滤，避免用户在 Max 里看到 Maya 专用 skill
+        merged = self._filter_by_dcc(merged)
         for s in merged:
             if s.file_path is None:
                 s.file_path = self._file_path_for(s)
@@ -688,6 +740,12 @@ class SkillManager(object):
             )
         if not overwrite and self.get(skill.name) is not None:
             raise ValueError('同名技能已存在: {}'.format(skill.name))
+
+        # 未指定 dcc 时，默认绑定到当前 DCC
+        if skill.dcc is None:
+            current = current_dcc()
+            if current in ('3dsmax', 'maya'):
+                skill.dcc = [current]
 
         skill.updated_at = time.time()
         if not skill.created_at:

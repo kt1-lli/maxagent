@@ -1056,7 +1056,9 @@ class SettingsDialog(QtWidgets.QDialog):
                 name = item['name']
                 meta = item.get('meta') or {}
                 desc = (meta.get('description') or '').strip()
-                label = name + ('  —  ' + desc if desc else '')
+                dcc = meta.get('dcc')
+                dcc_tag = ' [通用]' if not dcc else ' [{}]'.format('/'.join(dcc))
+                label = name + dcc_tag + ('  —  ' + desc if desc else '')
                 it = QtWidgets.QListWidgetItem(label)
                 it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
                 it.setCheckState(QtCore.Qt.Unchecked)
@@ -1076,7 +1078,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 desc = (sk.description or '').strip().replace('\n', ' ')
                 if len(desc) > 40:
                     desc = desc[:40] + '…'
-                label = sk.name + ('  —  ' + desc if desc else '')
+                dcc_tag = sk.dcc_tag()
+                label = '[{}] '.format(dcc_tag.strip('[]')) + sk.name + ('  —  ' + desc if desc else '')
                 it = QtWidgets.QListWidgetItem(label)
                 it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
                 it.setCheckState(QtCore.Qt.Unchecked)
@@ -4440,7 +4443,8 @@ class SettingsDialog(QtWidgets.QDialog):
                     status_tag = ' [已弃用]'
                 if sk.has_impl():
                     status_tag += ' [code]'
-                label = sk.name + status_tag + (
+                dcc_tag = sk.dcc_tag()
+                label = sk.name + ' ' + dcc_tag + status_tag + (
                     '  —  ' + desc if desc else ''
                 )
                 item = QtWidgets.QListWidgetItem(label)
@@ -4710,7 +4714,9 @@ class SettingsDialog(QtWidgets.QDialog):
                 desc = (meta.get('description') or '').strip()
                 if len(desc) > 60:
                     desc = desc[:60] + '…'
-                label = name + ('  —  ' + desc if desc else '')
+                dcc = meta.get('dcc')
+                dcc_tag = ' [通用]' if not dcc else ' [{}]'.format('/'.join(dcc))
+                label = name + dcc_tag + ('  —  ' + desc if desc else '')
                 item = QtWidgets.QListWidgetItem(label)
                 item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
                 if name in disabled:
