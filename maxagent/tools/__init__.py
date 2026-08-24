@@ -66,11 +66,17 @@ _MAX_MODULES = [
 
 # Maya 专用工具模块
 _MAYA_MODULES = [
+    'maxagent.tools.maya.animation',
     'maxagent.tools.maya.deformer',
     'maxagent.tools.maya.geometry',
     'maxagent.tools.maya.light_camera',
+    'maxagent.tools.maya.material',
+    'maxagent.tools.maya.rigging',
+    'maxagent.tools.maya.scene_io',
     'maxagent.tools.maya.scene_query',
+    'maxagent.tools.maya.scripting',
     'maxagent.tools.maya.transform',
+    'maxagent.tools.maya.viewport_capture',
 ]
 
 
