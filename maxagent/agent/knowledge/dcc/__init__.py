@@ -13,7 +13,32 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+
 from ....dcc.runtime import current_dcc
+
+
+class _TopicMapAdapter:
+    """按当前 DCC 转发到对应 DCCKnowledge 的 topic 操作。"""
+
+    def __init__(self):
+        self._cache = None  # type: Optional[Any]
+
+    def _knowledge(self):
+        if self._cache is None:
+            self._cache = get_dcc_knowledge()
+        return self._cache
+
+    def list_topics(self):
+        # type: () -> List[str]
+        return self._knowledge().list_topics()
+
+    def lookup_topic(self, topic, sub_key=None):
+        # type: (str, Optional[str]) -> Dict[str, Any]
+        return self._knowledge().lookup_topic(topic, sub_key=sub_key)
 
 
 def get_dcc_knowledge():
@@ -36,4 +61,19 @@ def get_dcc_knowledge():
     )
 
 
-__all__ = ['get_dcc_knowledge']
+# 兼容旧接口：lookup_max_knowledge 现在自动按 DCC 分发
+def list_topics():
+    # type: () -> List[str]
+    return get_dcc_knowledge().list_topics()
+
+
+def lookup_topic(topic, sub_key=None):
+    # type: (str, Optional[str]) -> Dict[str, Any]
+    return get_dcc_knowledge().lookup_topic(topic, sub_key=sub_key)
+
+
+__all__ = [
+    'get_dcc_knowledge',
+    'list_topics',
+    'lookup_topic',
+]

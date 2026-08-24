@@ -19,8 +19,9 @@ from typing import Any
 from typing import Dict
 from typing import Optional
 
-from ...agent.max_knowledge import list_topics
-from ...agent.max_knowledge import lookup_topic
+from ...agent.knowledge.dcc import list_topics
+from ...agent.knowledge.dcc import lookup_topic
+from ...dcc.runtime import current_dcc
 from ...logger import get_logger
 from ..registry import tool
 
@@ -55,8 +56,9 @@ logger = get_logger(__name__)
     # 纯字典查询，不需要主线程 pymxs
     run_on_main_thread=False,
     examples=[{"summary": "典型调用", "args": {"topic": 'value', "sub_key": 'value'}}],
-notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
-returns_desc="dict {\"ok\": True, ...}"
+    notes=['参数必须严格符合 JSON Schema 声明的类型。', '调用失败时应先检查对象/文件是否存在。'],
+    returns_desc="dict {\"ok\": True, ...}",
+    dcc=['3dsmax'],
 )
 def lookup_max_knowledge(topic, sub_key=None):
     # type: (str, Optional[str]) -> Dict[str, Any]
@@ -97,6 +99,7 @@ def lookup_max_knowledge(topic, sub_key=None):
         '如需检索具体内容，请使用 search_max_docs。',
     ],
     returns_desc='dict {"count": 主题数量, "topics": [...]}',
+    dcc=['3dsmax'],
 )
 def list_max_knowledge_topics():
     # type: () -> Dict[str, Any]
@@ -111,6 +114,8 @@ def list_max_knowledge_topics():
 __all__ = [
     'lookup_max_knowledge',
     'list_max_knowledge_topics',
+    'lookup_maya_knowledge',
+    'list_maya_knowledge_topics',
     'search_max_docs',
     'search_knowledge',
     'list_knowledge_sources',
@@ -119,7 +124,72 @@ __all__ = [
 ]
 
 
-# ================================================================== #
+# ------------------------------------------------------------------- #
+# Maya 专用知识查询工具
+# ------------------------------------------------------------------- #
+
+
+@tool(
+    name='lookup_maya_knowledge',
+    description=(
+        '查询 Maya 内置领域知识：常用 primitive 参数、变形器、'
+        '灯光/相机类型、材质赋值、单位/坐标系、transform 操作等。\n'
+        '何时调用（强烈推荐）：\n'
+        '  ✓ 用户要求创建/修改 Maya 对象，但你不确定该对象的具体参数名\n'
+        '  ✓ 涉及渲染器（Arnold）参数差异\n'
+        '  ✓ 你想用某个 API 但只是"印象中应该这样写"——查一下避免幻觉\n'
+        '不要调用：\n'
+        '  ✗ 用户问的是通用编程问题（与 Maya 无关）\n'
+        '  ✗ 已经在 system prompt 的"Maya 世界观速查"里能找到答案的内容\n'
+        '参数：\n'
+        '  - topic: 主题名，可选 primitive / transform / deformer / light / camera\n'
+        '  - sub_key: 可选子键，如 topic="primitive", sub_key="cube"\n'
+        '返回：found=True 时含 content/items；found=False 时含 suggestion'
+        ' 和 available_topics。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+    examples=[{"summary": "典型调用", "args": {"topic": 'value', "sub_key": 'value'}}],
+    notes=['参数必须严格符合 JSON Schema 声明的类型。'],
+    returns_desc="dict {\"ok\": True, ...}",
+    dcc=['maya'],
+)
+def lookup_maya_knowledge(topic, sub_key=None):
+    # type: (str, Optional[str]) -> Dict[str, Any]
+    """按主题查询 Maya 知识库（底层复用 DCC 分发）。"""
+    result = lookup_topic(topic, sub_key=sub_key)
+    return result
+
+
+@tool(
+    name='list_maya_knowledge_topics',
+    description=(
+        '列出 Maya 知识库支持查询的所有主题（slug）。'
+        '在你不确定该用哪个 topic 关键词时先调用这个，再调 '
+        'lookup_maya_knowledge。'
+    ),
+    category='knowledge',
+    dangerous=False,
+    wrap_undo=False,
+    run_on_main_thread=False,
+    examples=[{'summary': '列出 Maya 知识库主题', 'args': {}}],
+    notes=['返回 Maya 官方文档知识库中的主题列表。'],
+    returns_desc='dict {"count": 主题数量, "topics": [...]}',
+    dcc=['maya'],
+)
+def list_maya_knowledge_topics():
+    # type: () -> Dict[str, Any]
+    """返回所有可查的 Maya 知识主题。"""
+    topics = list_topics()
+    return {
+        'count': len(topics),
+        'topics': topics,
+    }
+
+
+# ==================================================================
 # BM25 全文检索工具（A 场景 + D 场景）
 # ================================================================== #
 
