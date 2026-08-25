@@ -25,11 +25,39 @@ def _ensure_repo_on_path():
         sys.path.insert(0, repo_root)
 
 
+def _startup():
+    # type: () -> None
+    """导入并启动 MaxAgent UI。"""
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    from maxagent.dcc.runtime import current_dcc  # pylint: disable=import-outside-toplevel
+    from maxagent.tools import load_all_tools  # pylint: disable=import-outside-toplevel
+    from maxagent.ui.dock_widget import get_or_create_dock  # pylint: disable=import-outside-toplevel
+
+    # 强制确认 DCC 探测为 maya（拖拽启动时理论上一定在 Maya 内）
+    if current_dcc() != 'maya':
+        cmds.warning('current_dcc() 未识别为 maya，跳过启动')
+        return
+
+    load_all_tools()
+    get_or_create_dock()
+
+
+def onMayaDroppedPythonFile(*args, **kwargs):
+    # type: (*object, **object) -> str
+    """Maya 拖拽回调要求函数。
+
+    Maya 拖拽执行 Python 文件时，会查找并调用本函数。
+    :returns: 提示字符串，Maya 会在脚本编辑器中显示
+    """
+    _ensure_repo_on_path()
+    _startup()
+    return 'MaxAgent for Maya 已启动'
+
+
 def launch():
     # type: () -> None
     """启动 MaxAgent for Maya。"""
     _ensure_repo_on_path()
-    from maxagent.ui.maya_startup import onMayaDroppedPythonFile  # pylint: disable=import-outside-toplevel
     onMayaDroppedPythonFile()
 
 
