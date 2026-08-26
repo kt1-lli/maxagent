@@ -244,6 +244,67 @@ def get_max_main_window():
 
 
 # ---------------------------------------------------------------------- #
+# PySide2/PySide6 wrapInstance 兼容
+# ---------------------------------------------------------------------- #
+
+def get_shiboken_wrap_instance():
+    # type: () -> Any
+    """返回当前可用 shiboken 模块的 wrapInstance 函数。
+
+    Maya 主窗口句柄（MQtUtil.mainWindow 返回的 long）需要 wrapInstance
+    转成 QWidget。Maya 在不同 PySide 绑定下分别提供：
+      - PySide2 -> shiboken2.wrapInstance
+      - PySide6 -> shiboken6.wrapInstance
+    本函数按当前已加载的 Qt 绑定返回对应函数，失败时返回 None。
+    """
+    if IS_PYSIDE6:
+        try:
+            from shiboken6 import wrapInstance  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+            return wrapInstance
+        except Exception:  # pylint: disable=broad-except
+            pass
+    if IS_PYSIDE2:
+        try:
+            from shiboken2 import wrapInstance  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+            return wrapInstance
+        except Exception:  # pylint: disable=broad-except
+            pass
+    # 兜底：不管当前标记是什么，两种都试一下（兼容某些自定义加载场景）
+    for mod_name in ('shiboken6', 'shiboken2'):
+        try:
+            mod = __import__(mod_name, fromlist=['wrapInstance'])
+            wrap = getattr(mod, 'wrapInstance', None)
+            if callable(wrap):
+                return wrap
+        except Exception:  # pylint: disable=broad-except
+            pass
+    return None
+
+
+def get_maya_main_window():
+    # type: () -> Optional[Any]
+    """获取 Maya 主窗口的 QWidget 句柄。
+
+    通过 OpenMayaUI.MQtUtil.mainWindow 拿到 long ptr 后，用当前可用
+    的 shiboken wrapInstance 转成 QWidget。
+    """
+    try:
+        from maya import OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    except Exception:  # pylint: disable=broad-except
+        return None
+    ptr = omui.MQtUtil.mainWindow()
+    if ptr is None:
+        return None
+    wrap = get_shiboken_wrap_instance()
+    if wrap is None:
+        return None
+    try:
+        return wrap(int(ptr), QtWidgets.QWidget)
+    except Exception:  # pylint: disable=broad-except
+        return None
+
+
+# ---------------------------------------------------------------------- #
 # 信号常量兼容（PySide6 改用 enum，PySide2 是裸 int）
 # ---------------------------------------------------------------------- #
 
@@ -292,6 +353,8 @@ __all__ = [
     "exec_compat",
     "get_qapp",
     "get_max_main_window",
+    "get_shiboken_wrap_instance",
+    "get_maya_main_window",
     "alignment_right",
     "alignment_left",
     "dock_area_right",

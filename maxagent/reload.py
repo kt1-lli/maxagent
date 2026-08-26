@@ -58,8 +58,12 @@ _THIS_MODULE = __name__
 
 # 不应被卸载的模块白名单：这些是绑定到 Max 主进程或 Qt 单例的"重型"对象，
 # 重载时刻意保留，不会污染普通 Python 代码热替换的语义。
+# DCC 运行时状态使用 sys.modules 中的共享对象，也必须保留以保证旧函数
+# 闭包与新模块对象看到同一份状态。
 _SKIP_MODULE_PREFIXES = (
     'maxagent.qt_compat',  # Qt 兼容层，含 PySide 单例引用
+    'maxagent.dcc.runtime._DCC_STATE',
+    'maxagent.dcc.runtime._ADAPTER_STATE',
 )
 
 
@@ -180,6 +184,9 @@ def reload_maxagent(reshow=True):
     n = _purge_modules(skip_self=True)
     print('[MaxAgent] reload: 已卸载 {} 个模块'.format(n))
 
+    # 2.5 记录旧 DCC runtime 模块对象（如果存在），以便重载后同步全局状态
+    _rt_old = sys.modules.get(_PACKAGE_PREFIX + '.dcc.runtime')
+
     # 3. 重新 import 顶层包，触发子模块重新加载
     # 注意：先把"自己"也卸载，让下次 import maxagent.reload 拿到新版
     # 但是保留**当前正在执行的栈帧**所引用的旧模块对象（Python 允许这样做）
@@ -191,6 +198,27 @@ def reload_maxagent(reshow=True):
         # 重 import 失败时 logger 已被 shutdown 且尚未恢复，统一走 traceback
         traceback.print_exc()
         raise
+
+    # 3.5 重置 DCC 运行时缓存，避免热重载后旧函数闭包引用旧模块全局状态
+    # 导致 current_dcc() / get_adapter() 在不同子模块间看到不一致的结果
+    try:
+        # 通过 sys.modules 共享可变容器实现状态同步；current_dcc() /
+        # get_adapter() 内部已从 sys.modules 动态读取，因此旧函数闭包也能
+        # 看到最新值。这里显式把状态重置为未探测。
+        dcc_state = sys.modules.get(_PACKAGE_PREFIX + '.dcc.runtime._DCC_STATE')
+        if dcc_state is not None:
+            dcc_state['name'] = None
+        adapter_state = sys.modules.get(
+            _PACKAGE_PREFIX + '.dcc.runtime._ADAPTER_STATE'
+        )
+        if adapter_state is not None:
+            adapter_state['adapter'] = None
+        # 同时重置新模块对象的旧式全局变量，保持向后兼容
+        rt_mod = importlib.import_module(_PACKAGE_PREFIX + '.dcc.runtime')
+        rt_mod._DCC_NAME = None  # noqa: SLF001
+        rt_mod._ADAPTER = None  # noqa: SLF001
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
 
     # 重新拿一个 logger（新模块对象）
     try:

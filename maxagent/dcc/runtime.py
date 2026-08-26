@@ -11,15 +11,29 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import os
+import sys
 import threading
 from typing import Any
 from typing import Callable
+from typing import Dict
 from typing import Optional
 
 from ..logger import get_logger
 
 logger = get_logger(__name__)
 
+# 使用 sys.modules 中的共享可变对象保存 DCC 状态，确保热重载（purge
+# sys.modules 后重新 import）时，旧函数闭包与新模块对象仍引用同一份
+# 运行时状态，避免 current_dcc() / get_adapter() 出现多版本不一致。
+_DCC_STATE_KEY = 'maxagent.dcc.runtime._DCC_STATE'
+_ADAPTER_STATE_KEY = 'maxagent.dcc.runtime._ADAPTER_STATE'
+if _DCC_STATE_KEY not in sys.modules:
+    sys.modules[_DCC_STATE_KEY] = {'name': None}
+if _ADAPTER_STATE_KEY not in sys.modules:
+    sys.modules[_ADAPTER_STATE_KEY] = {'adapter': None}
+_DCC_STATE = sys.modules[_DCC_STATE_KEY]  # type: Dict[str, Optional[str]]
+_ADAPTER_STATE = sys.modules[_ADAPTER_STATE_KEY]  # type: Dict[str, Optional[Any]]
 _DCC_NAME = None  # type: Optional[str]
 _ADAPTER = None  # type: Optional[Any]
 _LOCK = threading.Lock()
@@ -31,19 +45,38 @@ def current_dcc():
 
     首次调用时探测环境，之后缓存结果。无法在已知 DCC 中识别时返回 'unknown'。
     """
+    # 优先从 sys.modules 共享状态读取，确保热重载后旧函数闭包与新模块
+    # 对象始终看到同一份运行时状态
+    dcc_state = sys.modules.get(_DCC_STATE_KEY)
+    if dcc_state is not None:
+        name = dcc_state.get('name')
+        if name is not None:
+            return name
     global _DCC_NAME  # pylint: disable=global-statement
     if _DCC_NAME is not None:
         return _DCC_NAME
     with _LOCK:
+        if dcc_state is not None:
+            name = dcc_state.get('name')
+            if name is not None:
+                return name
         if _DCC_NAME is not None:
             return _DCC_NAME
         _DCC_NAME = _detect_dcc()
+        if dcc_state is not None:
+            dcc_state['name'] = _DCC_NAME
         return _DCC_NAME
 
 
 def _detect_dcc():
     # type: () -> str
     """探测当前 DCC 环境。"""
+    forced = os.environ.get('MAXAGENT_FORCE_DCC', '').strip().lower()
+    if forced in ('3dsmax', 'max'):
+        return '3dsmax'
+    if forced in ('maya',):
+        return 'maya'
+
     try:
         import pymxs  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
         if pymxs is not None:
@@ -65,13 +98,25 @@ def get_adapter():
 
     unknown 环境下返回一个占位适配器，所有方法都会抛出 RuntimeError。
     """
+    # 优先从 sys.modules 共享状态读取，确保热重载后旧函数闭包与新模块
+    # 对象始终看到同一份运行时状态
+    adapter_state = sys.modules.get(_ADAPTER_STATE_KEY)
+    if adapter_state is not None:
+        adapter = adapter_state.get('adapter')
+        if adapter is not None:
+            return adapter
     global _ADAPTER  # pylint: disable=global-statement
     if _ADAPTER is not None:
         return _ADAPTER
+    # current_dcc 内部也会竞争同一把 _LOCK，必须在持锁前完成探测
+    dcc = current_dcc()
     with _LOCK:
+        if adapter_state is not None:
+            adapter = adapter_state.get('adapter')
+            if adapter is not None:
+                return adapter
         if _ADAPTER is not None:
             return _ADAPTER
-        dcc = current_dcc()
         if dcc == '3dsmax':
             from .max_adapter import MaxAdapter
             _ADAPTER = MaxAdapter()
@@ -116,6 +161,8 @@ def get_adapter():
                     self._raise()
 
             _ADAPTER = UnknownAdapter()
+        if adapter_state is not None:
+            adapter_state['adapter'] = _ADAPTER
         return _ADAPTER
 
 

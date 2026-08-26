@@ -68,7 +68,8 @@ def lookup_max_knowledge(topic, sub_key=None):
     :param sub_key: 可选子键，如 'box' / 'bend'
     :returns: 知识条目字典（结构见 max_knowledge.lookup_topic）
     """
-    result = lookup_topic(topic, sub_key=sub_key)
+    from ...agent.knowledge.dcc import get_max_knowledge
+    result = get_max_knowledge().lookup_topic(topic, sub_key=sub_key)
     if result.get('found'):
         logger.info(
             'lookup_max_knowledge hit: topic=%s sub_key=%s',
@@ -104,7 +105,8 @@ def lookup_max_knowledge(topic, sub_key=None):
 def list_max_knowledge_topics():
     # type: () -> Dict[str, Any]
     """返回所有可查的知识主题。"""
-    topics = list_topics()
+    from ...agent.knowledge.dcc import get_max_knowledge
+    topics = get_max_knowledge().list_topics()
     return {
         'count': len(topics),
         'topics': topics,
@@ -159,7 +161,8 @@ __all__ = [
 def lookup_maya_knowledge(topic, sub_key=None):
     # type: (str, Optional[str]) -> Dict[str, Any]
     """按主题查询 Maya 知识库（底层复用 DCC 分发）。"""
-    result = lookup_topic(topic, sub_key=sub_key)
+    from ...agent.knowledge.dcc import get_maya_knowledge
+    result = get_maya_knowledge().lookup_topic(topic, sub_key=sub_key)
     return result
 
 
@@ -182,7 +185,8 @@ def lookup_maya_knowledge(topic, sub_key=None):
 def list_maya_knowledge_topics():
     # type: () -> Dict[str, Any]
     """返回所有可查的 Maya 知识主题。"""
-    topics = list_topics()
+    from ...agent.knowledge.dcc import get_maya_knowledge
+    topics = get_maya_knowledge().list_topics()
     return {
         'count': len(topics),
         'topics': topics,

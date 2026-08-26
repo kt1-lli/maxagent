@@ -136,8 +136,17 @@ def _copy_pkg_snapshot(dest_pkg_dir: Path, target: str) -> None:
 
     def _collect_rel(base: Path) -> None:
         for f in base.rglob('*'):
-            if f.is_file():
-                keep_rel.add(str(f.relative_to(SOURCE_PKG_DIR).as_posix()))
+            if not f.is_file():
+                continue
+            rel = str(f.relative_to(SOURCE_PKG_DIR).as_posix())
+            # 排除 Python 字节码与隐藏文件
+            if '/__pycache__/' in rel or rel.startswith('__pycache__/'):
+                continue
+            if f.name.endswith('.pyc') or f.name.endswith('.pyo'):
+                continue
+            if f.name.startswith('.') and f.name != '.gitkeep':
+                continue
+            keep_rel.add(rel)
 
     _collect_rel(SOURCE_PKG_DIR)
 
@@ -184,6 +193,17 @@ def _copy_pkg_snapshot(dest_pkg_dir: Path, target: str) -> None:
 
     # 用选择性 copy 而非整目录 copy，确保过滤生效
     _selective_copytree(SOURCE_PKG_DIR, dest_pkg_dir, keep_rel, _ignore)
+
+    # 再次清理：复制过程中若触发任何 import，可能生成新的 __pycache__
+    for pyc_dir in dest_pkg_dir.rglob('__pycache__'):
+        if pyc_dir.is_dir():
+            shutil.rmtree(pyc_dir)
+    for pyc_file in dest_pkg_dir.rglob('*.pyc'):
+        if pyc_file.is_file():
+            pyc_file.unlink()
+    for pyo_file in dest_pkg_dir.rglob('*.pyo'):
+        if pyo_file.is_file():
+            pyo_file.unlink()
 
 
 def _selective_copytree(src_root: Path, dst_root: Path, keep_rel: Set[str], ignore):

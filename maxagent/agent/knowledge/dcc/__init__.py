@@ -41,11 +41,14 @@ class _TopicMapAdapter:
         return self._knowledge().lookup_topic(topic, sub_key=sub_key)
 
 
-def get_dcc_knowledge():
-    # type: () -> "DCCKnowledge"
-    """返回当前运行 DCC 对应的知识库对象。"""
-    dcc = current_dcc()
-    if dcc == '3dsmax':
+def get_dcc_knowledge(dcc=None):
+    # type: (Optional[str]) -> "DCCKnowledge"
+    """返回指定 DCC 对应的知识库对象。
+
+    :param dcc: DCC 标识名，None 时使用 ``current_dcc()`` 自动探测。
+    """
+    dcc = (dcc or '').strip().lower() or current_dcc()
+    if dcc in ('3dsmax', 'max'):
         from .max import MAX_KNOWLEDGE
         return MAX_KNOWLEDGE
     if dcc == 'maya':
@@ -59,6 +62,20 @@ def get_dcc_knowledge():
         basic_knowledge=COMMON_KNOWLEDGE,
         topics={},
     )
+
+
+def get_max_knowledge():
+    # type: () -> "DCCKnowledge"
+    """返回 3ds Max 知识库（兼容旧接口）。"""
+    from .max import MAX_KNOWLEDGE
+    return MAX_KNOWLEDGE
+
+
+def get_maya_knowledge():
+    # type: () -> "DCCKnowledge"
+    """返回 Maya 知识库。"""
+    from .maya import MAYA_KNOWLEDGE
+    return MAYA_KNOWLEDGE
 
 
 # 兼容旧接口：lookup_max_knowledge 现在自动按 DCC 分发

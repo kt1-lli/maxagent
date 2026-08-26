@@ -2465,6 +2465,275 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
 
 
 # ---------------------------------------------------------------------- #
+# DCC 感知的统一停靠入口
+# ---------------------------------------------------------------------- #
+
+# 模块级单例引用：避免 dock 面板 / 停靠包装层被 Python GC 回收
+_DOCK_WIDGET = None  # type: Optional[MaxAgentDockWidget]
+_DOCK_HOLDER = None  # type: Optional[Any]
+
+
+def get_or_create_dock(force=False):
+    # type: (bool) -> Optional[Any]
+    """显示并返回 MaxAgent 主面板，根据当前 DCC 自动选择停靠方式。
+
+    Max 环境：用 ``QDockWidget`` 嵌入到 Max 主窗口（保留原有几何恢复逻辑）。
+    Maya 环境：用 ``cmds.workspaceControl()`` 创建可停靠面板，并把
+    MaxAgentDockWidget 作为其内容 widget。
+    非 DCC 环境：作为独立顶层窗口显示。
+
+    :param force: 是否忽略 ``auto_show_on_startup`` 配置强制显示
+    :returns: 包装后的停靠/窗口对象（Max 返回 QDockWidget，Maya 返回
+        workspaceControl 名，独立窗口返回 MaxAgentDockWidget 自身）
+    """
+    # pylint: disable=global-statement,import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER
+
+    from ..config import ConfigManager
+    from ..dcc.runtime import current_dcc
+    from ..logger import get_logger
+    from ..tools import load_all_tools
+    from .emoji_compat import install_app_font_fallback
+
+    logger = get_logger(__name__)
+
+    # 1. 加载工具（幂等）
+    try:
+        load_all_tools()
+    except Exception:  # pylint: disable=broad-except
+        logger.exception('get_or_create_dock 加载工具失败')
+
+    # 2. 配置门控
+    if not force:
+        try:
+            cfg = ConfigManager()
+            if not bool(cfg.config.auto_show_on_startup):
+                logger.info(
+                    'auto_show_on_startup=False，跳过自动显示；'
+                    '可调用 get_or_create_dock(force=True) 手动显示'
+                )
+                return None
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    # 3. 复用已存在实例
+    if _DOCK_WIDGET is not None:
+        try:
+            if _DOCK_HOLDER is not None:
+                _DOCK_HOLDER.show()
+                _DOCK_HOLDER.raise_()
+            else:
+                _DOCK_WIDGET.show()
+                _DOCK_WIDGET.raise_()
+            return _DOCK_HOLDER or _DOCK_WIDGET
+        except Exception:  # pylint: disable=broad-except
+            _DOCK_WIDGET = None
+            _DOCK_HOLDER = None
+
+    # 字体回退族必须在创建业务 widget 前安装
+    try:
+        install_app_font_fallback()
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('install_app_font_fallback failed', exc_info=True)
+
+    dcc = current_dcc()
+    config = ConfigManager()
+
+    if dcc == '3dsmax':
+        return _create_max_dock(config)
+    if dcc == 'maya':
+        return _create_maya_dock(config)
+    return _create_standalone_window(config)
+
+
+def _create_max_dock(config):
+    # type: (ConfigManager) -> Any
+    """Max 环境：QDockWidget + addDockWidget，复用原 startup.py 逻辑。"""
+    # pylint: disable=import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    from ..qt_compat import QtCore
+    from ..qt_compat import QtWidgets
+    from ..qt_compat import get_max_main_window
+    from ..startup import (
+        _connect_qdock_save_hooks,
+        _restore_main_window_state,
+        _restore_qdock_geometry,
+    )
+
+    main_win = get_max_main_window()
+    dock_widget = MaxAgentDockWidget(config_manager=config)
+    ui_state = dock_widget.get_ui_state()
+
+    if main_win is not None:
+        qdock = QtWidgets.QDockWidget('MaxAgent', parent=main_win)
+        qdock.setObjectName('MaxAgentQDockWidget')
+        qdock.setWidget(dock_widget)
+        qdock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea,
+        )
+
+        want_floating = bool(getattr(ui_state, 'floating', True))
+        if not (ui_state.geometry_b64 or '').strip():
+            want_floating = True
+
+        if want_floating:
+            try:
+                qdock.setWindowFlags(
+                    QtCore.Qt.Tool
+                    | QtCore.Qt.WindowTitleHint
+                    | QtCore.Qt.WindowCloseButtonHint,
+                )
+            except Exception:  # pylint: disable=broad-except
+                pass
+            qdock.setFloating(True)
+            restored = _restore_qdock_geometry(qdock, ui_state)
+            if not restored:
+                qdock.resize(440, 760)
+                try:
+                    mg = main_win.geometry()
+                    cx = mg.x() + mg.width() // 2 - 220
+                    cy = mg.y() + mg.height() // 2 - 380
+                    qdock.move(max(cx, 50), max(cy, 50))
+                except Exception:  # pylint: disable=broad-except
+                    pass
+        else:
+            try:
+                area = QtCore.Qt.DockWidgetArea(int(ui_state.dock_area or 2))
+            except Exception:  # pylint: disable=broad-except
+                area = QtCore.Qt.RightDockWidgetArea
+            try:
+                main_win.addDockWidget(area, qdock)
+            except Exception:  # pylint: disable=broad-except
+                qdock.setFloating(True)
+            _restore_qdock_geometry(qdock, ui_state)
+            _restore_main_window_state(main_win, ui_state)
+
+        _connect_qdock_save_hooks(qdock, dock_widget, main_win=main_win)
+        qdock.show()
+        qdock.raise_()
+    else:
+        # 即使探测为 Max 也拿不到主窗口时，退化为独立窗口
+        dock_widget = MaxAgentDockWidget(config_manager=config)
+        _restore_standalone_geometry(dock_widget, dock_widget.get_ui_state())
+        dock_widget.show()
+
+    _DOCK_WIDGET = dock_widget
+    _DOCK_HOLDER = qdock if main_win is not None else None
+    return _DOCK_HOLDER or _DOCK_WIDGET
+
+
+def _create_maya_dock(config):
+    # type: (ConfigManager) -> str
+    """Maya 环境：使用 workspaceControl 创建可停靠面板。"""
+    # pylint: disable=import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    from ..qt_compat import QtWidgets
+    from ..qt_compat import get_shiboken_wrap_instance
+
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    dock_widget = MaxAgentDockWidget(config_manager=config)
+    ui_state = dock_widget.get_ui_state()
+
+    control_name = 'MaxAgentWorkspaceControl'
+    label = 'MaxAgent · AI 助手'
+
+    # 已存在则先关闭再重建，避免重复创建导致句柄冲突
+    if cmds.workspaceControl(control_name, exists=True):
+        try:
+            cmds.deleteUI(control_name, control=True)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    has_geometry = bool((ui_state.geometry_b64 or '').strip())
+    create_kwargs = {
+        'label': label,
+        'dockToControl': ['MayaWindow', 'right'],
+        'retain': False,
+        'loadImmediately': True,
+        'visible': True,
+    }  # type: dict
+    if not has_geometry:
+        create_kwargs['initialWidth'] = 440
+        create_kwargs['initialHeight'] = 760
+
+    try:
+        cmds.workspaceControl(control_name, **create_kwargs)
+    except Exception:  # pylint: disable=broad-except
+        # 某些 Maya 版本对初始尺寸参数支持不同，回退最小参数创建
+        cmds.workspaceControl(
+            control_name,
+            label=label,
+            dockToControl=['MayaWindow', 'right'],
+            retain=False,
+            loadImmediately=True,
+            visible=True,
+        )
+
+    # 把 QWidget 附加到 workspaceControl
+    wrap_instance = get_shiboken_wrap_instance()
+    if wrap_instance is not None:
+        try:
+            from maya import OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+            ptr = omui.MQtUtil.findControl(control_name)
+        except Exception:  # pylint: disable=broad-except
+            ptr = None
+
+        if ptr is not None:
+            try:
+                control_widget = wrap_instance(int(ptr), QtWidgets.QWidget)
+                # 清空旧布局（Maya 默认 workspaceControl 可能已有占位 layout）
+                old_layout = control_widget.layout()
+                if old_layout is not None:
+                    while old_layout.count():
+                        item = old_layout.takeAt(0)
+                        widget = item.widget()
+                        if widget is not None:
+                            widget.setParent(None)
+                layout = QtWidgets.QVBoxLayout(control_widget)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(0)
+                layout.addWidget(dock_widget)
+                control_widget.setWindowTitle(label)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception(
+                    '把 MaxAgentDockWidget 附加到 Maya workspaceControl 失败'
+                )
+        else:
+            logger.warning(
+                '未找到 workspaceControl %s 的 QWidget 句柄', control_name
+            )
+    else:
+        logger.warning('当前环境未找到 shiboken，无法把 Widget 嵌入 Maya')
+
+    try:
+        cmds.workspaceControl(control_name, edit=True, visible=True)
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+    _DOCK_WIDGET = dock_widget
+    _DOCK_HOLDER = control_name
+    return control_name
+
+
+def _create_standalone_window(config):
+    # type: (ConfigManager) -> MaxAgentDockWidget
+    """非 DCC 环境：作为普通顶层窗口显示。"""
+    # pylint: disable=import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    from ..startup import _restore_standalone_geometry
+
+    dock_widget = MaxAgentDockWidget(config_manager=config)
+    ui_state = dock_widget.get_ui_state()
+    _restore_standalone_geometry(dock_widget, ui_state)
+    dock_widget.show()
+    dock_widget.raise_()
+    _DOCK_WIDGET = dock_widget
+    _DOCK_HOLDER = None
+    return dock_widget
+
+
+# ---------------------------------------------------------------------- #
 # 输入框：Enter 发送 / Shift+Enter 换行
 # ---------------------------------------------------------------------- #
 class _SmartInput(QtWidgets.QPlainTextEdit):

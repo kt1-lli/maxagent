@@ -45,13 +45,8 @@ class MayaAdapter(DCCAdapter):
         # type: () -> Any
         """返回 Maya 主窗口 QWidget。"""
         # pylint: disable=import-outside-toplevel
-        from ..qt_compat import QtWidgets
-        from maya import OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
-        from shiboken2 import wrapInstance  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
-        ptr = omui.MQtUtil.mainWindow()
-        if ptr is None:
-            return None
-        return wrapInstance(int(ptr), QtWidgets.QWidget)
+        from ..qt_compat import get_maya_main_window
+        return get_maya_main_window()
 
     def run_on_main(self, fn, *args, **kwargs):
         # type: (Callable[..., Any], *Any, **Any) -> Any
