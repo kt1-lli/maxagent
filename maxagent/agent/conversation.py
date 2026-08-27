@@ -62,16 +62,16 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
     """构造带"员工身份"注入的默认 system prompt。
 
     设计模型（岗位 / 员工分离）：
-    - **岗位** = MaxAgent，写死在 prompt 里，代表"3ds Max 智能助手"
+    - **岗位** = MaxAgent，写死在 prompt 里，代表"DCC 智能助手"
       这套职责与工具能力。岗位职责、身份铁律、工作原则一字不改。
     - **员工** = 用户在「助手形象」Tab 自定义的对外名字。仅决定
       LLM 在用户面前自报家门时使用的称呼。
 
     对外口径：
     - 当 employee_name == 'MaxAgent'（默认）：行为完全等同旧版本，
-      回答 "我是 MaxAgent，3ds Max 的智能助手插件…"
+      回答 "我是 MaxAgent，DCC 智能助手插件…"
     - 当 employee_name == '尼娜'（用户改名后）：回答
-      "我是 尼娜，3ds Max 的智能助手插件…"，**绝不主动说出
+      "我是 尼娜，DCC 智能助手插件…"，**绝不主动说出
       'MaxAgent' 这个内部代号**——它只是岗位的内部叫法。
 
     越狱守卫：
@@ -143,18 +143,24 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         env_desc = 'Maya 环境中'
         script_tool = 'run_python'
         query_tool = 'list_maya_objects / get_maya_object_info'
+        query_selected_tool = 'list_maya_objects(selected_only=True)'
         unit_hint = 'Maya current linear unit'
         worldview_tag = 'Maya 世界观速查'
         l2_tools = 'list_maya_knowledge_topics / lookup_maya_knowledge'
         probe_api = 'cmds.objExists / cmds.objectType / cmds.nodeType'
+        object_info_tool = 'get_maya_object_info'
+        list_object_tool = 'list_maya_objects'
     else:
         env_desc = '3ds Max 环境中'
         script_tool = 'run_maxscript / run_python'
         query_tool = 'list_objects / get_object_info'
+        query_selected_tool = 'list_scene_objects(selected_only=True)'
         unit_hint = 'Max system unit'
         worldview_tag = '3ds Max 世界观速查'
         l2_tools = 'list_max_knowledge_topics / lookup_max_knowledge'
         probe_api = 'isProperty / classOf / getPropNames'
+        object_info_tool = 'get_object_info'
+        list_object_tool = 'list_scene_objects'
 
     body = (
         '你是 DCC 软件内嵌的智能助手 MaxAgent，当前运行在 ' + env_desc + '。'
@@ -168,9 +174,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '2. 如果用户的需求复杂，预定义工具无法直接满足，再使用 '
         + script_tool + ' 脚本工具（这两个是标准工具，'
         '受安全扫描与执行前确认约束）。\n'
-        '3. 操作前若需要了解场景，先调用 ' + query_tool + ' 等查询工具；'
-        'Maya 中按名称查找对象请用 get_maya_object_info，'
-        'Max 中可用 list_objects / find_objects_by_name。\n'
+        '3. 操作前若需要了解场景，先调用 ' + query_tool + ' 等查询工具。\n'
         '4. 每次只调用必要的工具，避免无意义的多余调用。\n'
         '5. 工具调用失败时，根据返回的错误信息修正参数后重试，'
         '最多重试 2 次仍失败时告知用户具体原因。\n'
@@ -216,12 +220,12 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '   - 复制/分布动词：「沿 / 排成 / 排列 / 阵列 / 围绕 / '
         '环绕 / 分布在 / 等距」\n'
         '   - 命中以上任一关键词时，工作流必须是：\n'
-        '     ① 查询参考对象（list_scene_objects / get_object_info '
-        '获得参考对象的 position / bbox / pivot）\n'
+        '     ① 查询参考对象（' + query_tool + ' 获得参考对象的 '
+        'position / bbox / pivot）\n'
         '     ② 创建新对象（create_*）\n'
-        '     ③ **立即**调用移动/旋转/对齐工具或 run_python 计算并'
-        '设置正确 transform\n'
-        '     ④ 用 get_object_info 复核结果是否符合用户描述\n'
+        '     ③ **立即**调用移动/旋转/对齐工具或 ' + script_tool +
+        ' 计算并设置正确 transform\n'
+        '     ④ 用 ' + object_info_tool + ' 复核结果是否符合用户描述\n'
         '   - **绝对禁止**：调完 create_* 就回复"已创建"——这是把'
         '工具创建当作终点的典型错误，对象会孤零零留在世界原点。\n'
         '12. **参考对象消歧**：上述工作流第 ① 步若发现场景中存在多个'
@@ -231,10 +235,10 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '"是哪一个？"，**严禁**自行猜测随便挑一个执行\n'
         '   - 0 个候选 → 告知用户参考对象不存在，请用户先创建或换措辞\n'
         '13. **结果自校验**：任何"涉及位置/尺寸/数量"的多步任务，最后'
-        '一步必须用 get_object_info / list_scene_objects 复核关键属性，'
-        '并在最终回复里用一句话陈述事实（如"杯子已放置在 Table01 顶面'
-        '中心 (12.3, 45.6, 78.9)"），让用户能立刻判断对错。**禁止**'
-        '只回"已完成"而不报告关键数值。\n'
+        '一步必须用 ' + object_info_tool + ' / ' + list_object_tool +
+        ' 复核关键属性，并在最终回复里用一句话陈述事实（如"杯子已放置在 '
+        'Table01 顶面中心 (12.3, 45.6, 78.9)"），让用户能立刻判断对错。'
+        '**禁止**只回"已完成"而不报告关键数值。\n'
         '14. **规则边界澄清**：第 11/12/13 条仅在用户输入命中"空间'
         '动词/介词"时生效；若用户**只说"创建一个球"**且无任何位置'
         '词，依然遵守第 8/9/10 条（字面理解 / 参数最小化 / 完成即停），'
@@ -289,8 +293,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '31. 每个工具描述中的 "前置条件" / "调用示例" / "注意事项" / '
         '"返回值" 与参数说明具有同等优先级，调用前必须完整阅读。\n'
         '32. 调用需要目标对象的工具（如 set_keyframe / move_object）前，'
-        '若不确定对象存在，先用 list_scene_objects / find_objects_by_name '
-        '确认。\n'
+        '若不确定对象存在，先用 ' + query_tool + ' 确认。\n'
     )
     dcc_knowledge = (
         get_dcc_knowledge() if force_dcc is None
@@ -298,7 +301,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
     )
     return (
         body + '\n' + dcc_knowledge.get_basic_knowledge() + '\n'
-        + get_few_shot_examples() + '\n' + get_coding_rules()
+        + get_few_shot_examples(dcc_name) + '\n' + get_coding_rules(dcc_name)
     )
 
 
@@ -724,14 +727,17 @@ class Conversation(object):
             return False
         dcc_name = current_dcc()
         dcc_label = 'Maya' if dcc_name == 'maya' else '3ds Max'
+        if dcc_name == 'maya':
+            recovery_tools = 'list_maya_objects / get_maya_object_info'
+        else:
+            recovery_tools = 'list_scene_objects / get_object_info'
         notice = (
             '__maxagent_restored__\n'
             '⚠️ 这是从历史会话恢复的对话。注意：\n'
             '1. 你之前的对话内容（包括工具调用）都在历史里，但 ' + dcc_label +
             ' 场景可能已被重启或人工修改过。\n'
             '2. 当用户的新需求依赖之前创建的对象时，请先调用 '
-            'list_scene_objects 或 get_object_info 验证对象是否仍存在，'
-            '不要直接假设场景未变。\n'
+            + recovery_tools + ' 验证对象是否仍存在，不要直接假设场景未变。\n'
             '3. 历史里的 tool_call_id 是上次会话的引用，仅作上下文参考，'
             '不要尝试"撤销"或"继续"那些已完成的操作。\n'
         )

@@ -341,9 +341,15 @@ class BridgeServer(object):
         methods = [BridgeMethod.EXECUTE_PYTHON, BridgeMethod.CAPABILITIES]
         if self._dispatch_enabled:
             methods.append(BridgeMethod.DISPATCH_TASK)
+        dcc_value = (
+            'Maya'
+            if str(getattr(self._main_thread_runner, '__module__', '') or '').startswith('maya')
+            or str(type(self._main_thread_runner).__name__).lower().startswith('maya')
+            else '3dsMax'
+        )
         return make_response(request_id, True, data={
             'protocol_version': BRIDGE_PROTOCOL_VERSION,
-            'dcc': '3dsMax',
+            'dcc': dcc_value,
             'methods': methods,
             'dispatch_max_rounds': self._dispatch_max_rounds,
             'dispatch_timeout_sec': self._dispatch_timeout_sec,

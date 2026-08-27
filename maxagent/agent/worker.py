@@ -2,23 +2,23 @@
 # -*- coding: utf-8 -*-
 """Agent 工作线程。
 
-线程模型：
-- UI 主线程: Qt 主线程，也是 Max 主线程。pymxs 调用必须在这里执行。
-- LLM 子线程: 跑在 QThread 里，负责长耗时的 LLM HTTP 调用。
+    线程模型：
+    - UI 主线程: Qt 主线程，也是 DCC 主线程。DCC API 调用必须在这里执行。
+    - LLM 子线程: 跑在 QThread 里，负责长耗时的 LLM HTTP 调用。
 
-工具调用流程：
-1. 用户输入 → 主线程把消息塞进 Conversation → 启动 worker
-2. Worker 在子线程发起 LLM 调用（流式）
-3. LLM 流式返回时，通过信号 chunk_received 把 token 推回主线程显示
-4. 如果 LLM 决定调用工具，子线程通过 tool_call_requested 信号请求主线程执行
-5. 主线程同步执行工具（pymxs），把结果通过 tool_call_completed 写回 worker
-6. Worker 拿到结果继续调 LLM，直到模型给出最终回复
+    工具调用流程：
+    1. 用户输入 → 主线程把消息塞进 Conversation → 启动 worker
+    2. Worker 在子线程发起 LLM 调用（流式）
+    3. LLM 流式返回时，通过信号 chunk_received 把 token 推回主线程显示
+    4. 如果 LLM 决定调用工具，子线程通过 tool_call_requested 信号请求主线程执行
+    5. 主线程同步执行工具（DCC API），把结果通过 tool_call_completed 写回 worker
+    6. Worker 拿到结果继续调 LLM，直到模型给出最终回复
 
-为什么不直接在子线程里跑 dispatcher？
-→ pymxs 严禁跨线程调用，所有 Max API 必须在主线程执行，否则会崩溃。
+    为什么不直接在子线程里跑 dispatcher？
+    → DCC API 严禁跨线程调用，所有场景操作必须在主线程执行，否则会崩溃。
 
-线程间同步用 QMetaObject.invokeMethod + BlockingQueuedConnection，简单可靠。
-"""
+    线程间同步用 QMetaObject.invokeMethod + BlockingQueuedConnection，简单可靠。
+    """
 
 from __future__ import absolute_import
 from __future__ import print_function
@@ -1482,26 +1482,7 @@ class AgentWorker(QObject):
             if not restraint_hinted:
                 restraint_hinted = True
                 self._conv.add_system_note(
-                    '✅ 上一批工具已执行完毕。现在请按以下两种情形之一处理：\n'
-                    '【情形 A·字面请求】用户原始请求只是"创建一个 X"或'
-                    '类似无空间词的简单创建：\n'
-                    '  → **立即**给出简短的中文确认回复（如"已为你创建'
-                    '一个球"）并结束本轮；\n'
-                    '  → **不要**追加灯光、相机、材质、地面、修改器等'
-                    '未被显式要求的操作。\n'
-                    '【情形 B·空间请求】用户原始请求包含位置/对齐/堆叠/'
-                    '排列等空间动词（如"放到桌子上"、"沿 X 轴排列"、'
-                    '"和 A 对齐"）：\n'
-                    '  → 创建只是第一步，**禁止**直接回"已完成"！\n'
-                    '  → 必须继续：① 用 get_object_info 拿参考对象的'
-                    '位置/包围盒；② 计算并设置新对象的 transform；'
-                    '③ 用 get_object_info 复核结果；\n'
-                    '  → 最终回复必须报告关键数值（如"杯子已放置在 '
-                    'Table01 顶面中心 (12.3, 45.6, 78.9)"），让用户'
-                    '能立刻判断对错。\n'
-                    '请先判断当前任务属于 A 还是 B，再决定是收工还是'
-                    '继续动作。如果属于 B 但发现参考对象有多个候选，'
-                    '先停手询问用户而不是乱猜。',
+                    self._get_restraint_hint(),
                 )
                 logger.info(
                     'restraint hint injected after tool batch '
@@ -1561,7 +1542,7 @@ class AgentWorker(QObject):
             except Exception:  # pylint: disable=broad-except
                 pass
 
-        # 走主线程注入的同步执行器（pymxs 必须在主线程）
+        # 走主线程注入的同步执行器（DCC API 必须在主线程）
         if self._sync_tool_runner is None:
             err = '未注入 sync_tool_runner，无法在主线程执行工具'
             self._conv.add_tool_result(
@@ -1663,6 +1644,39 @@ class AgentWorker(QObject):
     # ------------------------------------------------------------------ #
     # 自动状态复核
     # ------------------------------------------------------------------ #
+    def _get_restraint_hint(self):
+        # type: () -> str
+        """根据当前 DCC 生成工具执行后的 restraint hint 文本。"""
+        from .conversation import current_dcc
+
+        if current_dcc() == 'maya':
+            info_tool = 'get_maya_object_info'
+        else:
+            info_tool = 'get_object_info'
+
+        return (
+            '✅ 上一批工具已执行完毕。现在请按以下两种情形之一处理：\n'
+            '【情形 A·字面请求】用户原始请求只是"创建一个 X"或'
+            '类似无空间词的简单创建：\n'
+            '  → **立即**给出简短的中文确认回复（如"已为你创建'
+            '一个球"）并结束本轮；\n'
+            '  → **不要**追加灯光、相机、材质、地面、修改器等'
+            '未被显式要求的操作。\n'
+            '【情形 B·空间请求】用户原始请求包含位置/对齐/堆叠/'
+            '排列等空间动词（如"放到桌子上"、"沿 X 轴排列"、'
+            '"和 A 对齐"）：\n'
+            '  → 创建只是第一步，**禁止**直接回"已完成"！\n'
+            '  → 必须继续：① 用 ' + info_tool + ' 拿参考对象的'
+            '位置/包围盒；② 计算并设置新对象的 transform；'
+            '③ 用 ' + info_tool + ' 复核结果；\n'
+            '  → 最终回复必须报告关键数值（如"杯子已放置在 '
+            'Table01 顶面中心 (12.3, 45.6, 78.9)"），让用户'
+            '能立刻判断对错。\n'
+            '请先判断当前任务属于 A 还是 B，再决定是收工还是'
+            '继续动作。如果属于 B 但发现参考对象有多个候选，'
+            '先停手询问用户而不是乱猜。'
+        )
+
     def _auto_verify_tool_result(self, tool_name, args, result):
         # type: (str, Dict[str, Any], Any) -> Optional[Dict[str, Any]]
         """对修改类工具执行后查询真实状态进行对比。
@@ -1703,8 +1717,14 @@ class AgentWorker(QObject):
 
         try:
             # 通过主线程执行器查询对象真实状态
+            from .conversation import current_dcc
+            info_tool = (
+                'get_maya_object_info'
+                if current_dcc() == 'maya'
+                else 'get_object_info'
+            )
             verify_result = self._sync_tool_runner(
-                'get_object_info',
+                info_tool,
                 {'name': target_name},
             )
         except Exception as exc:  # pylint: disable=broad-except
@@ -1894,7 +1914,7 @@ class AgentWorker(QObject):
 
         # 构造摘要提示词：把当前历史作为输入，要求模型输出纯文本摘要
         summary_instruction = (
-            '你正在为一个 3ds Max AI 助手压缩对话历史。请阅读以下完整对话，'
+            '你正在为一个 DCC AI 助手压缩对话历史。请阅读以下完整对话，'
             '输出一段 200~400 字的中文摘要，要求：\n'
             '1. 保留用户的核心目标和已确立的偏好；\n'
             '2. 保留已成功创建/修改的关键场景对象（名称、关键属性）；\n'
@@ -2258,7 +2278,7 @@ class AgentWorker(QObject):
             )
         )
         system_msg = (
-            '你是一名会话分析助手。请基于以下本轮 3ds Max AI 助手与'
+            '你是一名会话分析助手。请基于以下本轮 DCC AI 助手与'
             '用户的交互信息，生成一段结构化的反思建议，用于决定是否'
             '更新长期记忆。\n'
             '请严格按以下 JSON 格式输出（不要包含 markdown 代码块标记）：\n'

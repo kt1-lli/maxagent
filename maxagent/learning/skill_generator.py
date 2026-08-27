@@ -125,7 +125,8 @@ def generate_skill_draft(actions, user_input='', session_id=''):
         '\n'
         + '\n'.join(steps)
         + '\n\n'
-        '执行完成后用 get_object_info / list_scene_objects 复核关键结果。'
+        '执行完成后用场景查询工具复核关键结果（Max 用 get_object_info / '
+        'list_scene_objects，Maya 用 get_maya_object_info / list_maya_objects）。'
     )
 
     # 生成 impl.py 代码草稿：基于 MacroRecorder 的 Python 脚本映射

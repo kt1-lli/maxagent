@@ -9,6 +9,7 @@
 规则来源：
 - maxagent/docs/maxscript_rules.md
 - maxagent/docs/python_pymxs_rules.md
+- maxagent/docs/python_maya_rules.md
 
 设计原则：
 1. 只放对 LLM 推理结果有约束力的"硬规则"，不放教程/解释/速查表。
@@ -20,16 +21,10 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 
-# 注：以下规则被嵌入到 system prompt，**禁止**随意扩写。
-# 每加一条都意味着每轮 LLM 调用都会多消耗 tokens。
-# 真正面向 LLM 推理结果的"硬约束"才放到这里；
-# 教程性、解释性内容请放到 docs/ 下的完整规范文件。
-
-CODING_RULES = """\
-==============================================================
-🚨 代码生成硬性规则（强制 - 违反将被判定为错误回答）🚨
-使用 run_maxscript / run_python 工具时，必须 100% 遵守以下规则。
-==============================================================
+# ---------------------------------------------------------------------- #
+# MaxScript 规则（仅 3ds Max 环境）
+# ---------------------------------------------------------------------- #
+_MAXSCRIPT_RULES = """\
 
 【🔥🔥🔥 MaxScript if 控制流模板 - 最高优先级，必须按模板填空 🔥🔥🔥】
 
@@ -120,6 +115,59 @@ CODING_RULES = """\
 - 关键字参数：MaxScript 的 `key:value` 在 Python 里写成 `key=value`。
 - 可能失败的 pymxs 调用用 try/except 包裹，并对 None 返回值显式判空
   （如 `obj = rt.getNodeByName(name); if obj is None: ...`）。
+"""
+
+
+# ---------------------------------------------------------------------- #
+# Maya Python 规则（仅 Maya 环境）
+# ---------------------------------------------------------------------- #
+_MAYA_RULES = """\
+
+【🔴 反幻觉铁律 - 最高优先级】
+- 严禁捏造任何 API：函数名 / 方法名 / 属性名 / 参数签名 / 节点类型名 /
+  全局变量名都必须是 Maya 官方文档（cmds / OpenMaya / pymel）中真实存在的；
+  不确定就不写。
+- 不确定 API 是否存在时，必须按以下顺序处理：
+  1) 先用 run_python 跑最小验证脚本，例如 `cmds.objExists('foo')`、
+     `cmds.objectType('foo')`、`cmds.nodeType('foo')`；
+  2) 用 `cmds.ls(type=...)` / `cmds.listRelatives` / `cmds.listAttr` 反查；
+  3) 仍无法确认时，明确告知用户"不确定该 API 是否存在"，请用户确认或换方案，
+     绝对禁止写一段"看起来很合理"的代码当成解决方案交付。
+- 回答中只要出现"应该是"、"大概"、"我记得"、"通常"等不确定表述时，对应代码
+  必须改为先探测后执行，不允许直接返回。
+
+【通用 - 适用所有代码】
+- 所有注释必须使用中文。
+- 标识符（变量名 / 函数名）必须使用英文 snake_case；禁止中文命名。
+- 不要使用语言保留关键字作为标识符。
+
+【Maya Python 专用规则】
+- 必须 `import maya.cmds as cmds` 作为首选 API；需要更高性能或底层访问时
+  才使用 `import maya.api.OpenMaya as om`。
+- 节点/对象操作前先用 `cmds.objExists(name)` 确认存在，避免返回 None 或报错。
+- 查询属性优先使用 `cmds.getAttr(node.attr)`；设置属性使用
+  `cmds.setAttr(node.attr, value)`，注意类型匹配。
+- 获取对象 transform 信息使用 `cmds.xform(node, q=True, ws=True, t=True)`、
+  `cmds.xform(node, q=True, ws=True, ro=True)`、`cmds.xform(node, q=True, ws=True, s=True)`。
+- 获取包围盒使用 `cmds.exactWorldBoundingBox(node)`。
+- Maya 使用 0-based 索引（列表、数组）；MEL 传参时也是 0-based。
+- 遍历选择集使用 `cmds.ls(selection=True)` 或 `cmds.selected()`。
+- 创建节点使用 `cmds.createNode(type, name=...)` 或对应创建命令
+  （如 `cmds.polyCube`、`cmds.sphere`）。
+- 删除节点使用 `cmds.delete(node)`。
+- 重命名使用 `cmds.rename(old, new)`。
+- 父子关系使用 `cmds.parent(child, parent)` 和 `cmds.listRelatives`。
+- 属性连接使用 `cmds.connectAttr(src, dst)` / `cmds.listConnections`。
+- 关键帧动画使用 `cmds.setKeyframe(node, attribute=..., value=..., time=...)`。
+- 不确定节点类型时先用 `cmds.nodeType(node)` / `cmds.objectType(node)` 探测。
+- 错误处理：可能失败的 cmds 调用用 try/except 包裹，并对 None 返回值显式判空。
+"""
+
+
+# ---------------------------------------------------------------------- #
+# 两端共同的禁止项
+# ---------------------------------------------------------------------- #
+_COMMON_PROHIBITIONS = """\
 
 【两端共同的禁止项】
 - 禁止使用中文标识符。
@@ -134,15 +182,27 @@ CODING_RULES = """\
 """
 
 
-def get_coding_rules():
-    """返回硬规则字符串。
+def get_coding_rules(dcc_name=None):
+    # type: (str) -> str
+    """返回当前 DCC 的硬规则字符串。
 
-    供 ``conversation.DEFAULT_SYSTEM_PROMPT`` 拼接使用。
+    供 ``conversation.build_default_system_prompt`` 拼接使用。
     单独函数化是为方便单元测试和后续动态扩展。
 
+    :param dcc_name: 当前 DCC 标识，'maya' 或 '3dsmax'/None。
     :returns: 规则文本（多行字符串）
     """
-    return CODING_RULES
+    dcc_name = dcc_name or '3dsmax'
+    header = (
+        '==============================================================\n'
+        '🚨 代码生成硬性规则（强制 - 违反将被判定为错误回答）🚨\n'
+        '使用 {} 工具时，必须 100% 遵守以下规则。\n'
+        '=============================================================='
+    ).format('run_python' if dcc_name == 'maya' else 'run_maxscript / run_python')
+
+    if dcc_name == 'maya':
+        return header + _MAYA_RULES + _COMMON_PROHIBITIONS
+    return header + _MAXSCRIPT_RULES + _COMMON_PROHIBITIONS
 
 
 # ---------------------------------------------------------------------- #
@@ -226,3 +286,7 @@ def validate_maxscript_syntax(code):
         )
 
     return True, None
+
+# 保持旧测试兼容：此前部分测试直接 import CODING_RULES 常量。
+# 默认导出 3ds Max 规则（与重构前内容等价）。
+CODING_RULES = get_coding_rules('3dsmax')

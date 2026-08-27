@@ -15,9 +15,42 @@ from __future__ import print_function
 
 
 # ------------------------------------------------------------------ #
+# 按 DCC 生成工具名占位
+# ------------------------------------------------------------------ #
+def _tool_names(dcc_name):
+    # type: (str) -> dict
+    """返回当前 DCC 下的示例工具名。"""
+    if dcc_name == 'maya':
+        return {
+            'query': 'get_maya_object_info',
+            'list': 'list_maya_objects',
+            'script': 'run_python',
+            'list_selected': 'list_maya_objects(selected_only=True)',
+        }
+    return {
+        'query': 'get_object_info',
+        'list': 'list_scene_objects',
+        'script': 'run_python / run_maxscript',
+        'list_selected': 'list_scene_objects(selected_only=True)',
+    }
+
+
+# ------------------------------------------------------------------ #
 # 5 组 Few-Shot 示范（场景化、可验证）
 # ------------------------------------------------------------------ #
-FEW_SHOT_EXAMPLES = """\
+def get_few_shot_examples(dcc_name=None):
+    # type: (str) -> str
+    """返回当前 DCC 的 Few-Shot 示范文本。
+
+    供 ``conversation.build_default_system_prompt`` 拼接使用。
+
+    :param dcc_name: 当前 DCC 标识，'maya' 或 '3dsmax'/None。
+    :returns: 示范文本字符串
+    """
+    dcc_name = dcc_name or '3dsmax'
+    t = _tool_names(dcc_name)
+
+    return """\
 ==============================================================
 📚 示范案例：以下每组展示"场景 → ❌错误 → ✓正确"，供你参考行为边界。
 ==============================================================
@@ -36,24 +69,24 @@ FEW_SHOT_EXAMPLES = """\
    → 违反【📐 空间完成原则】第 11 条：create_* 只是起点，必须
    继续移动/对齐操作。
 ✓ 正确：
-   ① get_object_info("Box01") → 获取 bbox (min, max, center)
+   ① """ + t['query'] + """("Box01") → 获取 bbox (min, max, center)
    ② create_teapot(name="Cup01") → 创建杯子
    ③ 计算：cup.position = [box.center.x, box.center.y, box.max.z]
        （Box pivot 在底面，顶面 = max.z）
-   ④ get_object_info("Cup01") → 复核位置
+   ④ """ + t['query'] + """("Cup01") → 复核位置
    ⑤ 回复"杯子已放置在 Box01 顶面中心 (x, y, z)"
 
 【示范 3：API 幻觉 - 用户说"给这个球加红色材质"】
-场景：球名称未知，需先确认对象存在，再赋值 Standard 材质。
+场景：球名称未知，需先确认对象存在，再赋值材质。
 ❌ 错误：直接写 `obj.material.diffuse = color 255 0 0`，其中
-   `diffuse` 属性名错误（正确是 `diffuseColor`），且未确认球是否存在。
+   `diffuse` 属性名可能错误，且未确认球是否存在。
    → 违反【🚨 反幻觉铁律】。
 ✓ 正确：
-   ① list_scene_objects(pattern="*ball*") → 找到对象名
+   ① """ + t['list'] + """(pattern="*ball*") → 找到对象名
    ② 若唯一则继续；若多个则询问用户"是哪一个？"
    ③ create_standard_material(name="RedMtl", diffuse=[255, 0, 0])
    ④ assign_material(object_name="Sphere01", material_name="RedMtl")
-   ⑤ get_object_info("Sphere01") → 确认 material 字段已赋值
+   ⑤ """ + t['query'] + """("Sphere01") → 确认 material 字段已赋值
 
 【示范 4：过度联想 - 用户说"这盏灯太暗了"】
 场景：用户只表达了一个属性问题，没有要求其他操作。
@@ -61,9 +94,9 @@ FEW_SHOT_EXAMPLES = """\
    调了曝光值，还顺手给场景加了地面。
    → 违反【🎯 字面理解铁律】第 8 条：只解决用户明确说的问题。
 ✓ 正确：
-   ① get_object_info("Light01") → 查看当前 multiplier 值
+   ① """ + t['query'] + """("Light01") → 查看当前属性值
    ② set_light_properties(name="Light01", multiplier=2.0)
-   ③ get_object_info("Light01") → 确认 multiplier 已变为 2.0
+   ③ """ + t['query'] + """("Light01") → 确认 multiplier 已变为 2.0
    ④ 回复"Light01 亮度已从 1.0 调至 2.0"
 
 【示范 5：空间任务 - 用户说"让这几个盒子等距排成一排"】
@@ -72,25 +105,15 @@ FEW_SHOT_EXAMPLES = """\
    假设 selection 顺序就是视觉顺序，结果排列混乱且没复核。
    → 违反【📐 空间完成原则】第 13 条：必须复核结果。
 ✓ 正确：
-   ① list_scene_objects(selected_only=True) → 获取选中对象名列表
-   ② get_object_info 逐个查 bbox → 确认当前位置
+   ① """ + t['list_selected'] + """ → 获取选中对象名列表
+   ② """ + t['query'] + """ 逐个查 bbox → 确认当前位置
    ③ 计算等距目标位置（首末固定，中间插值）
-   ④ run_python / run_maxscript 执行重定位
-   ⑤ list_scene_objects(selected_only=True) 或 get_object_info
+   ④ """ + t['script'] + """ 执行重定位
+   ⑤ """ + t['list_selected'] + """ 或 """ + t['query'] + """
      复核每个对象的 position.x 是否符合预期
    ⑥ 回复"3 个盒子已沿 X 轴等距排列，间距 d=xx"
 ==============================================================
 """
 
 
-def get_few_shot_examples():
-    """返回 Few-Shot 示范文本。
-
-    供 ``conversation.build_default_system_prompt`` 拼接使用。
-
-    :returns: 示范文本字符串
-    """
-    return FEW_SHOT_EXAMPLES
-
-
-__all__ = ['FEW_SHOT_EXAMPLES', 'get_few_shot_examples']
+__all__ = ['get_few_shot_examples']
