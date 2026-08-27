@@ -31,6 +31,8 @@ from typing import Dict
 from typing import List
 from typing import Optional
 
+from ..dcc.runtime import current_dcc
+
 
 def build_scene_snapshot(sync_tool_runner):
     # type: (Callable[[str, Dict[str, Any]], Any]) -> Optional[Dict[str, Any]]
@@ -44,19 +46,29 @@ def build_scene_snapshot(sync_tool_runner):
     if sync_tool_runner is None:
         return None
 
+    dcc = current_dcc()
+    if dcc == 'maya':
+        list_tool = 'list_maya_objects'
+        list_args = {'object_type': '', 'limit': 30, 'detail': False}
+        sel_tool = 'get_maya_selection'
+        sel_args = {'detail': False}
+        time_tool = 'get_current_frame'
+        time_args = {}
+    else:
+        list_tool = 'list_objects'
+        list_args = {'super_class': '', 'limit': 30, 'detail': False}
+        sel_tool = 'get_selection'
+        sel_args = {'detail': False}
+        time_tool = 'get_time_info'
+        time_args = {}
+
     try:
         # 获取场景对象列表（限制前 30 个，避免 token 爆炸）
-        obj_result = sync_tool_runner(
-            'list_objects',
-            {'super_class': '', 'limit': 30, 'detail': False},
-        )
+        obj_result = sync_tool_runner(list_tool, list_args)
         # 获取当前选择集
-        sel_result = sync_tool_runner(
-            'get_selection',
-            {'detail': False},
-        )
+        sel_result = sync_tool_runner(sel_tool, sel_args)
         # 获取时间信息
-        time_result = sync_tool_runner('get_time_info', {})
+        time_result = sync_tool_runner(time_tool, time_args)
     except Exception:  # pylint: disable=broad-except
         return None
 

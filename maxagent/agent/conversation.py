@@ -142,7 +142,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
     if dcc_name == 'maya':
         env_desc = 'Maya 环境中'
         script_tool = 'run_python'
-        query_tool = 'list_scene_objects / get_object_info'
+        query_tool = 'list_maya_objects / get_maya_object_info'
         unit_hint = 'Maya current linear unit'
         worldview_tag = 'Maya 世界观速查'
         l2_tools = 'list_maya_knowledge_topics / lookup_maya_knowledge'
@@ -150,7 +150,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
     else:
         env_desc = '3ds Max 环境中'
         script_tool = 'run_maxscript / run_python'
-        query_tool = 'list_scene_objects / get_object_info'
+        query_tool = 'list_objects / get_object_info'
         unit_hint = 'Max system unit'
         worldview_tag = '3ds Max 世界观速查'
         l2_tools = 'list_max_knowledge_topics / lookup_max_knowledge'
@@ -168,7 +168,9 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '2. 如果用户的需求复杂，预定义工具无法直接满足，再使用 '
         + script_tool + ' 脚本工具（这两个是标准工具，'
         '受安全扫描与执行前确认约束）。\n'
-        '3. 操作前若需要了解场景，先调用 ' + query_tool + ' 等查询工具。\n'
+        '3. 操作前若需要了解场景，先调用 ' + query_tool + ' 等查询工具；'
+        'Maya 中按名称查找对象请用 get_maya_object_info，'
+        'Max 中可用 list_objects / find_objects_by_name。\n'
         '4. 每次只调用必要的工具，避免无意义的多余调用。\n'
         '5. 工具调用失败时，根据返回的错误信息修正参数后重试，'
         '最多重试 2 次仍失败时告知用户具体原因。\n'
