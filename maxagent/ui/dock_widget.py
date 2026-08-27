@@ -505,7 +505,14 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # type: (Optional[ConfigManager], Optional[Any]) -> None
         super(MaxAgentDockWidget, self).__init__(parent)
         self.setObjectName('MaxAgentDockWidget')
-        self.setWindowTitle('MaxAgent · AI 助手')
+        # 标题按当前 DCC 区分，Maya 用户一眼知道这是 Maya 专用实例
+        from ..dcc.runtime import current_dcc
+        dcc = current_dcc()
+        if dcc == 'maya':
+            title = 'MaxAgent · Maya AI 助手'
+        else:
+            title = 'MaxAgent · AI 助手'
+        self.setWindowTitle(title)
         self.setStyleSheet(_STYLE)
         self.setMinimumWidth(self._MIN_WIDGET_WIDTH)
 
@@ -2624,19 +2631,30 @@ def _create_max_dock(config):
 
 def _create_maya_dock(config):
     # type: (ConfigManager) -> str
-    """Maya 环境：使用 workspaceControl 创建可停靠面板。"""
+    """Maya 环境：使用 workspaceControl 创建可停靠面板。
+
+    Maya 2017+ 的停靠机制与 Max 完全不同：
+    - workspaceControl 本身是 Maya 的宿主容器；
+    - 通过 OpenMayaUI.MQtUtil.findControl 拿到它的 QWidget 句柄；
+    - 再把我们的业务 widget 作为子控件挂到该 QWidget 的 layout 里；
+    - 必须使用 cmds.evalDeferred(..., rs=True) 让 Maya 完成一次事件循环后
+      再真正显示/恢复面板，否则第一次创建时内容区域可能空白。
+    """
     # pylint: disable=import-outside-toplevel
     global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    from ..qt_compat import QtCore
     from ..qt_compat import QtWidgets
     from ..qt_compat import get_shiboken_wrap_instance
 
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    import maya.OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
 
     dock_widget = MaxAgentDockWidget(config_manager=config)
     ui_state = dock_widget.get_ui_state()
 
     control_name = 'MaxAgentWorkspaceControl'
-    label = 'MaxAgent · AI 助手'
+    # 标题跟随 DCC 标签（已由 MaxAgentDockWidget.__init__ 自动处理）
+    label = dock_widget.windowTitle() or 'MaxAgent · Maya AI 助手'
 
     # 已存在则先关闭再重建，避免重复创建导致句柄冲突
     if cmds.workspaceControl(control_name, exists=True):
@@ -2646,12 +2664,14 @@ def _create_maya_dock(config):
             pass
 
     has_geometry = bool((ui_state.geometry_b64 or '').strip())
+    # 使用 tabToControl=["AttributeEditor", -1] 让面板停靠在右侧属性编辑器旁，
+    # 这是 Maya 2017+ 官方示例中兼容性最好的停靠方式；dockToControl 部分版本不识别。
     create_kwargs = {
         'label': label,
-        'dockToControl': ['MayaWindow', 'right'],
+        'tabToControl': ['AttributeEditor', -1],
         'retain': False,
         'loadImmediately': True,
-        'visible': True,
+        'visible': False,
     }  # type: dict
     if not has_geometry:
         create_kwargs['initialWidth'] = 440
@@ -2660,41 +2680,43 @@ def _create_maya_dock(config):
     try:
         cmds.workspaceControl(control_name, **create_kwargs)
     except Exception:  # pylint: disable=broad-except
-        # 某些 Maya 版本对初始尺寸参数支持不同，回退最小参数创建
+        # 某些 Maya 版本对 tabToControl 支持不同，回退到最小参数创建
         cmds.workspaceControl(
             control_name,
             label=label,
-            dockToControl=['MayaWindow', 'right'],
             retain=False,
             loadImmediately=True,
-            visible=True,
+            visible=False,
         )
 
     # 把 QWidget 附加到 workspaceControl
     wrap_instance = get_shiboken_wrap_instance()
     if wrap_instance is not None:
-        try:
-            from maya import OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
-            ptr = omui.MQtUtil.findControl(control_name)
-        except Exception:  # pylint: disable=broad-except
-            ptr = None
-
+        ptr = omui.MQtUtil.findControl(control_name)
         if ptr is not None:
             try:
                 control_widget = wrap_instance(int(ptr), QtWidgets.QWidget)
-                # 清空旧布局（Maya 默认 workspaceControl 可能已有占位 layout）
-                old_layout = control_widget.layout()
-                if old_layout is not None:
-                    while old_layout.count():
-                        item = old_layout.takeAt(0)
-                        widget = item.widget()
-                        if widget is not None:
-                            widget.setParent(None)
-                layout = QtWidgets.QVBoxLayout(control_widget)
-                layout.setContentsMargins(0, 0, 0, 0)
-                layout.setSpacing(0)
+                # 让 Maya 关闭该停靠面板时自动销毁内部 widget
+                control_widget.setAttribute(
+                    QtCore.Qt.WA_DeleteOnClose, True
+                )
+                # Maya 默认已经给 workspaceControl 一个 QVBoxLayout；
+                # 如果有则复用，没有才新建，避免布局冲突。
+                layout = control_widget.layout()
+                if layout is None:
+                    layout = QtWidgets.QVBoxLayout(control_widget)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                    layout.setSpacing(0)
+                else:
+                    # 清空旧占位控件
+                    while layout.count():
+                        item = layout.takeAt(0)
+                        child = item.widget()
+                        if child is not None:
+                            child.setParent(None)
+                            child.deleteLater()
                 layout.addWidget(dock_widget)
-                control_widget.setWindowTitle(label)
+                # 标题已经通过 workspaceControl label 体现，无需再次设置
             except Exception:  # pylint: disable=broad-except
                 logger.exception(
                     '把 MaxAgentDockWidget 附加到 Maya workspaceControl 失败'
@@ -2706,10 +2728,13 @@ def _create_maya_dock(config):
     else:
         logger.warning('当前环境未找到 shiboken，无法把 Widget 嵌入 Maya')
 
-    try:
-        cmds.workspaceControl(control_name, edit=True, visible=True)
-    except Exception:  # pylint: disable=broad-except
-        pass
+    # 延迟恢复/显示面板，确保 Maya 完成布局计算后内容才渲染
+    cmds.evalDeferred(
+        lambda *args: cmds.workspaceControl(control_name, edit=True, visible=True)
+    )
+    cmds.evalDeferred(
+        lambda *args: cmds.workspaceControl(control_name, edit=True, restore=True)
+    )
 
     _DOCK_WIDGET = dock_widget
     _DOCK_HOLDER = control_name
