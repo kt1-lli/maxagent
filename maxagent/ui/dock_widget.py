@@ -8,7 +8,7 @@ UI 布局 (v0.3: 基于 widget 的消息列表 + 流式增量 + Markdown 渲染)
 +-------------------------------------------+
 | ┌─ QScrollArea (消息列表) ──────────────┐ |
 | │              [👤 你]                  │ |  ← 用户气泡靠右
-| │     [创建一个红色的茶壶]              │ |
+| │     [创建一个红色立方体]              │ |
 | │                                       │ |
 | │ [🤖 助手]                             │ |  ← 助手气泡靠左
 | │ [好的，我来创建...]                   │ |
@@ -592,7 +592,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self.reload_btn.setToolTip(
             '热重载整个 MaxAgent 包（开发态便利）。\n'
             '会保存当前会话与 UI 状态、关闭面板、清空模块缓存后重新加载。\n'
-            '修改 .py 文件后无需重启 3ds Max。',
+            '修改 .py 文件后无需重启当前 DCC。',
         )
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         top.addWidget(self.reload_btn)
@@ -1285,7 +1285,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(
                 None, 'MaxAgent 重加载失败',
                 '重加载过程中出错：{}\n\n'
-                '建议重启 3ds Max 后重试。'.format(exc),
+                '建议重启当前 DCC 后重试。'.format(exc),
             )
 
     def _clear_history(self):
@@ -2270,7 +2270,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         self._invoke_main_signal.emit(fn)
 
     def _run_tool_sync(self, tool_name, arguments):
-        """Worker 子线程通过此函数同步派回主线程执行 pymxs。
+        """Worker 子线程通过此函数同步派回主线程执行 DCC API。
 
         关键设计:
 

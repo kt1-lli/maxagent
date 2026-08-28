@@ -15,6 +15,7 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+from ..dcc.runtime import current_dcc
 from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
@@ -853,10 +854,16 @@ class WelcomeBlock(QtWidgets.QWidget):
 
     example_picked = QtCore.Signal(str)
 
-    _EXAMPLES = (
+    _MAX_EXAMPLES = (
         '创建一个红色的茶壶并加上 TurboSmooth 修改器',
         '列出场景里所有的灯光，按强度排序',
         '把所有 Box001 重命名为 wall_xx 序列',
+    )
+
+    _MAYA_EXAMPLES = (
+        '创建一个红色的多边形立方体并加上 Smooth 细分预览',
+        '列出场景里所有的灯光，按强度排序',
+        '把所有 pCube1 重命名为 wall_xx 序列',
     )
 
     def __init__(self, html_body, parent=None):
@@ -875,7 +882,8 @@ class WelcomeBlock(QtWidgets.QWidget):
         head.setStyleSheet('background:transparent;')
         v.addWidget(head)
 
-        for ex in self._EXAMPLES:
+        examples = self._MAYA_EXAMPLES if current_dcc() == 'maya' else self._MAX_EXAMPLES
+        for ex in examples:
             btn = QtWidgets.QPushButton(ex)
             btn.setStyleSheet(
                 'QPushButton { background:#252525; color:#a0a0a0; }'

@@ -46,6 +46,7 @@ from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
+from ..dcc.runtime import current_dcc as _current_dcc
 from .employee import AVATAR_DISPLAY_SIZE
 from .employee import DEFAULT_EMOJI
 from .employee import DEFAULT_NAME
@@ -54,6 +55,14 @@ from .employee import SUGGESTED_EMOJIS
 from .employee import get_avatar_image_full_path
 from .employee import remove_avatar_image
 from .employee import save_avatar_image
+
+
+def _current_dcc_name():
+    """返回当前 DCC 的显示名（3ds Max 或 Maya）。"""
+    try:
+        return 'Maya' if _current_dcc() == 'maya' else '3ds Max'
+    except Exception:  # pylint: disable=broad-except
+        return '3ds Max'
 
 
 logger = get_logger(__name__)
@@ -93,10 +102,11 @@ class EmployeeTab(QtWidgets.QWidget):
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
+        dcc_name = _current_dcc_name()
         desc = QtWidgets.QLabel(
-            '这位助手担任 <b>MaxAgent</b> 岗位，职责是协助你操作 3ds Max。'
+            '这位助手担任 <b>MaxAgent</b> 岗位，职责是协助你操作 {dcc_name}。'
             '<br>你可以为 ta 起一个名字、配一张头像 —— '
-            '岗位职责不变，只是换个对外形象。'
+            '岗位职责不变，只是换个对外形象。'.format(dcc_name=dcc_name)
         )
         desc.setWordWrap(True)
         desc.setStyleSheet('color:#aaa;')
@@ -196,7 +206,11 @@ class EmployeeTab(QtWidgets.QWidget):
         self._preview_head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._preview_head.setStyleSheet('background:transparent;')
         preview_layout.addWidget(self._preview_head)
-        preview_body = QtWidgets.QLabel('你好，我可以帮你操作 3ds Max 场景。')
+        preview_body = QtWidgets.QLabel(
+            '你好，我可以帮你操作 {dcc_name} 场景。'.format(
+                dcc_name=_current_dcc_name(),
+            ),
+        )
         preview_body.setStyleSheet('color:#d4ead4; background:transparent;')
         preview_layout.addWidget(preview_body)
         outer.addWidget(self._preview_box)

@@ -45,6 +45,15 @@ from .emoji_compat import e as _e
 from .emoji_compat import ee as _ee
 
 
+def _current_dcc_name():
+    """返回当前 DCC 的显示名（3ds Max 或 Maya）。"""
+    try:
+        from ..dcc.runtime import current_dcc
+        return 'Maya' if current_dcc() == 'maya' else '3ds Max'
+    except Exception:  # pylint: disable=broad-except
+        return '3ds Max'
+
+
 logger = get_logger(__name__)
 
 
@@ -438,11 +447,12 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.vision_supported_chk = QtWidgets.QCheckBox('模型支持视觉输入')
         self.vision_supported_chk.setChecked(False)
+        dcc_name = _current_dcc_name()
         self.vision_supported_chk.setToolTip(
-            '勾选后，Agent 在「需要视觉验证」的步骤会自动截取 3ds Max\n'
+            '勾选后，Agent 在「需要视觉验证」的步骤会自动截取 {}\n'
             '当前视口并作为 image_url 发送给该模型。\n'
             '只有真正支持 OpenAI 多模态协议的模型才应勾选，否则可能\n'
-            '触发 400 / token 浪费。',
+            '触发 400 / token 浪费。'.format(dcc_name),
         )
         right.addRow('', self.vision_supported_chk)
 
@@ -721,7 +731,9 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.web_provider_test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试'))
         self.web_provider_test_btn.setToolTip(
-            '用选中 Provider 发起一次 "3ds Max" 搜索验证可用性',
+            '用选中 Provider 发起一次 "{}" 搜索验证可用性'.format(
+                _current_dcc_name(),
+            ),
         )
         self.web_provider_test_btn.clicked.connect(
             self._on_provider_test_clicked,
@@ -770,18 +782,27 @@ class SettingsDialog(QtWidgets.QDialog):
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         form.addRow(title)
 
+        dcc_name = _current_dcc_name()
+        is_maya = _current_dcc_name() == 'Maya'
         self.auto_show_chk = QtWidgets.QCheckBox(
-            'Max 启动时自动显示 MaxAgent 面板',
+            '{} 启动时自动显示 MaxAgent 面板'.format(dcc_name),
         )
         self.auto_show_chk.setToolTip(
-            '关闭后，Max 启动时不会自动弹出面板，需在 MAXScript Listener\n'
-            '中执行 g_show_max_agent() 或通过菜单/快捷键手动显示。',
+            '关闭后，{} 启动时不会自动弹出面板，需{}\n'
+            '通过菜单/快捷键手动显示。'.format(
+                dcc_name,
+                '在脚本编辑器中执行 g_show_max_agent()' if is_maya
+                else '在 MAXScript Listener 中执行 g_show_max_agent()',
+            ),
         )
         self.auto_show_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.auto_show_chk)
 
+        is_maya = _current_dcc_name() == 'Maya'
         self.allow_escape_chk = QtWidgets.QCheckBox(
-            '允许使用 run_maxscript / run_python 脚本工具（标准工具）',
+            '允许使用 {} 脚本工具（标准工具）'.format(
+                'run_python' if is_maya else 'run_maxscript / run_python',
+            ),
         )
         self.allow_escape_chk.setToolTip(
             '关闭后 LLM 无法调用脚本工具，仅能使用预定义工具。'
@@ -1422,17 +1443,21 @@ class SettingsDialog(QtWidgets.QDialog):
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
+        dcc_name = _current_dcc_name()
         intro = QtWidgets.QLabel(
-            '在 Max 内开启一个本地 TCP 端口，让外部 IDE（通过 '
+            '在 {} 内开启一个本地 TCP 端口，让外部 IDE（通过 '
             '<a href="https://gitee.com/cmqll/dcc-mcp" '
             'style="color:#4da6ff;">dcc-mcp</a> 这类 MCP Server）'
             '调用 maxagent 能力：<br>'
-            '&nbsp;&nbsp;• <b>execute_python</b>：在 Max 主线程执行任意'
-            ' Python 代码（pymxs 安全）<br>'
+            '&nbsp;&nbsp;• <b>execute_python</b>：在 {} 主线程执行任意'
+            ' Python 代码（{}）<br>'
             '&nbsp;&nbsp;• <b>dispatch_task</b>：把整个自然语言任务派给'
             ' maxagent 自己跑（IDE Agent ↔ maxagent Agent 协作）<br>'
             '<span style="color:#888;">仅监听 127.0.0.1，不暴露外网。'
-            '建议默认关闭，只在需要时手动开启。</span>',
+            '建议默认关闭，只在需要时手动开启。</span>'.format(
+                dcc_name, dcc_name,
+                'maya.cmds / OpenMaya 安全' if dcc_name == 'Maya' else 'pymxs 安全',
+            ),
         )
         intro.setWordWrap(True)
         intro.setTextFormat(QtCore.Qt.RichText)
@@ -1471,9 +1496,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.bridge_port_spin = QtWidgets.QSpinBox()
         self.bridge_port_spin.setRange(1, 65535)
         self.bridge_port_spin.setValue(7003)
+        dcc_mcp_name = 'Maya' if _current_dcc_name() == 'Maya' else '3dsMax'
         self.bridge_port_spin.setToolTip(
-            '本地监听端口（默认 7003，与 dcc-mcp 3dsMax 预设一致）。\n'
-            '修改后需关闭再重新启用 Bridge 才生效。',
+            '本地监听端口（默认 7003，与 dcc-mcp {} 预设一致）。\n'
+            '修改后需关闭再重新启用 Bridge 才生效。'.format(dcc_mcp_name),
         )
         form.addRow('监听端口:', self.bridge_port_spin)
 
@@ -2367,6 +2393,12 @@ class SettingsDialog(QtWidgets.QDialog):
         #   代码片段   背景 #2a2a2a + 文字 #ffe082
         #   强调      #a8e6a8（浅绿）
         #   警示      #ff9090（浅红）
+        dcc_name = _current_dcc_name()
+        dcc_mcp_name = 'Maya' if dcc_name == 'Maya' else '3dsMax'
+        example_action = (
+            '创建 5 个多边形立方体沿 X 排列'
+            if dcc_name == 'Maya' else '创建 5 个 Box 沿 X 排列'
+        )
         return (
             '<style>'
             'body { color:#e8e8e8; }'
@@ -2508,7 +2540,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
             # ---- IDE 接口 / Bridge ----
             '<h4>IDE 接口（Bridge）🔌</h4>'
-            '<p>在 Max 内开启一个本地 TCP 端口，让外部 IDE'
+            '<p>在 {dcc_name} 内开启一个本地 TCP 端口，让外部 IDE'
             '（Cursor / Claude Desktop / Cline 等）通过 '
             '<a href="https://gitee.com/cmqll/dcc-mcp" '
             'style="color:#4da6ff;">dcc-mcp</a> 连接到 maxagent，'
@@ -2519,7 +2551,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '<tr><th>工具</th><th>谁出大脑</th><th>典型场景</th></tr>'
             '<tr><td><code>execute_python</code></td>'
             '<td>IDE LLM 写代码</td>'
-            '<td>"创建 5 个 Box 沿 X 排列"等明确代码动作</td></tr>'
+            '<td>"{example_action}"等明确代码动作</td></tr>'
             '<tr><td><code>dispatch_task</code></td>'
             '<td>maxagent 自跑</td>'
             '<td>"测我刚写的工具"等需要规划+执行的任务</td></tr>'
@@ -2535,7 +2567,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '<table>'
             '<tr><th>字段</th><th>默认</th><th>说明</th></tr>'
             '<tr><td>监听端口</td><td>7003</td>'
-            '<td>与 dcc-mcp 3dsMax 预设一致；改端口需同步 mcp.json</td></tr>'
+            '<td>与 dcc-mcp {dcc_mcp_name} 预设一致；改端口需同步 mcp.json</td></tr>'
             '<tr><td>访问令牌</td><td>空</td>'
             '<td>多人共用机器担心误连时填；本机回环用通常无需</td></tr>'
             '<tr><td>允许任务派发</td><td>开</td>'
@@ -2561,7 +2593,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '<b>只读</b>，不会污染你的本地资源。</p>'
 
             '<p><b>配置方式</b>：'
-            '<br>· 在"共享资源"Tab 点击「浏览…」选择目录；或启动 Max 前设置环境变量 '
+            '<br>· 在"共享资源"Tab 点击「浏览…」选择目录；或启动 {dcc_name} 前设置环境变量 '
             '<code>MAXAGENT_SHARED_DIR</code>，两者会互相覆盖（以环境变量为优先）。'
             '<br>· 目录结构与本地 <code>{config_dir}</code> 一致，只需保持子目录名 '
             '<code>skills / user_tools / user_rules / reflections / knowledge</code>。'
@@ -2577,7 +2609,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '② 美术在设置页点击「克隆仓库」输入 URL，或 pull 到本地共享目录后点击「浏览…」\n'
             '③ 日常使用点击「拉取最新」：先 <code>git fetch</code> 检测更新，'
             '发现新提交后列出摘要，确认后再 <code>git pull --ff-only</code>\n'
-            '④ 重启 MaxAgent 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
+            '④ 重启 {dcc_name} 后这些资源会自动出现在 LLM 的工具列表和技能列表中\n'
             '⑤ 共享工具首次被调用前会经过语法检查，执行时与本地工具一样受脚本确认开关约束'
             '</p>'
 
@@ -2633,7 +2665,7 @@ class SettingsDialog(QtWidgets.QDialog):
             '<br>⑤ 同名冲突时勾选「覆盖」可强制更新，不勾默认跳过</p>'
 
             '<p class="warn"><b>⚠ 安全提示</b>：</p>'
-            '<p>· 自定义工具是<b>可执行 Python 代码</b>，会在 Max 内运行——'
+            '<p>· 自定义工具是<b>可执行 Python 代码</b>，会在 {dcc_name} 内运行——'
             '只导入<b>信任来源</b>的资源包；'
             '<br>· 包<b>不</b>含 API Key / Profile 配置 / 会话历史，避免敏感信息泄露；'
             '<br>· 包<b>不</b>含启用/禁用状态——导入到对方机器后默认全部启用，'
@@ -2668,6 +2700,11 @@ class SettingsDialog(QtWidgets.QDialog):
             'Calling / 自定义 Header）→ 全部回到默认值'
             '<br>注：仅修改表单显示，需点击「应用」才会写盘——避免误把'
             '名称为空的 Profile 强行落盘破坏配置。</p>'
+        ).format(
+            dcc_name=dcc_name,
+            dcc_mcp_name=dcc_mcp_name,
+            example_action=example_action,
+            config_dir='{config_dir}',
         )
 
     # ================================================================== #
@@ -3093,8 +3130,9 @@ class SettingsDialog(QtWidgets.QDialog):
         """把推荐的 dcc-mcp / Cursor MCP 配置 JSON 复制到剪贴板。"""
         cfg = self._config.config
         port = int(self.bridge_port_spin.value() or cfg.bridge_port or 7003)
+        dcc_mcp_name = 'Maya' if _current_dcc_name() == 'Maya' else '3dsMax'
         env = {
-            'DCC_MCP_NAME': '3dsMax',
+            'DCC_MCP_NAME': dcc_mcp_name,
             'DCC_MCP_BRIDGE_HOST': '127.0.0.1',
             'DCC_MCP_BRIDGE_PORT': str(port),
         }
@@ -3525,8 +3563,13 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             from ..web_search import search as _do_search
             from ..web_search import SearchError
+            test_query = (
+                'Maya Python scripting'
+                if _current_dcc_name() == 'Maya'
+                else '3ds Max maxscript'
+            )
             results = _do_search(
-                '3ds Max maxscript',
+                test_query,
                 max_results=int(self.web_max_results_spin.value() or 5),
                 fetch_page=False,
                 use_cache=False,

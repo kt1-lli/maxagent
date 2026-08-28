@@ -3,8 +3,8 @@
 """员工档案（Employee）：纯 UI 层的助手形象皮肤。
 
 设计模型：
-- 岗位（MaxAgent）：写死在 system prompt，不可改。代表"3ds Max
-  智能助手"的职责与身份铁律，越狱防护由此保障。
+- 岗位（MaxAgent）：写死在 system prompt，不可改。代表当前 DCC
+  智能助手（3ds Max 或 Maya）的职责与身份铁律，越狱防护由此保障。
 - 员工（Employee）：用户自定义的对外形象——名字 + 头像，仅影响
   对话气泡的视觉表达。LLM 对此一无所知。
 
