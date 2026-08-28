@@ -39,6 +39,31 @@ _ADAPTER = None  # type: Optional[Any]
 _LOCK = threading.Lock()
 
 
+def set_current_dcc(name):
+    # type: (str) -> None
+    """显式设置当前 DCC 标识名。
+
+    入口脚本（如 maya_entry.py / maxagent.startup）应在导入任何依赖
+    ``current_dcc()`` 的模块之前调用本函数，避免自动探测出现偏差或
+    被历史缓存污染。合法取值为 ``'3dsmax'``、``'maya'``。
+    """
+    name = (name or '').strip().lower()
+    if name not in ('3dsmax', 'maya'):
+        raise ValueError("DCC 标识必须是 '3dsmax' 或 'maya'， got: {}".format(name))
+    global _DCC_NAME  # pylint: disable=global-statement
+    with _LOCK:
+        _DCC_NAME = name
+        dcc_state = sys.modules.get(_DCC_STATE_KEY)
+        if dcc_state is not None:
+            dcc_state['name'] = name
+        # 显式切换 DCC 后，旧适配器可能不合法，直接清空让 get_adapter 重建
+        adapter_state = sys.modules.get(_ADAPTER_STATE_KEY)
+        if adapter_state is not None:
+            adapter_state['adapter'] = None
+        global _ADAPTER  # pylint: disable=global-statement
+        _ADAPTER = None
+
+
 def current_dcc():
     # type: () -> str
     """返回当前 DCC 标识名。

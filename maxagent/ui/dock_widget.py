@@ -416,7 +416,8 @@ class _ChatRenderer(QtCore.QObject):
         self._append(_ErrorBubble(text))
 
     def add_welcome(self, html_body):
-        block = _WelcomeBlock(html_body)
+        from ..dcc.runtime import current_dcc
+        block = _WelcomeBlock(html_body, dcc=current_dcc())
         block.example_picked.connect(self.example_picked.emit)
         self._append(block)
 

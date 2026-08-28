@@ -30,13 +30,15 @@ def _startup():
     """导入并启动 MaxAgent UI。"""
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
     from maxagent.dcc.runtime import current_dcc  # pylint: disable=import-outside-toplevel
+    from maxagent.dcc.runtime import set_current_dcc  # pylint: disable=import-outside-toplevel
     from maxagent.tools import load_all_tools  # pylint: disable=import-outside-toplevel
     from maxagent.ui.dock_widget import get_or_create_dock  # pylint: disable=import-outside-toplevel
 
     # 强制确认 DCC 探测为 maya（拖拽启动时理论上一定在 Maya 内）
     if current_dcc() != 'maya':
-        cmds.warning('current_dcc() 未识别为 maya，跳过启动')
-        return
+        cmds.warning('current_dcc() 未识别为 maya，尝试强制设置为 maya')
+    # 显式锁定 DCC 为 maya，避免后续模块从旧缓存或错误探测拿到 3dsmax
+    set_current_dcc('maya')
 
     load_all_tools()
     get_or_create_dock()

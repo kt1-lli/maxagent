@@ -866,7 +866,13 @@ class WelcomeBlock(QtWidgets.QWidget):
         '把所有 pCube1 重命名为 wall_xx 序列',
     )
 
-    def __init__(self, html_body, parent=None):
+    def __init__(self, html_body, dcc=None, parent=None):
+        # type: (str, str, Optional[QtWidgets.QWidget]) -> None
+        """创建欢迎块。
+
+        :param html_body: 欢迎语文本（已转义 HTML）
+        :param dcc: 可选 DCC 标识；传入 None 时读取 current_dcc()
+        """
         super(WelcomeBlock, self).__init__(parent)
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(0, 8, 0, 8)
@@ -882,7 +888,8 @@ class WelcomeBlock(QtWidgets.QWidget):
         head.setStyleSheet('background:transparent;')
         v.addWidget(head)
 
-        examples = self._MAYA_EXAMPLES if current_dcc() == 'maya' else self._MAX_EXAMPLES
+        dcc_name = (dcc or '').strip().lower() or current_dcc()
+        examples = self._MAYA_EXAMPLES if dcc_name == 'maya' else self._MAX_EXAMPLES
         for ex in examples:
             btn = QtWidgets.QPushButton(ex)
             btn.setStyleSheet(
