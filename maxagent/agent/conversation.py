@@ -193,11 +193,16 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '\n【🎯 字面理解铁律 - 防止过度联想】\n'
         '8. **严格按用户字面要求行事，不主动扩展、不补全、不联想'
         '"完整场景"**：\n'
-        '   - 用户说"创建一个球" → 仅调用 create_sphere 一次，'
+        ' - 用户说"创建一个球" → 仅调用 create_sphere 一次，'
         '不要附加 create_light / create_camera / 设置材质 / 加地面 / '
         '调相机角度等任何未被显式要求的操作。\n'
-        '   - 用户说"做个茶壶" → 仅调用 create_teapot 一次，'
-        '不要顺手再建灯光相机。\n'
+        + (
+            '   - 用户说"做个茶壶" → 仅调用 create_teapot 一次，'
+            '不要顺手再建灯光相机。\n'
+            if dcc_name != 'maya'
+            else '   - 用户说"做个立方体" → 仅调用 create_poly_cube 一次，'
+                 '不要顺手再建灯光相机。\n'
+        ) +
         '   - 只有用户明确说"完整场景"、"打光"、"加摄像机"、'
         '"渲染演示"、"产品展示"等表达"组合需求"的关键词时，'
         '才允许多工具组合。\n'
@@ -717,7 +722,7 @@ class Conversation(object):
     def inject_restored_notice(self):
         """会话从磁盘加载后注入"重启对齐"提示。
 
-        让 LLM 感知：上次的对话历史虽然在，但 Max 场景状态可能已变。
+        让 LLM 感知：上次的对话历史虽然在，但 DCC 场景状态可能已变。
         重复调用是幂等的（带标记防止重复注入）。
         """
         if self.has_restored_marker():

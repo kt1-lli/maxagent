@@ -58,9 +58,14 @@ from .employee import save_avatar_image
 
 
 def _current_dcc_name():
-    """返回当前 DCC 的显示名（3ds Max 或 Maya）。"""
+    """返回当前 DCC 的显示名（Maya 或 3ds Max）。"""
     try:
-        return 'Maya' if _current_dcc() == 'maya' else '3ds Max'
+        dcc = _current_dcc()
+        if dcc == 'maya':
+            return 'Maya'
+        if dcc == '3dsmax':
+            return '3ds Max'
+        return dcc
     except Exception:  # pylint: disable=broad-except
         return '3ds Max'
 
@@ -103,10 +108,11 @@ class EmployeeTab(QtWidgets.QWidget):
         outer.addWidget(title)
 
         dcc_name = _current_dcc_name()
+        dcc_display = _current_dcc_name()
         desc = QtWidgets.QLabel(
             '这位助手担任 <b>MaxAgent</b> 岗位，职责是协助你操作 {dcc_name}。'
             '<br>你可以为 ta 起一个名字、配一张头像 —— '
-            '岗位职责不变，只是换个对外形象。'.format(dcc_name=dcc_name)
+            '岗位职责不变，只是换个对外形象。'.format(dcc_name=dcc_display)
         )
         desc.setWordWrap(True)
         desc.setStyleSheet('color:#aaa;')
@@ -209,7 +215,7 @@ class EmployeeTab(QtWidgets.QWidget):
         preview_body = QtWidgets.QLabel(
             '你好，我可以帮你操作 {dcc_name} 场景。'.format(
                 dcc_name=_current_dcc_name(),
-            ),
+            )
         )
         preview_body.setStyleSheet('color:#d4ead4; background:transparent;')
         preview_layout.addWidget(preview_body)

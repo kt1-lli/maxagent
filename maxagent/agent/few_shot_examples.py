@@ -50,6 +50,13 @@ def get_few_shot_examples(dcc_name=None):
     dcc_name = dcc_name or '3dsmax'
     t = _tool_names(dcc_name)
 
+    if dcc_name == 'maya':
+        create_cup = 'create_poly_cube(name="Cup01")'
+        cup_pos_note = '（Box pivot 在底面，顶面 = max.y）'
+    else:
+        create_cup = 'create_teapot(name="Cup01")'
+        cup_pos_note = '（Box pivot 在底面，顶面 = max.z）'
+
     return """\
 ==============================================================
 📚 示范案例：以下每组展示"场景 → ❌错误 → ✓正确"，供你参考行为边界。
@@ -65,14 +72,14 @@ def get_few_shot_examples(dcc_name=None):
 
 【示范 2：空间任务 - 用户说"在 Box01 上面放一个杯子"】
 场景：Box01 已存在于场景，需计算其顶面位置后摆放。
-❌ 错误：调用 create_teapot 后直接回复"已放置"，对象留在 (0,0,0)。
+❌ 错误：调用创建工具后直接回复"已放置"，对象留在 (0,0,0)。
    → 违反【📐 空间完成原则】第 11 条：create_* 只是起点，必须
    继续移动/对齐操作。
 ✓ 正确：
    ① """ + t['query'] + """("Box01") → 获取 bbox (min, max, center)
-   ② create_teapot(name="Cup01") → 创建杯子
+   ② """ + create_cup + """ → 创建杯子
    ③ 计算：cup.position = [box.center.x, box.center.y, box.max.z]
-       （Box pivot 在底面，顶面 = max.z）
+       """ + cup_pos_note + """
    ④ """ + t['query'] + """("Cup01") → 复核位置
    ⑤ 回复"杯子已放置在 Box01 顶面中心 (x, y, z)"
 

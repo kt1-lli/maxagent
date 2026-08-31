@@ -46,10 +46,15 @@ from .emoji_compat import ee as _ee
 
 
 def _current_dcc_name():
-    """返回当前 DCC 的显示名（3ds Max 或 Maya）。"""
+    """返回当前 DCC 的显示名（Maya 或 3ds Max）。"""
     try:
         from ..dcc.runtime import current_dcc
-        return 'Maya' if current_dcc() == 'maya' else '3ds Max'
+        dcc = current_dcc()
+        if dcc == 'maya':
+            return 'Maya'
+        if dcc == '3dsmax':
+            return '3ds Max'
+        return dcc
     except Exception:  # pylint: disable=broad-except
         return '3ds Max'
 
@@ -799,10 +804,9 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow('', self.auto_show_chk)
 
         is_maya = _current_dcc_name() == 'Maya'
+        escape_label = 'run_python' if is_maya else 'run_maxscript / run_python'
         self.allow_escape_chk = QtWidgets.QCheckBox(
-            '允许使用 {} 脚本工具（标准工具）'.format(
-                'run_python' if is_maya else 'run_maxscript / run_python',
-            ),
+            '允许使用 {} 脚本工具（标准工具）'.format(escape_label)
         )
         self.allow_escape_chk.setToolTip(
             '关闭后 LLM 无法调用脚本工具，仅能使用预定义工具。'

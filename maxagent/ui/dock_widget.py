@@ -492,6 +492,7 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
     # **调用方所在线程**的事件循环；从 worker 子线程调用时会被派回 worker
     # 子线程的"幽灵 timer 队列"，而 worker 子线程此时正阻塞在 done.wait()
     # 上不 spin 事件循环 → fn 永远不会被执行 → 工具调用必 360s 超时。
+
     _invoke_main_signal = QtCore.Signal(object)
 
     _DEFAULT_SPLIT_RATIO = (78, 22)
@@ -506,11 +507,13 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         # type: (Optional[ConfigManager], Optional[Any]) -> None
         super(MaxAgentDockWidget, self).__init__(parent)
         self.setObjectName('MaxAgentDockWidget')
-        # 标题按当前 DCC 区分，Maya 用户一眼知道这是 Maya 专用实例
+        # 标题按当前 DCC 区分，用户一眼知道这是哪个 DCC 的专用实例
         from ..dcc.runtime import current_dcc
         dcc = current_dcc()
         if dcc == 'maya':
             title = 'MaxAgent · Maya AI 助手'
+        elif dcc == '3dsmax':
+            title = 'MaxAgent · 3ds Max AI 助手'
         else:
             title = 'MaxAgent · AI 助手'
         self.setWindowTitle(title)
@@ -2655,7 +2658,7 @@ def _create_maya_dock(config):
 
     control_name = 'MaxAgentWorkspaceControl'
     # 标题跟随 DCC 标签（已由 MaxAgentDockWidget.__init__ 自动处理）
-    label = dock_widget.windowTitle() or 'MaxAgent · Maya AI 助手'
+    label = dock_widget.windowTitle() or 'MaxAgent · AI 助手'
 
     # 已存在则先关闭再重建，避免重复创建导致句柄冲突
     if cmds.workspaceControl(control_name, exists=True):
