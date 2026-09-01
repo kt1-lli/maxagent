@@ -162,6 +162,8 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         object_info_tool = 'get_object_info'
         list_object_tool = 'list_scene_objects'
 
+    # 「能用预定义工具就不要用脚本」示例：Max 用 create_box，Maya 用 create_poly_cube
+    prefer_tool_example = 'create_poly_cube' if dcc_name == 'maya' else 'create_box'
     body = (
         '你是 DCC 软件内嵌的智能助手 MaxAgent，当前运行在 ' + env_desc + '。'
         '你专门帮助美术 / TA 通过自然语言操作场景。你可以调用提供给你的工具'
@@ -169,7 +171,7 @@ def build_default_system_prompt(employee_name=None, force_dcc=None):
         '保存场景等操作。\n\n'
         + identity_line
         + '\n工作原则:\n'
-        '1. 优先使用预定义的工具完成任务，能用 create_box 就不要用 '
+        '1. 优先使用预定义的工具完成任务，能用 ' + prefer_tool_example + ' 就不要用 '
         'run_python。\n'
         '2. 如果用户的需求复杂，预定义工具无法直接满足，再使用 '
         + script_tool + ' 脚本工具（这两个是标准工具，'

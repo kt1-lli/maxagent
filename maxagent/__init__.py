@@ -2,16 +2,18 @@
 # -*- coding: utf-8 -*-
 """maxagent 包入口。
 
-3ds Max 内嵌的 AI 助手，支持本地模型（Ollama / LM Studio）与云端 API
-（OpenAI / DeepSeek / 兼容协议），通过 Function Calling 操作 Max 场景。
+3ds Max / Maya 内嵌的 AI 助手，支持本地模型（Ollama / LM Studio）与云端 API
+（OpenAI / DeepSeek / 兼容协议），通过 Function Calling 操作 DCC 场景。
 
-Quick Start (在 Max 中):
+Quick Start (在 3ds Max 中):
     >>> import maxagent
     >>> maxagent.show()
 
 或者直接调:
     >>> from maxagent.startup import show_panel
     >>> show_panel()
+
+在 Maya 中：拖拽仓库根目录下的 ``maya_entry.py`` 到 Maya 视口即可启动。
 """
 
 from __future__ import absolute_import
@@ -46,11 +48,11 @@ def toggle():
 
 
 def reload_pkg():
-    """开发态热重载整个包，无需重启 Max。
+    """开发态热重载整个包，无需重启 DCC。
 
     命名为 ``reload_pkg`` 避免与 ``maxagent.reload`` 子模块同名导致
     ``from maxagent import reload`` 拿到的是函数而不是模块。
-    在 MaxScript 中可直接调用 ``g_reload_max_agent()``。
+    在 3ds Max 的 MaxScript Listener 中可直接调用 ``g_reload_max_agent()``。
     """
     from .reload import reload_maxagent
     return reload_maxagent()
