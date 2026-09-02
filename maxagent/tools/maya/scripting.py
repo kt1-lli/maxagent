@@ -33,6 +33,7 @@ def _ensure_in_maya():
         {'summary': '执行简单 MEL 命令', 'args': {'code': 'polyCube;'}},
     ],
     returns_desc='str: MEL 返回值',
+    notes=['以 Maya MEL 语法执行；避免执行会弹出 UI 的命令。'],
 )
 def run_mel(code):
     # type: (str) -> str
@@ -61,6 +62,10 @@ def run_mel(code):
             'args': {'code': 'import maya.cmds as cmds; cmds.polyCube(name="myCube")'},
         },
     ],
+    notes=[
+        '执行环境已注入 maya.cmds（在代码里 import）；将结果赋给变量 result 可返回。',
+        '危险操作，会执行任意 Python 代码；生产环境慎用。',
+    ],
     returns_desc='Any: 脚本返回值',
 )
 def run_python(code):
@@ -87,6 +92,7 @@ def run_python(code):
     dangerous=True,
     examples=[{'summary': '运行脚本文件', 'args': {'file_path': 'C:/scripts/setup.py'}}],
     returns_desc='dict: {"ok": True}',
+    notes=['file_path 必须是本机可读的 .py 文件绝对路径。'],
 )
 def run_python_file(file_path):
     # type: (str) -> Dict[str, Any]

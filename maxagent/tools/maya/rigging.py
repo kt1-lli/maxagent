@@ -37,8 +37,11 @@ def _to_xyz_list(value, name='position'):
 
     coords = value
     if isinstance(coords, str):
+        s = coords.strip()
+        if not s:
+            return None
         try:
-            coords = json.loads(coords)
+            coords = json.loads(s)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 '{} 字符串不是合法 JSON: {} ({})'.format(name, value, exc),
@@ -67,6 +70,7 @@ def _to_xyz_list(value, name='position'):
         },
     ],
     returns_desc='str: 创建的关节名',
+    notes=['position 为 JSON 字符串如 "[0,0,0]"；未指定会在原点创建。'],
 )
 def create_joint(name='joint1', position=None):
     # type: (str, Any) -> str
@@ -100,6 +104,7 @@ def create_joint(name='joint1', position=None):
         },
     ],
     returns_desc='str: 创建的子关节名',
+    notes=['会把新关节以 parent 为父，且相对 parent 的偏移由 offset 指定。'],
 )
 def create_child_joint(parent, name, position):
     # type: (str, str, Any) -> str
@@ -133,6 +138,7 @@ def create_child_joint(parent, name, position):
         {'summary': '把关节半径设为 2', 'args': {'joint_name': 'root_joint', 'radius': 2.0}},
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['radius 只影响视口显示大小，不影响计算。'],
 )
 def set_joint_radius(joint_name, radius=1.0):
     # type: (str, float) -> Dict[str, Any]
@@ -170,6 +176,7 @@ def set_joint_radius(joint_name, radius=1.0):
         },
     ],
     returns_desc='dict: {"ik_handle": str, "effector": str}',
+    notes=['solver 支持 ikRPsolver / ikSCsolver / ikSplineSolver。', 'start_joint 与 end_joint 必须在同一链上且 end 是 start 的后代。'],
 )
 def create_ik_handle(start_joint, end_effector, name='ikHandle1', solver='ikRPsolver'):
     # type: (str, str, str, str) -> Dict[str, Any]
@@ -211,6 +218,7 @@ def create_ik_handle(start_joint, end_effector, name='ikHandle1', solver='ikRPso
         },
     ],
     returns_desc='str: 控制器 transform 节点名',
+    notes=['position 用于把控制器 CV 归零后再整体挪到目标位置，冻结不会吸回原点。', 'shape 支持 circle / square / cross / arrow / star。'],
 )
 def create_controller(name, shape='circle', position=None, radius=2.0, color=None):
     # type: (str, str, Any, float, Any) -> str
@@ -226,13 +234,16 @@ def create_controller(name, shape='circle', position=None, radius=2.0, color=Non
 
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
 
-    xyz = _to_xyz_list(position, 'position') or (0.0, 0.0, 0.0)
+    xyz = _to_xyz_list(position, 'position')
 
     def _impl():
         cv_points = _controller_shape_points(shape, radius)
         curve = cmds.curve(degree=1, point=cv_points, knot=list(range(len(cv_points))), name=name)
-        cmds.xform(curve, translation=xyz, worldSpace=True)
-        cmds.makeIdentity(curve, apply=True, translate=True, rotate=True, scale=True)
+        # 先冻结 scale/rotate（保持形状 CV 归零），再移动到目标位置。
+        # 注意：不能冻结 translate，否则位置会被吸回原点。
+        cmds.makeIdentity(curve, apply=True, translate=False, rotate=True, scale=True)
+        if xyz is not None:
+            cmds.xform(curve, translation=list(xyz), worldSpace=True)
         if color is not None:
             cmds.setAttr(curve + '.overrideEnabled', 1)
             cmds.setAttr(curve + '.overrideColor', int(color))
@@ -303,6 +314,7 @@ def _controller_shape_points(shape, radius):
         },
     ],
     returns_desc='str: skinCluster 节点名',
+    notes=['bind_method: 0=classicLinear, 1=geodesicVoxel（Maya 2015+）。', 'skinning_method: 0=classicLinear, 1=dualQuaternion, 2=weightBlended。'],
 )
 def bind_skin(mesh, joints, name='skinCluster1', max_influences=4):
     # type: (str, Any, str, int) -> str
@@ -352,6 +364,7 @@ def bind_skin(mesh, joints, name='skinCluster1', max_influences=4):
         },
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['influence 为对该顶点该关节的权重（0-1）。', '设置后其它关节权重会按 Maya 默认策略重新归一化。'],
 )
 def set_skin_weight(mesh, joint, value=1.0):
     # type: (str, str, float) -> Dict[str, Any]
@@ -400,6 +413,7 @@ def set_skin_weight(mesh, joint, value=1.0):
         },
     ],
     returns_desc='str: 约束节点名',
+    notes=['支持类型: parent / point / orient / scale / aim / pole_vector。', 'maintain_offset=True 表示以当前偏移为初始状态。'],
 )
 def create_constraint(driver, driven, constraint_type='parent', maintain_offset=True, name=None):
     # type: (str, str, str, bool, Optional[str]) -> str
@@ -446,6 +460,7 @@ def create_constraint(driver, driven, constraint_type='parent', maintain_offset=
         },
     ],
     returns_desc='List[str]: 创建的约束节点名列表',
+    notes=['fk/ik/bind 三条链的关节数必须相同。', '返回创建出来的 blendColors / plusMinusAverage 节点。'],
 )
 def connect_fk_ik_chains(driver_joints, driven_joints, maintain_offset=False):
     # type: (Any, Any, bool) -> List[str]
@@ -493,6 +508,7 @@ def connect_fk_ik_chains(driver_joints, driven_joints, maintain_offset=False):
         },
     ],
     returns_desc='List[str]: 创建的定位器名列表',
+    notes=['沿关节链每关节位置放置一个 locator，可用于打点/取样。'],
 )
 def create_locators_along_chain(joint_chain, count=3, prefix='loc'):
     # type: (Any, int, str) -> List[str]
@@ -549,6 +565,7 @@ def create_locators_along_chain(joint_chain, count=3, prefix='loc'):
         },
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['按传入顺序建立父子层级，第一个为最上层。'],
 )
 def parent_controller_hierarchy(controllers):
     # type: (Any) -> Dict[str, Any]

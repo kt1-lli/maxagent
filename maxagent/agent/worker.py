@@ -1734,37 +1734,43 @@ class AgentWorker(QObject):
                 'error': str(exc),
             }
 
-        # 处理结果
-        if isinstance(verify_result, dict) and verify_result.get('ok'):
-            info = verify_result.get('data', {})
-            if info.get('found'):
-                return {
-                    'target': target_name,
-                    'status': 'verified',
-                    'current_position': info.get('position'),
-                    'current_rotation': info.get('rotation'),
-                    'current_scale': info.get('scale'),
-                    'current_material': info.get('material'),
-                    'note': (
-                        '以上为此对象执行 {} 后的真实状态。'
-                        '请对比你的预期值，若有偏差请修正。'.format(
-                            tool_name,
-                        )
-                    ),
-                }
-            else:
-                return {
-                    'target': target_name,
-                    'status': 'not_found',
-                    'note': (
-                        '复核时未找到对象 {}，可能已被删除或重命名。'
-                        .format(target_name)
-                    ),
-                }
+        # _sync_tool_runner 返回工具原始结果（不含 ok/data 外壳）。
+        # Maya get_maya_object_info -> {'exists': bool, 'name': ..., 'position': ...}
+        # Max get_object_info     -> {'found': bool, 'name': ..., ...} 或类似
+        info = verify_result if isinstance(verify_result, dict) else {}
+        # 兼容不同 DCC 的"存在性"字段
+        exists = info.get('exists')
+        if exists is None:
+            exists = info.get('found')
+        if exists is None:
+            # 没有明确布尔字段：若返回了 name/type/position 中任一，视为存在
+            exists = any(k in info for k in ('name', 'type', 'position'))
+
+        if exists:
+            return {
+                'target': target_name,
+                'status': 'verified',
+                'current_position': info.get('position'),
+                'current_rotation': (
+                    info.get('rotation')
+                    or info.get('rotation_euler')
+                ),
+                'current_scale': info.get('scale'),
+                'current_material': info.get('material'),
+                'note': (
+                    '以上为此对象执行 {} 后的真实状态。'
+                    '请对比你的预期值，若有偏差请修正。'.format(
+                        tool_name,
+                    )
+                ),
+            }
         return {
             'target': target_name,
-            'status': 'query_error',
-            'raw': verify_result,
+            'status': 'not_found',
+            'note': (
+                '复核时未找到对象 {}，可能已被删除或重命名。'
+                .format(target_name)
+            ),
         }
 
     # ------------------------------------------------------------------ #

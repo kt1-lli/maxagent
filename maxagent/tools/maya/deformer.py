@@ -30,8 +30,9 @@ def _ensure_in_maya():
         },
     ],
     notes=[
-        '支持的 deformer_type: bend, twist, taper, noise, ffd。',
-        'Maya 中 noise 变形器类型名为 "noise"。',
+        '支持的 deformer_type: bend, twist, taper, flare, sine, squash, wave, ffd。',
+        '非线性变形器（bend/twist 等）会自动创建变形器 handle transform。',
+        'ffd 会创建 lattice 晶格；调整晶格顶点可控制变形。',
     ],
     returns_desc='dict {"name": 对象名, "deformer": 变形器节点名}',
     prerequisites=['场景中必须存在名为 name 的对象'],
@@ -45,20 +46,23 @@ def add_maya_deformer(name: str, deformer_type: str = 'bend'):
         import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
         if not cmds.objExists(name):
             raise ValueError('对象不存在: {}'.format(name))
-        if cmds.objectType(name) == 'transform':
-            shapes = cmds.listRelatives(name, shapes=True) or []
-            if not shapes:
-                raise ValueError('对象没有 shape 节点: {}'.format(name))
-            target = shapes[0]
-        else:
-            target = name
-        valid = {'bend', 'twist', 'taper', 'noise', 'ffd'}
+        valid = {'bend', 'twist', 'taper', 'flare', 'sine', 'squash',
+                 'wave', 'ffd'}
         if deformer_type not in valid:
             raise ValueError('不支持的 deformer_type: {}，可选: {}'.format(
                 deformer_type, ', '.join(sorted(valid)),
             ))
-        nodes = cmds.deformer(target, type=deformer_type) or []
-        return nodes[0] if nodes else None
+        # 先选中目标对象，nonLinear/lattice 会作用在选中项上
+        cmds.select(name, replace=True)
+        if deformer_type == 'ffd':
+            # lattice 返回 (ffdNode, latticeShape, latticeBase)
+            result = cmds.lattice(name, divisions=(2, 5, 2), objectCentered=True)
+            deformer_node = result[0] if result else None
+        else:
+            # nonLinear 返回 [deformerNode, handleTransform]
+            result = cmds.nonLinear(name, type=deformer_type)
+            deformer_node = result[0] if result else None
+        return deformer_node
 
     deformer_node = run_on_main(_do)
     return {'name': name, 'deformer': deformer_node}

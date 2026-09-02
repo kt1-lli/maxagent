@@ -45,6 +45,48 @@ def _normalize_names(names):
     return [str(names)]
 
 
+def _to_color(value):
+    # type: (Any) -> tuple
+    """把 [r,g,b] 转为三元组。支持 list/tuple 与 JSON 字符串。"""
+    if isinstance(value, str):
+        import json  # pylint: disable=import-outside-toplevel
+        s = value.strip()
+        if not s:
+            raise ValueError('color 参数为空字符串')
+        value = json.loads(s)
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        raise ValueError('color 必须是包含 3 个数值的列表: {}'.format(value))
+    return (float(value[0]), float(value[1]), float(value[2]))
+
+
+def _color_attribute(material):
+    # type: (str) -> str
+    """根据材质类型返回颜色属性名。"""
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    node_type = cmds.nodeType(material)
+    mapping = {
+        'lambert': 'color',
+        'blinn': 'color',
+        'phong': 'color',
+        'aiStandardSurface': 'baseColor',
+    }
+    return mapping.get(node_type, 'color')
+
+
+def _texture_attribute(material, attribute):
+    # type: (str, str) -> str
+    """把通用属性名映射到 aiStandardSurface 的属性名。"""
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    node_type = cmds.nodeType(material)
+    if node_type == 'aiStandardSurface':
+        mapping = {
+            'color': 'baseColor',
+            'diffuse': 'baseColor',
+        }
+        return mapping.get(attribute, attribute)
+    return attribute
+
+
 @tool(
     dcc=['maya'],
     description='创建 Maya 材质节点（lambert/blinn/phong/aiStandardSurface），并返回节点名。',
@@ -53,6 +95,7 @@ def _normalize_names(names):
         {'summary': '创建红色 Lambert', 'args': {'name': 'red_lambert', 'material_type': 'lambert'}},
     ],
     returns_desc='str: 创建的材质节点名',
+    notes=['支持类型: lambert / blinn / phong / aiStandardSurface。', 'aiStandardSurface 需要已加载 Arnold 插件（mtoa）。'],
 )
 def create_material(name, material_type='lambert'):
     # type: (str, str) -> str
@@ -83,6 +126,7 @@ def create_material(name, material_type='lambert'):
         {'summary': '把 red_lambert 设为红色', 'args': {'material': 'red_lambert', 'color': [1.0, 0.0, 0.0]}},
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['color 为 0-1 范围的 [r, g, b] 或形如 "[1,0,0]" 的 JSON。', 'lambert/blinn/phong 写入 color 属性，aiStandardSurface 写入 baseColor。'],
 )
 def set_material_color(material, color):
     # type: (str, Any) -> Dict[str, Any]
@@ -114,6 +158,7 @@ def set_material_color(material, color):
         {'summary': '把 red_lambert 赋给 pCube1', 'args': {'material': 'red_lambert', 'objects': 'pCube1'}},
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['objects 支持列表或逗号分隔的字符串。', '会复用已连接的 shadingEngine；否则自动创建 <material>SG。'],
 )
 def assign_material(material, objects):
     # type: (str, Any) -> Dict[str, Any]
@@ -164,6 +209,7 @@ def assign_material(material, objects):
         },
     ],
     returns_desc='str: 文件纹理节点名',
+    notes=['attribute 支持 color / diffuse 等常见语义名，工具自动映射到实际属性。', 'file_path 必须是已存在的绝对路径。'],
 )
 def connect_file_texture(material, file_path, attribute='color', texture_name=None):
     # type: (str, str, str, Optional[str]) -> str
@@ -202,6 +248,7 @@ def connect_file_texture(material, file_path, attribute='color', texture_name=No
     wrap_undo=False,
     examples=[{'summary': '列出材质', 'args': {}}],
     returns_desc='List[dict]: 材质名与类型列表',
+    notes=['返回场景全部材质节点及其类型。'],
 )
 def list_materials():
     # type: () -> List[Dict[str, Any]]
@@ -224,6 +271,7 @@ def list_materials():
     wrap_undo=False,
     examples=[{'summary': '查询 pCube1 的材质', 'args': {'object_name': 'pCube1'}}],
     returns_desc='List[str]: 材质名列表',
+    notes=['通过 shadingEngine 反查该对象使用的所有材质。'],
 )
 def get_object_materials(object_name):
     # type: (str) -> List[str]
@@ -246,40 +294,3 @@ def get_object_materials(object_name):
         return list(set(materials))
 
     return run_on_main(_impl)
-
-
-def _to_color(value):
-    # type: (Any) -> tuple
-    """把 [r,g,b] 转为三元组。"""
-    if isinstance(value, str):
-        import json  # pylint: disable=import-outside-toplevel
-        value = json.loads(value)
-    return (float(value[0]), float(value[1]), float(value[2]))
-
-
-def _color_attribute(material):
-    # type: (str) -> str
-    """根据材质类型返回颜色属性名。"""
-    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
-    node_type = cmds.nodeType(material)
-    mapping = {
-        'lambert': 'color',
-        'blinn': 'color',
-        'phong': 'color',
-        'aiStandardSurface': 'baseColor',
-    }
-    return mapping.get(node_type, 'color')
-
-
-def _texture_attribute(material, attribute):
-    # type: (str, str) -> str
-    """把通用属性名映射到 aiStandardSurface 的属性名。"""
-    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
-    node_type = cmds.nodeType(material)
-    if node_type == 'aiStandardSurface':
-        mapping = {
-            'color': 'baseColor',
-            'diffuse': 'baseColor',
-        }
-        return mapping.get(attribute, attribute)
-    return attribute

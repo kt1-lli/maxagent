@@ -77,6 +77,7 @@ def _normalize_names(names):
         },
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['attribute 可以是 translate/rotate/scale 或具体 translateX 等。', '会先跳到目标帧再记录，会改变当前帧。'],
 )
 def set_keyframe(name, frame, attribute='translate'):
     # type: (str, float, str) -> Dict[str, Any]
@@ -108,6 +109,7 @@ def set_keyframe(name, frame, attribute='translate'):
         {'summary': '查询 pCube1 在第 10 帧的 translateY', 'args': {'name': 'pCube1', 'frame': 10, 'attribute': 'translateY'}},
     ],
     returns_desc='dict: {"value": float}',
+    notes=['attribute 必须是具体分量（如 translateY），不能是 translate。', '会切到目标帧后读取，可能改变当前帧。'],
 )
 def get_keyframe_value(name, frame, attribute='translateY'):
     # type: (str, float, str) -> Dict[str, Any]
@@ -139,6 +141,7 @@ def get_keyframe_value(name, frame, attribute='translateY'):
         {'summary': '删除 pCube1 第 30 帧 rotate 关键帧', 'args': {'name': 'pCube1', 'frame': 30, 'attribute': 'rotate'}},
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['清除该属性在指定帧的关键帧，其它帧保留。'],
 )
 def delete_keyframe(name, frame, attribute='translate'):
     # type: (str, float, str) -> Dict[str, Any]
@@ -170,6 +173,7 @@ def delete_keyframe(name, frame, attribute='translate'):
         {'summary': '设置播放范围为 1-120 帧', 'args': {'start': 1, 'end': 120}},
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['同时影响 min/max 播放范围。'],
 )
 def set_playback_range(start, end):
     # type: (int, int) -> Dict[str, Any]
@@ -195,6 +199,7 @@ def set_playback_range(start, end):
     category='animation',
     examples=[{'summary': '获取当前帧', 'args': {}}],
     returns_desc='dict: {"frame": float}',
+    notes=['返回浮点帧号（Maya 支持子帧）。'],
 )
 def get_current_frame():
     # type: () -> Dict[str, Any]
@@ -215,6 +220,7 @@ def get_current_frame():
     category='animation',
     examples=[{'summary': '跳到第 30 帧', 'args': {'frame': 30}}],
     returns_desc='dict: {"frame": float}',
+    notes=['会同步时间滑块与场景当前帧。'],
 )
 def set_current_frame(frame):
     # type: (float) -> Dict[str, Any]
@@ -244,6 +250,7 @@ def set_current_frame(frame):
         },
     ],
     returns_desc='dict: {"ok": True, "baked": List[str]}',
+    notes=['执行后原有约束/表达式不会被移除，请视需要手动 delete。', 'sampleBy 越小烘焙越精细，耗时也越高。'],
 )
 def bake_simulation(names, start=None, end=None, step=1):
     # type: (Any, Optional[int], Optional[int], int) -> Dict[str, Any]
@@ -297,6 +304,7 @@ def bake_simulation(names, start=None, end=None, step=1):
         },
     ],
     returns_desc='dict: {"ok": True}',
+    notes=['offset 为正表示向后，负表示向前。', 'attribute=None 时移动全部关键帧。'],
 )
 def shift_keyframes(names, offset, attribute=None):
     # type: (Any, float, Optional[str]) -> Dict[str, Any]

@@ -33,6 +33,7 @@ def _ensure_in_maya():
         {'summary': '截图并保存', 'args': {'output_path': 'C:/Temp/viewport.png', 'width': 1280, 'height': 720}},
     ],
     returns_desc='dict: {"ok": True, "file_path": str}',
+    notes=['输出格式由 output_path 扩展名决定：.png/.jpg/.tif/.iff。', 'camera 为空时使用当前活动视图。'],
 )
 def capture_viewport(output_path, width=1280, height=720, camera=None):
     # type: (str, int, int, Optional[str]) -> Dict[str, Any]

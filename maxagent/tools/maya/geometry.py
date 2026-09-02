@@ -38,8 +38,12 @@ def _to_xyz_list(value, name='position'):
 
     coords = value
     if isinstance(coords, str):
+        s = coords.strip()
+        if not s:
+            # 空字符串等价于未传，避免调用方必须显式传 "[0,0,0]"
+            return None
         try:
-            coords = json.loads(coords)
+            coords = json.loads(s)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 '{} 字符串不是合法 JSON: {} ({})'.format(name, value, exc),

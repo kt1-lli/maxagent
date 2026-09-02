@@ -54,17 +54,49 @@ def create_maya_light(
             raise ValueError('不支持的 light_type: {}，可选: {}'.format(
                 light_type, ', '.join(sorted(valid)),
             ))
-        kwargs = {}
-        if name:
-            kwargs['name'] = name
-        transform = cmds.light(type=light_type, **kwargs)
+        # Maya 没有通用 cmds.light；每种灯光有专用命令，且都返回 shape 节点名。
+        # 使用命令而非 shadingNode 是为了让 Maya 自动创建对应 transform 并挂上 shape。
+        creator = {
+            'ambient': cmds.ambientLight,
+            'directional': cmds.directionalLight,
+            'point': cmds.pointLight,
+            'spot': cmds.spotLight,
+        }.get(light_type)
+        if creator is not None:
+            kwargs = {}
+            if name:
+                kwargs['name'] = name
+            shape = creator(**kwargs)
+        else:
+            # areaLight 需要用 shadingNode + asLight
+            shade_kwargs = {'asLight': True}
+            if name:
+                shade_kwargs['name'] = name
+            shape = cmds.shadingNode('areaLight', **shade_kwargs)
+        # 灯光命令返回的通常是 shape 节点；transform 是它的父节点
+        parents = cmds.listRelatives(shape, parent=True, fullPath=False) or []
+        transform = parents[0] if parents else shape
         if position:
-            coords = json.loads(position)
-            cmds.xform(transform, translation=[float(coords[0]), float(coords[1]), float(coords[2])], worldSpace=True)
+            s = position.strip() if isinstance(position, str) else position
+            if s:
+                coords = json.loads(s) if isinstance(s, str) else s
+                cmds.xform(
+                    transform,
+                    translation=[float(coords[0]), float(coords[1]), float(coords[2])],
+                    worldSpace=True,
+                )
         if color:
-            coords = json.loads(color)
-            cmds.setAttr(transform + '.color', float(coords[0]) / 255.0, float(coords[1]) / 255.0, float(coords[2]) / 255.0, type='double3')
-        cmds.setAttr(transform + '.intensity', float(intensity))
+            s = color.strip() if isinstance(color, str) else color
+            if s:
+                coords = json.loads(s) if isinstance(s, str) else s
+                cmds.setAttr(
+                    shape + '.color',
+                    float(coords[0]) / 255.0,
+                    float(coords[1]) / 255.0,
+                    float(coords[2]) / 255.0,
+                    type='double3',
+                )
+        cmds.setAttr(shape + '.intensity', float(intensity))
         return transform
 
     transform = run_on_main(_do)

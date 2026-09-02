@@ -54,7 +54,8 @@ def _normalize_names(names):
     dangerous=True,
     wrap_undo=False,
     examples=[{"summary": "保存场景", "args": {"file_path": 'C:/Work/scene.ma', "allow_overwrite": True}}],
-    returns_desc="dict: {\"ok\": True, \"file_path\": str}"
+    returns_desc="dict: {\"ok\": True, \"file_path\": str}",
+    notes=['file_type: mayaAscii（.ma）或 mayaBinary（.mb）。', '路径不存在时会自动创建父目录。'],
 )
 def save_maya_file(file_path, allow_overwrite=True):
     # type: (str, bool) -> Dict[str, Any]
@@ -88,7 +89,8 @@ def save_maya_file(file_path, allow_overwrite=True):
     dangerous=True,
     wrap_undo=False,
     examples=[{"summary": "打开场景", "args": {"file_path": 'C:/Work/scene.ma'}}],
-    returns_desc="dict: {\"ok\": True, \"file_path\": str}"
+    returns_desc="dict: {\"ok\": True, \"file_path\": str}",
+    notes=['会丢弃当前场景的未保存修改，请先自行确认已保存。'],
 )
 def open_maya_file(file_path, force=False):
     # type: (str, bool) -> Dict[str, Any]
@@ -118,7 +120,8 @@ def open_maya_file(file_path, force=False):
     dangerous=True,
     wrap_undo=False,
     examples=[{"summary": "导入模型", "args": {"file_path": 'C:/Work/model.fbx'}}],
-    returns_desc="List[str]: 导入的顶层节点名列表"
+    returns_desc="List[str]: 导入的顶层节点名列表",
+    notes=['支持 .ma/.mb/.fbx/.obj/.abc；命名空间避免与现有对象冲突。'],
 )
 def import_file(file_path, namespace=None):
     # type: (str, Optional[str]) -> List[str]
@@ -153,7 +156,8 @@ def import_file(file_path, namespace=None):
     dangerous=True,
     wrap_undo=False,
     examples=[{"summary": "导出选中对象为 FBX", "args": {"file_path": 'C:/Work/export.fbx', "objects": 'pCube1'}}],
-    returns_desc="dict: {\"ok\": True, \"file_path\": str}"
+    returns_desc="dict: {\"ok\": True, \"file_path\": str}",
+    notes=['需先选中要导出的对象，未选中时会报错。'],
 )
 def export_selected(file_path, objects=None):
     # type: (str, Any) -> Dict[str, Any]
@@ -217,7 +221,8 @@ def export_selected(file_path, objects=None):
     dangerous=True,
     wrap_undo=False,
     examples=[{"summary": "引用角色模型", "args": {"file_path": 'C:/Work/char.ma', "namespace": 'char'}}],
-    returns_desc="dict: {\"ok\": True, \"reference_node\": str}"
+    returns_desc="dict: {\"ok\": True, \"reference_node\": str}",
+    notes=['引用是活链接，源文件更新后本场景也会跟着变。'],
 )
 def create_reference(file_path, namespace=None):
     # type: (str, Optional[str]) -> Dict[str, Any]
@@ -249,7 +254,8 @@ def create_reference(file_path, namespace=None):
     category='scene_io',
     wrap_undo=False,
     examples=[{"summary": "列出引用", "args": {}}],
-    returns_desc="List[dict]: 引用信息列表"
+    returns_desc="List[dict]: 引用信息列表",
+    notes=['返回场景中所有 reference 的路径与命名空间。'],
 )
 def list_references():
     # type: () -> List[Dict[str, Any]]

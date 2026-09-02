@@ -274,27 +274,50 @@ def set_maya_attr(attribute, value, force=False):
         if force and cmds.getAttr(attribute, lock=True):
             cmds.setAttr(attribute, lock=False)
 
+        real_value = value
+        # 字符串可能是纯字符串属性值，也可能是形如 "[1,2,3]" 的向量 JSON。
+        # 优先尝试解析为 JSON 列表，失败则当纯字符串。
+        if isinstance(real_value, str):
+            s = real_value.strip()
+            if s.startswith('[') or s.startswith('('):
+                try:
+                    import json  # pylint: disable=import-outside-toplevel
+                    parsed = json.loads(s)
+                    if isinstance(parsed, (list, tuple)):
+                        real_value = parsed
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
         # 字符串类型
-        if isinstance(value, str):
-            cmds.setAttr(attribute, value, type='string')
+        if isinstance(real_value, str):
+            cmds.setAttr(attribute, real_value, type='string')
+        # 布尔（注意：bool 是 int 子类，必须在 int/float 之前判断）
+        elif isinstance(real_value, bool):
+            cmds.setAttr(attribute, bool(real_value))
         # 向量/矩阵：list/tuple
-        elif isinstance(value, (list, tuple)):
-            if len(value) == 3:
-                cmds.setAttr(attribute, float(value[0]), float(value[1]), float(value[2]),
-                             type='double3')
-            elif len(value) == 16:
-                cmds.setAttr(attribute, value, type='matrix')
+        elif isinstance(real_value, (list, tuple)):
+            if len(real_value) == 3:
+                cmds.setAttr(
+                    attribute,
+                    float(real_value[0]),
+                    float(real_value[1]),
+                    float(real_value[2]),
+                    type='double3',
+                )
+            elif len(real_value) == 16:
+                cmds.setAttr(attribute, real_value, type='matrix')
             else:
                 raise ValueError(
-                    'value 是列表时长度必须是 3（vector）或 16（matrix），收到 {}'.format(len(value)),
+                    'value 是列表时长度必须是 3（vector）或 16（matrix），收到 {}'.format(
+                        len(real_value),
+                    ),
                 )
-        # 布尔 / 数值
-        elif isinstance(value, bool):
-            cmds.setAttr(attribute, bool(value))
-        elif isinstance(value, (int, float)):
-            cmds.setAttr(attribute, float(value))
+        elif isinstance(real_value, (int, float)):
+            cmds.setAttr(attribute, float(real_value))
         else:
-            raise ValueError('不支持的 value 类型: {}'.format(type(value).__name__))
+            raise ValueError(
+                '不支持的 value 类型: {}'.format(type(real_value).__name__),
+            )
 
         return {'ok': True, 'attribute': attribute}
 
