@@ -74,25 +74,56 @@ def build_scene_snapshot(sync_tool_runner):
 
     snapshot = {}  # type: Dict[str, Any]
 
-    # 对象列表精简：只保留 name + class + position
-    if isinstance(obj_result, dict) and obj_result.get('ok'):
-        raw = obj_result.get('data', {})
-        snapshot['objects'] = _summarize_objects(raw.get('items', []))
-        snapshot['object_count'] = raw.get('total', 0)
+    # 对象列表精简：只保留 name + class + position。
+    # 兼容三种返回结构：
+    # 1) {'ok': True, 'data': {'items': [...], 'total': N}}  (Max 老结构)
+    # 2) {'items': [...], 'total': N}                        (Maya 新结构，limit>0)
+    # 3) [ ... ]                                             (直接 list)
+    obj_items, obj_total = _normalize_items(obj_result)
+    if obj_items is not None:
+        snapshot['objects'] = _summarize_objects(obj_items)
+        snapshot['object_count'] = obj_total if obj_total is not None else len(obj_items)
 
     # 选择集
-    if isinstance(sel_result, dict) and sel_result.get('ok'):
-        raw = sel_result.get('data', {})
+    sel_items, _ = _normalize_items(sel_result)
+    if sel_items is not None:
         snapshot['selection'] = [
-            item.get('name', '')
-            for item in raw.get('items', [])
+            (item.get('name', '') if isinstance(item, dict) else str(item))
+            for item in sel_items
         ]
 
     # 时间
-    if isinstance(time_result, dict) and time_result.get('ok'):
-        snapshot['time'] = time_result.get('data', {})
+    if isinstance(time_result, dict):
+        if time_result.get('ok') and isinstance(time_result.get('data'), dict):
+            snapshot['time'] = time_result.get('data', {})
+        else:
+            snapshot['time'] = time_result
 
     return snapshot if snapshot else None
+
+
+def _normalize_items(result):
+    # type: (Any) -> tuple
+    """把工具返回值归一化为 (items_list, total_or_None)。
+
+    支持三种结构：
+    - {'ok': True, 'data': {'items': [...], 'total': N}}
+    - {'items': [...], 'total': N}
+    - [ ... ]
+
+    :returns: (list | None, int | None)。若无法识别返回 (None, None)。
+    """
+    if result is None:
+        return (None, None)
+    if isinstance(result, list):
+        return (result, None)
+    if isinstance(result, dict):
+        if result.get('ok') and isinstance(result.get('data'), dict):
+            data = result['data']
+            return (data.get('items', []), data.get('total'))
+        if 'items' in result and isinstance(result['items'], list):
+            return (result['items'], result.get('total'))
+    return (None, None)
 
 
 def _summarize_objects(items):

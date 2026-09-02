@@ -173,8 +173,8 @@ class SessionMemoryManager(object):
         # type: (Any) -> List[MemoryItem]
         """提取场景事实。"""
         items = []
-        msgs = getattr(conversation, 'messages', [])
-        if not isinstance(msgs, list):
+        msgs = _messages_as_dicts(conversation)
+        if not msgs:
             return items
 
         # 简单的启发式规则：检测到"创建/命名/修改"相关描述
@@ -183,8 +183,7 @@ class SessionMemoryManager(object):
             tcs = msg.get('tool_calls', [])
             if isinstance(tcs, list):
                 for tc in tcs:
-                    fn = tc.get('function', {})
-                    all_tools.append(fn.get('name', ''))
+                    all_tools.append(_tool_call_name(tc))
 
         # 检测"创建了某物体"事实
         created_names = set()
@@ -193,9 +192,8 @@ class SessionMemoryManager(object):
             if not isinstance(tcs, list):
                 continue
             for tc in tcs:
-                fn = tc.get('function', {})
-                tname = fn.get('name', '')
-                args = fn.get('arguments', {})
+                tname = _tool_call_name(tc)
+                args = _tool_call_args(tc)
                 if tname.startswith('create_') and 'name' in args:
                     created_names.add(args['name'])
 
@@ -215,7 +213,7 @@ class SessionMemoryManager(object):
         # type: (Any) -> List[MemoryItem]
         """提取用户偏好（基于工具调用模式）。"""
         items = []
-        msgs = getattr(conversation, 'messages', [])
+        msgs = _messages_as_dicts(conversation)
 
         # 统计命名语言偏好
         all_names = []
@@ -224,8 +222,7 @@ class SessionMemoryManager(object):
             if not isinstance(tcs, list):
                 continue
             for tc in tcs:
-                fn = tc.get('function', {})
-                args = fn.get('arguments', {})
+                args = _tool_call_args(tc)
                 if 'name' in args:
                     all_names.append(args['name'])
 
@@ -256,8 +253,7 @@ class SessionMemoryManager(object):
             if not isinstance(tcs, list):
                 continue
             for tc in tcs:
-                fn = tc.get('function', {})
-                args = fn.get('arguments', {})
+                args = _tool_call_args(tc)
                 color = args.get('color') or args.get('diffuse_color')
                 if color and isinstance(color, list) and len(color) >= 3:
                     key = '{}-{}-{}'.format(
@@ -282,14 +278,15 @@ class SessionMemoryManager(object):
         # type: (Any) -> List[MemoryItem]
         """提取成功工作流模式。"""
         items = []
-        msgs = getattr(conversation, 'messages', [])
+        msgs = _messages_as_dicts(conversation)
 
         # 收集所有 tool_calls
         all_tool_chains = []
         for msg in msgs:
             tcs = msg.get('tool_calls', [])
             if isinstance(tcs, list):
-                chain = [tc.get('function', {}).get('name', '') for tc in tcs]
+                chain = [_tool_call_name(tc) for tc in tcs]
+                chain = [c for c in chain if c]
                 if chain:
                     all_tool_chains.append(chain)
 
@@ -495,6 +492,70 @@ def _make_uid():
     """生成简单位移标识符。"""
     import uuid
     return uuid.uuid4().hex[:12]
+
+
+def _messages_as_dicts(conversation):
+    # type: (Any) -> List[Dict[str, Any]]
+    """从 conversation 中提取消息列表并归一化为 dict。"""
+    msgs = getattr(conversation, 'messages', [])
+    if not isinstance(msgs, list):
+        return []
+    result = []
+    for m in msgs:
+        if isinstance(m, dict):
+            result.append(m)
+            continue
+        # Message 对象走 to_openai_dict，回落到属性映射
+        if hasattr(m, 'to_openai_dict'):
+            try:
+                d = m.to_openai_dict()
+                # to_openai_dict 可能省略 tool_calls，若属性上有则补齐
+                if not d.get('tool_calls') and getattr(m, 'tool_calls', None):
+                    d['tool_calls'] = m.tool_calls
+                result.append(d)
+                continue
+            except Exception:  # pylint: disable=broad-except
+                pass
+        result.append({
+            'role': getattr(m, 'role', ''),
+            'content': getattr(m, 'content', None),
+            'tool_calls': getattr(m, 'tool_calls', None),
+            'tool_call_id': getattr(m, 'tool_call_id', None),
+            'name': getattr(m, 'name', None),
+        })
+    return result
+
+
+def _tool_call_args(tc):
+    # type: (Any) -> Dict[str, Any]
+    """从 tool_call 中安全提取 arguments 字典（arguments 可能是 dict 或 JSON 字符串）。"""
+    if not isinstance(tc, dict):
+        return {}
+    fn = tc.get('function') or {}
+    if not isinstance(fn, dict):
+        return {}
+    args = fn.get('arguments')
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str) and args:
+        try:
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    return {}
+
+
+def _tool_call_name(tc):
+    # type: (Any) -> str
+    """从 tool_call 中提取函数名，失败返回空串。"""
+    if not isinstance(tc, dict):
+        return ''
+    fn = tc.get('function') or {}
+    if not isinstance(fn, dict):
+        return ''
+    return fn.get('name', '') or ''
 
 
 # 全局单例

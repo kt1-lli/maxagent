@@ -35,8 +35,13 @@ def _node_to_dict(name: str, detail: bool = False) -> Dict[str, Any]:
     info: Dict[str, Any] = {
         'name': name,
         'type': cmds.objectType(name),
-        'visible': bool(cmds.getAttr(name + '.visibility')),
     }
+    # visibility 只在 DAG 节点上存在，DG 节点（如 time1、defaultRenderGlobals）没有此属性
+    if cmds.attributeQuery('visibility', node=name, exists=True):
+        try:
+            info['visible'] = bool(cmds.getAttr(name + '.visibility'))
+        except Exception:  # pylint: disable=broad-except
+            pass
     if detail:
         try:
             tx, ty, tz = cmds.xform(name, query=True, translation=True, worldSpace=True) or (0, 0, 0)
@@ -104,22 +109,45 @@ def get_maya_info():
             'summary': '列出场景中的所有 transform',
             'args': {'object_type': 'transform', 'detail': False},
         },
+        {
+            'summary': '只取前 30 个对象（LLM 场景快照场景）',
+            'args': {'object_type': '', 'limit': 30, 'detail': False},
+        },
     ],
     notes=[
         'object_type 为空时返回所有 DAG 对象（transform）。',
         'detail=True 会附加每个对象的位置、旋转、缩放。',
+        'limit>0 时返回 dict {"items": [...], "total": N}；limit<=0 或省略时直接返回 list。',
+        '默认 object_type 过滤只在 DAG 节点上有效；如需查 time1 等 DG 节点，请指定 object_type。',
     ],
-    returns_desc='list[dict {"name": str, "type": str, ...}]',
+    returns_desc=(
+        'list[dict] 或 dict {"items": list[dict], "total": int}（当 limit>0 时）'
+    ),
 )
-def list_maya_objects(object_type: str = "", detail: bool = False):
-    # type: (str, bool) -> List[Dict[str, Any]]
-    """列出 Maya 场景对象。"""
+def list_maya_objects(object_type: str = "", detail: bool = False, limit: int = 0):
+    # type: (str, bool, int) -> Any
+    """列出 Maya 场景对象。
+
+    :param object_type: 对象类型过滤，如 "transform" / "mesh" / "joint"，空串表示不过滤
+    :param detail: 是否附加 transform 位置/旋转/缩放信息
+    :param limit: >0 时截断结果并返回带 total 的 dict；<=0 时返回 list
+    """
     _ensure_in_maya()
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
     kwargs: Dict[str, Any] = {'long': True}
     if object_type:
         kwargs['type'] = object_type
+    else:
+        # 不指定 type 时默认只取 DAG 对象，避免把 time1 等 DG 节点也拉进来
+        kwargs['dag'] = True
     nodes = cmds.ls(**kwargs) or []
+    total = len(nodes)
+    if limit and limit > 0:
+        nodes = nodes[:int(limit)]
+        return {
+            'items': [_node_to_dict(n, detail=detail) for n in nodes],
+            'total': total,
+        }
     return [_node_to_dict(n, detail=detail) for n in nodes]
 
 
