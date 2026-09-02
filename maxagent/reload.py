@@ -80,6 +80,9 @@ def _list_maxagent_modules():
 def _close_existing_panel():
     """尽可能优雅地关闭旧 DockWidget 单例。失败不抛，只打日志。"""
     try:
+        # Maya 端：先删掉 workspaceControl，避免重载后旧 UI 遗留
+        _close_maya_workspace_control()
+
         startup_mod = sys.modules.get(_PACKAGE_PREFIX + '.startup')
         if startup_mod is None:
             return
@@ -116,14 +119,42 @@ def _close_existing_panel():
                 dock.deleteLater()
             except Exception:  # pylint: disable=broad-except
                 logger.exception('reload: 销毁 DockWidget 内部 widget 失败')
-        # 清空模块级单例引用
+        # 清空模块级单例引用（startup 端）
         try:
             startup_mod._DOCK_WIDGET = None  # noqa: SLF001
             startup_mod._QDOCK_HOLDER = None  # noqa: SLF001
         except Exception:  # pylint: disable=broad-except
             pass
+        # 同时清空 dock_widget 模块自身的单例引用（Maya 分支用它做单例）
+        try:
+            dw_mod = sys.modules.get(_PACKAGE_PREFIX + '.ui.dock_widget')
+            if dw_mod is not None:
+                if hasattr(dw_mod, '_DOCK_WIDGET'):
+                    dw_mod._DOCK_WIDGET = None  # noqa: SLF001
+                if hasattr(dw_mod, '_DOCK_HOLDER'):
+                    dw_mod._DOCK_HOLDER = None  # noqa: SLF001
+        except Exception:  # pylint: disable=broad-except
+            pass
     except Exception:  # pylint: disable=broad-except
         logger.exception('reload: _close_existing_panel 整体失败')
+
+
+def _close_maya_workspace_control():
+    """删除遗留的 Maya workspaceControl，避免热重载后旧面板不消失。"""
+    try:
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    except ImportError:
+        return  # 非 Maya 环境
+    control_name = 'MaxAgentWorkspaceControl'
+    try:
+        if cmds.workspaceControl(control_name, exists=True):
+            try:
+                cmds.deleteUI(control_name, control=True)
+            except Exception:  # pylint: disable=broad-except
+                pass
+    except Exception:  # pylint: disable=broad-except
+        # cmds 不可用时静默
+        pass
 
 
 def _purge_modules(skip_self=True):
@@ -165,6 +196,18 @@ def reload_maxagent(reshow=True):
     """
     logger.info('reload: 开始热重载')
     print('[MaxAgent] reload: 开始热重载...')
+
+    # 0. 记录当前 DCC，重载后按同一 DCC 走对应入口（否则会退回默认的 Max 入口）
+    _current_dcc_before = None  # type: Optional[str]
+    try:
+        rt_mod_before = sys.modules.get(_PACKAGE_PREFIX + '.dcc.runtime')
+        if rt_mod_before is not None:
+            get_cur = getattr(rt_mod_before, 'current_dcc', None)
+            if callable(get_cur):
+                _current_dcc_before = get_cur() or None
+    except Exception:  # pylint: disable=broad-except
+        _current_dcc_before = None
+    print('[MaxAgent] reload: 记录当前 DCC = {}'.format(_current_dcc_before))
 
     # 1. 先把状态落盘 + 关旧 UI
     _close_existing_panel()
@@ -217,6 +260,16 @@ def reload_maxagent(reshow=True):
         rt_mod = importlib.import_module(_PACKAGE_PREFIX + '.dcc.runtime')
         rt_mod._DCC_NAME = None  # noqa: SLF001
         rt_mod._ADAPTER = None  # noqa: SLF001
+        # 3.6 若重载前锁定过 DCC，恢复回去，避免入口选错
+        if _current_dcc_before:
+            set_cur = getattr(rt_mod, 'set_current_dcc', None)
+            if callable(set_cur):
+                set_cur(_current_dcc_before)
+                print(
+                    '[MaxAgent] reload: 已恢复 DCC = {}'.format(
+                        _current_dcc_before,
+                    ),
+                )
     except Exception:  # pylint: disable=broad-except
         traceback.print_exc()
 
@@ -228,15 +281,36 @@ def reload_maxagent(reshow=True):
     except Exception:  # pylint: disable=broad-except
         new_logger = None  # noqa: F841
 
-    # 4. 重新创建 DockWidget
+    # 4. 重新创建 DockWidget（按 DCC 走对应入口）
     if not reshow:
         print('[MaxAgent] reload: 仅卸载，不重新显示（reshow=False）')
         return None
 
     try:
+        # Maya 走 dock_widget.get_or_create_dock；Max 走 startup.show_panel。
+        # 默认（未探测/其他）也走 startup.show_panel 保持向后兼容。
+        if _current_dcc_before == 'maya':
+            # 保险起见，再次显式锁定，避免 startup 侧的探测被误触
+            try:
+                rt_mod2 = importlib.import_module(_PACKAGE_PREFIX + '.dcc.runtime')
+                set_cur = getattr(rt_mod2, 'set_current_dcc', None)
+                if callable(set_cur):
+                    set_cur('maya')
+            except Exception:  # pylint: disable=broad-except
+                pass
+            tools_mod = importlib.import_module(_PACKAGE_PREFIX + '.tools')
+            load_all_tools = getattr(tools_mod, 'load_all_tools', None)
+            if callable(load_all_tools):
+                load_all_tools()
+            dw_mod = importlib.import_module(_PACKAGE_PREFIX + '.ui.dock_widget')
+            get_or_create = getattr(dw_mod, 'get_or_create_dock')
+            dock = get_or_create()
+            print('[MaxAgent] reload: 完成 ✓ (Maya)')
+            return dock
+
         startup = importlib.import_module(_PACKAGE_PREFIX + '.startup')
         dock = startup.show_panel(force=True)
-        print('[MaxAgent] reload: 完成 ✓')
+        print('[MaxAgent] reload: 完成 ✓ (3ds Max)')
         return dock
     except Exception:  # pylint: disable=broad-except
         traceback.print_exc()
