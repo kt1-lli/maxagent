@@ -16,7 +16,7 @@ from typing import Tuple
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
-from ._common import _ensure_in_maya, _to_xyz_list
+from ._common import _ensure_in_maya, _to_xyz_list, rollback_on_error
 from ...tools.registry import tool
 
 
@@ -91,7 +91,8 @@ def create_maya_box(
         if name:
             kwargs['name'] = name
         transform, _ = cmds.polyCube(**kwargs)
-        _apply_transform(transform, position=position, rotation_euler=rotation_euler)
+        with rollback_on_error([transform]):
+            _apply_transform(transform, position=position, rotation_euler=rotation_euler)
         return transform
 
     transform = run_on_main(_make)
@@ -135,7 +136,8 @@ def create_maya_sphere(
         if name:
             kwargs['name'] = name
         transform, _ = cmds.polySphere(**kwargs)
-        _apply_transform(transform, position=position, rotation_euler=rotation_euler)
+        with rollback_on_error([transform]):
+            _apply_transform(transform, position=position, rotation_euler=rotation_euler)
         return transform
 
     transform = run_on_main(_make)
@@ -179,7 +181,8 @@ def create_maya_cylinder(
         if name:
             kwargs['name'] = name
         transform, _ = cmds.polyCylinder(**kwargs)
-        _apply_transform(transform, position=position, rotation_euler=rotation_euler)
+        with rollback_on_error([transform]):
+            _apply_transform(transform, position=position, rotation_euler=rotation_euler)
         return transform
 
     transform = run_on_main(_make)

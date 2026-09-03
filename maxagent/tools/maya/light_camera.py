@@ -10,7 +10,7 @@ from typing import Dict
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
-from ._common import _ensure_in_maya
+from ._common import _ensure_in_maya, rollback_on_error
 from ...tools.registry import tool
 
 
@@ -71,27 +71,28 @@ def create_maya_light(
         # 灯光命令返回的通常是 shape 节点；transform 是它的父节点
         parents = cmds.listRelatives(shape, parent=True, fullPath=False) or []
         transform = parents[0] if parents else shape
-        if position:
-            s = position.strip() if isinstance(position, str) else position
-            if s:
-                coords = json.loads(s) if isinstance(s, str) else s
-                cmds.xform(
-                    transform,
-                    translation=[float(coords[0]), float(coords[1]), float(coords[2])],
-                    worldSpace=True,
-                )
-        if color:
-            s = color.strip() if isinstance(color, str) else color
-            if s:
-                coords = json.loads(s) if isinstance(s, str) else s
-                cmds.setAttr(
-                    shape + '.color',
-                    float(coords[0]) / 255.0,
-                    float(coords[1]) / 255.0,
-                    float(coords[2]) / 255.0,
-                    type='double3',
-                )
-        cmds.setAttr(shape + '.intensity', float(intensity))
+        with rollback_on_error([transform, shape]):
+            if position:
+                s = position.strip() if isinstance(position, str) else position
+                if s:
+                    coords = json.loads(s) if isinstance(s, str) else s
+                    cmds.xform(
+                        transform,
+                        translation=[float(coords[0]), float(coords[1]), float(coords[2])],
+                        worldSpace=True,
+                    )
+            if color:
+                s = color.strip() if isinstance(color, str) else color
+                if s:
+                    coords = json.loads(s) if isinstance(s, str) else s
+                    cmds.setAttr(
+                        shape + '.color',
+                        float(coords[0]) / 255.0,
+                        float(coords[1]) / 255.0,
+                        float(coords[2]) / 255.0,
+                        type='double3',
+                    )
+            cmds.setAttr(shape + '.intensity', float(intensity))
         return transform
 
     transform = run_on_main(_do)
@@ -129,10 +130,11 @@ def create_maya_camera(
         if name:
             kwargs['name'] = name
         transform, _ = cmds.camera(**kwargs)
-        if position:
-            coords = json.loads(position)
-            cmds.xform(transform, translation=[float(coords[0]), float(coords[1]), float(coords[2])], worldSpace=True)
-        cmds.setAttr(transform + '.focalLength', float(focal_length))
+        with rollback_on_error([transform]):
+            if position:
+                coords = json.loads(position)
+                cmds.xform(transform, translation=[float(coords[0]), float(coords[1]), float(coords[2])], worldSpace=True)
+            cmds.setAttr(transform + '.focalLength', float(focal_length))
         return transform
 
     transform = run_on_main(_do)
