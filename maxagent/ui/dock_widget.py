@@ -508,15 +508,8 @@ class MaxAgentDockWidget(QtWidgets.QWidget):
         super(MaxAgentDockWidget, self).__init__(parent)
         self.setObjectName('MaxAgentDockWidget')
         # 标题按当前 DCC 区分，用户一眼知道这是哪个 DCC 的专用实例
-        from ..dcc.runtime import current_dcc
-        dcc = current_dcc()
-        if dcc == 'maya':
-            title = 'MaxAgent · Maya AI 助手'
-        elif dcc == '3dsmax':
-            title = 'MaxAgent · 3ds Max AI 助手'
-        else:
-            title = 'MaxAgent · AI 助手'
-        self.setWindowTitle(title)
+        from ._dock_dcc import dock_window_title
+        self.setWindowTitle(dock_window_title())
         self.setStyleSheet(_STYLE)
         self.setMinimumWidth(self._MIN_WIDGET_WIDTH)
 
@@ -2501,7 +2494,6 @@ def get_or_create_dock(force=False):
     global _DOCK_WIDGET, _DOCK_HOLDER
 
     from ..config import ConfigManager
-    from ..dcc.runtime import current_dcc
     from ..logger import get_logger
     from ..tools import load_all_tools
     from .emoji_compat import install_app_font_fallback
@@ -2547,14 +2539,14 @@ def get_or_create_dock(force=False):
     except Exception:  # pylint: disable=broad-except
         logger.debug('install_app_font_fallback failed', exc_info=True)
 
-    dcc = current_dcc()
     config = ConfigManager()
-
-    if dcc == '3dsmax':
-        return _create_max_dock(config)
-    if dcc == 'maya':
-        return _create_maya_dock(config)
-    return _create_standalone_window(config)
+    from ._dock_dcc import dispatch_dock_creation
+    return dispatch_dock_creation(
+        config,
+        _create_max_dock,
+        _create_maya_dock,
+        _create_standalone_window,
+    )
 
 
 def _create_max_dock(config):
