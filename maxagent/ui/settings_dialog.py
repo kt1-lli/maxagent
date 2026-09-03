@@ -2704,11 +2704,12 @@ class SettingsDialog(QtWidgets.QDialog):
             'Calling / 自定义 Header）→ 全部回到默认值'
             '<br>注：仅修改表单显示，需点击「应用」才会写盘——避免误把'
             '名称为空的 Profile 强行落盘破坏配置。</p>'
-        ).format(
-            dcc_name=dcc_name,
-            dcc_mcp_name=dcc_mcp_name,
-            example_action=example_action,
-            config_dir='{config_dir}',
+        ).replace(
+            '{dcc_name}', dcc_name
+        ).replace(
+            '{dcc_mcp_name}', dcc_mcp_name
+        ).replace(
+            '{example_action}', example_action
         )
 
     # ================================================================== #
