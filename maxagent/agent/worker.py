@@ -1686,91 +1686,21 @@ class AgentWorker(QObject):
         :param result: 工具返回结果
         :returns: 复核信息 dict 或 None（不需要复核时）
         """
-        # 仅对影响场景状态的工具执行复核
-        stateful_prefixes = (
-            'create_',
-            'modify_',
-            'set_',
-            'move_',
-            'delete_',
-            'apply_',
+        from .conversation import current_dcc
+        from .verify import auto_verify
+
+        info_tool = (
+            'get_maya_object_info'
+            if current_dcc() == 'maya'
+            else 'get_object_info'
         )
-        if not tool_name.startswith(stateful_prefixes):
-            return None
-
-        # 提取对象名：优先从 tools_schema 的参数映射，或者从 result 中推断
-        target_name = ''  # type: str
-        if isinstance(args, dict):
-            # 常见参数名映射
-            for key in ('name', 'object_name', 'target', 'node_name'):
-                val = args.get(key)
-                if val and isinstance(val, str):
-                    target_name = val
-                    break
-        if not target_name and isinstance(result, dict):
-            # result 中可能返回了创建的对象名
-            target_name = result.get('name') or ''
-
-        if not target_name:
-            # 无法确定对象名，无法进行复核
-            return None
-
-        try:
-            # 通过主线程执行器查询对象真实状态
-            from .conversation import current_dcc
-            info_tool = (
-                'get_maya_object_info'
-                if current_dcc() == 'maya'
-                else 'get_object_info'
-            )
-            verify_result = self._sync_tool_runner(
-                info_tool,
-                {'name': target_name},
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            return {
-                'target': target_name,
-                'status': 'query_failed',
-                'error': str(exc),
-            }
-
-        # _sync_tool_runner 返回工具原始结果（不含 ok/data 外壳）。
-        # Maya get_maya_object_info -> {'exists': bool, 'name': ..., 'position': ...}
-        # Max get_object_info     -> {'found': bool, 'name': ..., ...} 或类似
-        info = verify_result if isinstance(verify_result, dict) else {}
-        # 存在性判断策略：只有明确拿到 exists=False / found=False 才判为不存在，
-        # 其它情况（字段缺失、返回空 dict、超时降级 None）一律按"存在"处理，
-        # 避免复核工具本身的抖动造成误报 not_found。
-        exists_val = info.get('exists')
-        found_val = info.get('found')
-        explicitly_missing = (exists_val is False) or (found_val is False)
-
-        if explicitly_missing:
-            return {
-                'target': target_name,
-                'status': 'not_found',
-                'note': (
-                    '复核时未找到对象 {}，可能已被删除或重命名。'
-                    .format(target_name)
-                ),
-            }
-        return {
-            'target': target_name,
-            'status': 'verified',
-            'current_position': info.get('position'),
-            'current_rotation': (
-                info.get('rotation')
-                or info.get('rotation_euler')
-            ),
-            'current_scale': info.get('scale'),
-            'current_material': info.get('material'),
-            'note': (
-                '以上为此对象执行 {} 后的真实状态。'
-                '请对比你的预期值，若有偏差请修正。'.format(
-                    tool_name,
-                )
-            ),
-        }
+        return auto_verify(
+            tool_name,
+            args,
+            result,
+            self._sync_tool_runner,
+            info_tool,
+        )
 
     # ------------------------------------------------------------------ #
     # 工具/辅助
