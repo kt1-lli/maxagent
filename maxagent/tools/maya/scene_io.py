@@ -19,32 +19,8 @@ from typing import Optional
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya, _normalize_names
 from ...tools.registry import tool
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
-
-
-def _normalize_names(names):
-    # type: (Any) -> List[str]
-    """把 names 归一化为 list[str]。"""
-    if names is None:
-        return []
-    if isinstance(names, (list, tuple)):
-        return [str(x).strip() for x in names if str(x).strip()]
-    if isinstance(names, str):
-        s = names.strip()
-        if not s:
-            return []
-        for sep in (',', ';', '\uff0c', '\uff1b'):
-            if sep in s:
-                return [p.strip() for p in s.split(sep) if p.strip()]
-        return [s]
-    return [str(names)]
 
 
 @tool(

@@ -12,18 +12,13 @@ from typing import Optional
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya
 from ...tools.registry import tool
 
 
 # ---------------------------------------------------------------------- #
 # 内部辅助
 # ---------------------------------------------------------------------- #
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
 
 
 def _to_float_list(value: Any, name: str = 'value') -> Optional[List[float]]:

@@ -9,7 +9,6 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-import json
 from typing import Any
 from typing import Dict
 from typing import List
@@ -17,46 +16,10 @@ from typing import Optional
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya, _normalize_names, _to_xyz_list
 from ...tools.registry import tool
 
 _POSITION_TOLERANCE = 0.01
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
-
-
-def _to_xyz_list(value, name='position'):
-    # type: (Any, str) -> Optional[tuple]
-    """把 [x, y, z] 列表/元组/JSON字符串转为三元组，非法输入抛 ValueError。"""
-    if value is None:
-        return None
-
-    coords = value
-    if isinstance(coords, str):
-        s = coords.strip()
-        if not s:
-            return None
-        try:
-            coords = json.loads(s)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                '{} 字符串不是合法 JSON: {} ({})'.format(name, value, exc),
-            ) from exc
-
-    try:
-        if len(coords) != 3:
-            raise ValueError(
-                '{} 必须是包含 3 个数值的列表/元组: {}'.format(name, value),
-            )
-        return (float(coords[0]), float(coords[1]), float(coords[2]))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            '{} 参数解析失败: {} ({})'.format(name, value, exc),
-        ) from exc
 
 
 @tool(
@@ -590,24 +553,6 @@ def parent_controller_hierarchy(controllers):
         return {'ok': True}
 
     return run_on_main(_impl)
-
-
-def _normalize_names(names):
-    # type: (Any) -> List[str]
-    """把 names 归一化为 list[str]，兼容 LLM 的多种输入形式。"""
-    if names is None:
-        return []
-    if isinstance(names, (list, tuple)):
-        return [str(x).strip() for x in names if str(x).strip()]
-    if isinstance(names, str):
-        s = names.strip()
-        if not s:
-            return []
-        for sep in (',', ';', '\uff0c', '\uff1b'):
-            if sep in s:
-                return [p.strip() for p in s.split(sep) if p.strip()]
-        return [s]
-    return [str(names)]
 
 
 # ---------------------------------------------------------------------------

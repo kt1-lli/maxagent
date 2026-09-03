@@ -10,13 +10,8 @@ from typing import Dict
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya
 from ...tools.registry import tool
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
 
 
 @tool(

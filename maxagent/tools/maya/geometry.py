@@ -9,7 +9,6 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
-import json
 from typing import Any
 from typing import List
 from typing import Optional
@@ -17,48 +16,11 @@ from typing import Tuple
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya, _to_xyz_list
 from ...tools.registry import tool
 
 
 _POSITION_TOLERANCE = 0.01
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
-
-
-def _to_xyz_list(value, name='position'):
-    # type: (Any, str) -> Optional[Tuple[float, float, float]]
-    """把 [x, y, z] 列表/元组/JSON字符串转为三元组，非法输入抛 ValueError。"""
-    if value is None:
-        return None
-
-    coords = value
-    if isinstance(coords, str):
-        s = coords.strip()
-        if not s:
-            # 空字符串等价于未传，避免调用方必须显式传 "[0,0,0]"
-            return None
-        try:
-            coords = json.loads(s)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                '{} 字符串不是合法 JSON: {} ({})'.format(name, value, exc),
-            ) from exc
-
-    try:
-        if len(coords) != 3:
-            raise ValueError(
-                '{} 必须是包含 3 个数值的列表/元组: {}'.format(name, value),
-            )
-        return (float(coords[0]), float(coords[1]), float(coords[2]))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            '{} 参数解析失败: {} ({})'.format(name, value, exc),
-        ) from exc
 
 
 def _apply_transform(name: str, position: Any = None, rotation_euler: Any = None):

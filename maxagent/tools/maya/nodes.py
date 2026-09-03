@@ -25,6 +25,7 @@ from typing import Optional
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya
 from ...tools.registry import tool
 
 
@@ -69,13 +70,6 @@ _ALLOWED_DG_NODES = {
     'choice',
     'network',
 }
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
 
 
 @tool(

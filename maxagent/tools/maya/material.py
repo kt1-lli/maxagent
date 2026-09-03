@@ -17,46 +17,8 @@ from typing import Optional
 
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
+from ._common import _ensure_in_maya, _normalize_names, _to_color
 from ...tools.registry import tool
-
-
-def _ensure_in_maya():
-    # type: () -> None
-    """确保当前运行在 Maya 环境，否则抛出 RuntimeError。"""
-    if current_dcc() != 'maya':
-        raise RuntimeError('非 Maya 环境')
-
-
-def _normalize_names(names):
-    # type: (Any) -> List[str]
-    """把 names 归一化为 list[str]。"""
-    if names is None:
-        return []
-    if isinstance(names, (list, tuple)):
-        return [str(x).strip() for x in names if str(x).strip()]
-    if isinstance(names, str):
-        s = names.strip()
-        if not s:
-            return []
-        for sep in (',', ';', '\uff0c', '\uff1b'):
-            if sep in s:
-                return [p.strip() for p in s.split(sep) if p.strip()]
-        return [s]
-    return [str(names)]
-
-
-def _to_color(value):
-    # type: (Any) -> tuple
-    """把 [r,g,b] 转为三元组。支持 list/tuple 与 JSON 字符串。"""
-    if isinstance(value, str):
-        import json  # pylint: disable=import-outside-toplevel
-        s = value.strip()
-        if not s:
-            raise ValueError('color 参数为空字符串')
-        value = json.loads(s)
-    if not isinstance(value, (list, tuple)) or len(value) < 3:
-        raise ValueError('color 必须是包含 3 个数值的列表: {}'.format(value))
-    return (float(value[0]), float(value[1]), float(value[2]))
 
 
 def _color_attribute(material):
