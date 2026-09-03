@@ -68,24 +68,39 @@ def _normalize_names(names):
 
 @tool(
     dcc=['maya'],
-    description='给对象在指定帧设置关键帧。',
+    description='给对象在指定帧设置关键帧。可选地在打帧前把属性设为目标值。',
     category='animation',
     examples=[
         {
-            'summary': '在 30 帧记录 pCube1 的 translate 关键帧',
+            'summary': '在 30 帧记录 pCube1 的 translate 关键帧（用当前值）',
             'args': {'name': 'pCube1', 'frame': 30, 'attribute': 'translate'},
+        },
+        {
+            'summary': '在 30 帧把 translateX 设为 5.0 并打关键帧',
+            'args': {
+                'name': 'pCube1', 'frame': 30,
+                'attribute': 'translateX', 'value': 5.0,
+            },
         },
     ],
     returns_desc='dict: {"ok": True}',
-    notes=['attribute 可以是 translate/rotate/scale 或具体 translateX 等。', '会先跳到目标帧再记录，会改变当前帧。'],
+    notes=[
+        'attribute 可以是 translate/rotate/scale 或具体 translateX 等。',
+        '会先跳到目标帧再记录，会改变当前帧。',
+        '若要在多个帧记录不同的值，请每次调用都显式传 value，否则会用当前属性值，'
+        '相邻两帧会得到同一个值。',
+        'value 只在 attribute 是具体分量（如 translateX/rotateY）时生效；'
+        '若传入的是 translate 这种复合属性，value 需要是长度为 3 的列表。',
+    ],
 )
-def set_keyframe(name, frame, attribute='translate'):
-    # type: (str, float, str) -> Dict[str, Any]
+def set_keyframe(name, frame, attribute='translate', value=None):
+    # type: (str, float, str, Any) -> Dict[str, Any]
     """在指定帧给对象属性设置关键帧。
 
     :param name: 对象名
     :param frame: 帧数
     :param attribute: 属性名，如 translate / rotate / scale / translateX
+    :param value: 可选，先把该属性设为此值再打帧；None 表示用当前值
     """
     _ensure_in_maya()
 
@@ -95,10 +110,46 @@ def set_keyframe(name, frame, attribute='translate'):
         if not cmds.objExists(name):
             raise ValueError('对象不存在: {}'.format(name))
         cmds.currentTime(frame)
+        if value is not None:
+            _apply_attr_value(name, attribute, value)
         cmds.setKeyframe(name, attribute=attribute)
         return {'ok': True}
 
     return run_on_main(_impl)
+
+
+def _apply_attr_value(name, attribute, value):
+    # type: (str, str, Any) -> None
+    """把属性设为指定值。支持标量/向量/JSON 字符串。"""
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    real = value
+    if isinstance(real, str):
+        s = real.strip()
+        if s:
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, (list, tuple, int, float, bool)):
+                    real = parsed
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+    full = '{}.{}'.format(name, attribute)
+    if isinstance(real, (list, tuple)):
+        if len(real) != 3:
+            raise ValueError(
+                'value 为列表时长度必须是 3，收到 {}'.format(len(real)),
+            )
+        cmds.setAttr(
+            full, float(real[0]), float(real[1]), float(real[2]),
+            type='double3',
+        )
+    elif isinstance(real, bool):
+        cmds.setAttr(full, bool(real))
+    elif isinstance(real, (int, float)):
+        cmds.setAttr(full, float(real))
+    else:
+        raise ValueError('value 类型不支持: {}'.format(type(real).__name__))
 
 
 @tool(

@@ -286,11 +286,37 @@ def get_object_materials(object_name):
     def _impl():
         if not cmds.objExists(object_name):
             raise ValueError('对象不存在: {}'.format(object_name))
-        shading_groups = cmds.listConnections(object_name, type='shadingEngine') or []
-        materials = []
-        for sg in shading_groups:
-            mats = cmds.ls(cmds.listConnections('{}.surfaceShader'.format(sg)), materials=True) or []
-            materials.extend(mats)
-        return list(set(materials))
+        # shadingEngine 通常连在 shape 节点上（如 pCubeShape1），
+        # 传入 transform 时需要先展开成 shape，否则 listConnections 返回空。
+        node_type = cmds.nodeType(object_name)
+        shapes = []  # type: List[str]
+        if node_type == 'transform':
+            shapes = cmds.listRelatives(
+                object_name, shapes=True, noIntermediate=True, fullPath=False,
+            ) or []
+        elif node_type in ('mesh', 'nurbsSurface', 'subdiv'):
+            shapes = [object_name]
+        else:
+            # 其它节点类型（如 face 组件、光源 shape 等）：直接查它自己
+            shapes = [object_name]
+
+        if not shapes:
+            return []
+
+        materials = []  # type: List[str]
+        seen = set()  # type: set
+        for shape in shapes:
+            sgs = cmds.listConnections(shape, type='shadingEngine') or []
+            # 组件级材质（面赋材质）也会连到 shadingEngine，去重
+            for sg in set(sgs):
+                mats = cmds.ls(
+                    cmds.listConnections('{}.surfaceShader'.format(sg)) or [],
+                    materials=True,
+                ) or []
+                for m in mats:
+                    if m not in seen:
+                        seen.add(m)
+                        materials.append(m)
+        return materials
 
     return run_on_main(_impl)

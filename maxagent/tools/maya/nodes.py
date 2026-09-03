@@ -275,15 +275,15 @@ def set_maya_attr(attribute, value, force=False):
             cmds.setAttr(attribute, lock=False)
 
         real_value = value
-        # 字符串可能是纯字符串属性值，也可能是形如 "[1,2,3]" 的向量 JSON。
-        # 优先尝试解析为 JSON 列表，失败则当纯字符串。
+        # 字符串输入可能是：纯字符串属性值、"[1,2,3]" 向量、或 "2.0" / "1" / "true" 等数值/布尔字面量。
+        # 优先尝试解析为 JSON 得到真实类型，失败再退回字符串。
         if isinstance(real_value, str):
             s = real_value.strip()
-            if s.startswith('[') or s.startswith('('):
+            if s:
                 try:
                     import json  # pylint: disable=import-outside-toplevel
                     parsed = json.loads(s)
-                    if isinstance(parsed, (list, tuple)):
+                    if isinstance(parsed, (list, tuple, int, float, bool)):
                         real_value = parsed
                 except Exception:  # pylint: disable=broad-except
                     pass
@@ -622,23 +622,41 @@ def delete_maya_nodes(nodes):
     # type: (Any) -> Dict[str, Any]
     """删除节点。
 
-    :param nodes: 节点名或名列表
+    :param nodes: 节点名或名列表；字符串可以是单个名字，也可以是逗号/分号分隔的多个名字
     """
     _ensure_in_maya()
 
     if isinstance(nodes, str):
-        name_list = [nodes]
+        s = nodes.strip()
+        if not s:
+            name_list = []  # type: List[str]
+        else:
+            # 支持逗号/分号/中文标点分隔的多节点字符串
+            found_sep = None
+            for sep in (',', ';', '\uff0c', '\uff1b'):
+                if sep in s:
+                    found_sep = sep
+                    break
+            if found_sep:
+                name_list = [p.strip() for p in s.split(found_sep) if p.strip()]
+            else:
+                name_list = [s]
     elif isinstance(nodes, (list, tuple)):
-        name_list = [str(n) for n in nodes]
+        name_list = [str(n).strip() for n in nodes if str(n).strip()]
     else:
         raise ValueError('nodes 必须是字符串或列表')
 
     def _impl():
         import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
         existing = [n for n in name_list if cmds.objExists(n)]
+        missing = [n for n in name_list if not cmds.objExists(n)]
         if existing:
             cmds.delete(existing)
-        return {'deleted': len(existing)}
+        return {
+            'deleted': len(existing),
+            'deleted_names': existing,
+            'missing': missing,
+        }
 
     return run_on_main(_impl)
 

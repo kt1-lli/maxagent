@@ -1738,38 +1738,37 @@ class AgentWorker(QObject):
         # Maya get_maya_object_info -> {'exists': bool, 'name': ..., 'position': ...}
         # Max get_object_info     -> {'found': bool, 'name': ..., ...} 或类似
         info = verify_result if isinstance(verify_result, dict) else {}
-        # 兼容不同 DCC 的"存在性"字段
-        exists = info.get('exists')
-        if exists is None:
-            exists = info.get('found')
-        if exists is None:
-            # 没有明确布尔字段：若返回了 name/type/position 中任一，视为存在
-            exists = any(k in info for k in ('name', 'type', 'position'))
+        # 存在性判断策略：只有明确拿到 exists=False / found=False 才判为不存在，
+        # 其它情况（字段缺失、返回空 dict、超时降级 None）一律按"存在"处理，
+        # 避免复核工具本身的抖动造成误报 not_found。
+        exists_val = info.get('exists')
+        found_val = info.get('found')
+        explicitly_missing = (exists_val is False) or (found_val is False)
 
-        if exists:
+        if explicitly_missing:
             return {
                 'target': target_name,
-                'status': 'verified',
-                'current_position': info.get('position'),
-                'current_rotation': (
-                    info.get('rotation')
-                    or info.get('rotation_euler')
-                ),
-                'current_scale': info.get('scale'),
-                'current_material': info.get('material'),
+                'status': 'not_found',
                 'note': (
-                    '以上为此对象执行 {} 后的真实状态。'
-                    '请对比你的预期值，若有偏差请修正。'.format(
-                        tool_name,
-                    )
+                    '复核时未找到对象 {}，可能已被删除或重命名。'
+                    .format(target_name)
                 ),
             }
         return {
             'target': target_name,
-            'status': 'not_found',
+            'status': 'verified',
+            'current_position': info.get('position'),
+            'current_rotation': (
+                info.get('rotation')
+                or info.get('rotation_euler')
+            ),
+            'current_scale': info.get('scale'),
+            'current_material': info.get('material'),
             'note': (
-                '复核时未找到对象 {}，可能已被删除或重命名。'
-                .format(target_name)
+                '以上为此对象执行 {} 后的真实状态。'
+                '请对比你的预期值，若有偏差请修正。'.format(
+                    tool_name,
+                )
             ),
         }
 
