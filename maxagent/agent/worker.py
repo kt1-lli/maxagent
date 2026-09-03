@@ -334,11 +334,11 @@ class AgentWorker(QObject):
                 try:
                     self._context_compressor._llm = new_client
                 except Exception:  # pylint: disable=broad-except
-                    pass
+                    logger.debug('silent except at %s:%d', __name__, 336, exc_info=True)
                 try:
                     self._config_manager.set_active_profile(primary)
                 except Exception:  # pylint: disable=broad-except
-                    pass
+                    logger.debug('silent except at %s:%d', __name__, 340, exc_info=True)
                 logger.info('fallback cooldown: 已回归主 profile %s', primary)
                 self.system_notice.emit(
                     'info',
@@ -361,6 +361,7 @@ class AgentWorker(QObject):
         try:
             active = self._config_manager.get_active_profile()
         except Exception:  # pylint: disable=broad-except
+            logger.debug('silent except at %s:%d', __name__, 363, exc_info=True)
             return None, True
         if active is None:
             return None, True
@@ -402,12 +403,12 @@ class AgentWorker(QObject):
         try:
             self._context_compressor._llm = new_client
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 404, exc_info=True)
         # 同步 config manager 的 active profile（让后续调用与 UI 状态一致）
         try:
             self._config_manager.set_active_profile(target_prof.name)
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 409, exc_info=True)
         logger.info(
             'LLM fallback switched: -> %s (visited=%s)',
             target_prof.name, sorted(self._fallback_visited),
@@ -669,7 +670,7 @@ class AgentWorker(QObject):
                 int(id(cur)),
             )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 671, exc_info=True)
 
         try:
             self._run_loop()
@@ -684,7 +685,7 @@ class AgentWorker(QObject):
                 try:
                     t.quit()
                 except Exception:  # pylint: disable=broad-except
-                    pass
+                    logger.debug('silent except at %s:%d', __name__, 686, exc_info=True)
 
     def run_in_thread(self, user_input, skip_add_user=False):
         """启动一个子线程跑 LLM 对话循环。
@@ -721,7 +722,7 @@ class AgentWorker(QObject):
                     session_id=getattr(self, '_session_id', '') or '',
                 )
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 723, exc_info=True)
         # 检测显式长期记忆意图（记住/以后/默认/总是/必须/严禁 等），
         # 命中即追加到 INSTRUCTIONS.md（Layer 2：长期记忆写入）
         try:
@@ -731,7 +732,7 @@ class AgentWorker(QObject):
                 session_id=getattr(self, '_session_id', '') or '',
             )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 733, exc_info=True)
         # 把用户输入立刻写入对话历史（在调用线程也安全，因为 _conv 修改时序明确）
         if not skip_add_user:
             self._conv.add_user(user_input)
@@ -1338,7 +1339,7 @@ class AgentWorker(QObject):
                             session_id=getattr(self, '_session_id', '') or '',
                         )
                     except Exception:  # pylint: disable=broad-except
-                        pass
+                        logger.debug('silent except at %s:%d', __name__, 1340, exc_info=True)
                 # 会话记忆学习（可能触发 LLM 摘要调用，耗时）
                 try:
                     self._session_memory_mgr.learn_from_session(
@@ -1414,7 +1415,7 @@ class AgentWorker(QObject):
                             )
                             self.system_notice.emit('warn', _msg)
                         except Exception:  # pylint: disable=broad-except
-                            pass
+                            logger.debug('silent except at %s:%d', __name__, 1416, exc_info=True)
                 except Exception as _exc:  # pylint: disable=broad-except
                     logger.debug('approval_queue 判定异常（放行）: %s', _exc)
 
@@ -1540,7 +1541,7 @@ class AgentWorker(QObject):
                     session_id=getattr(self, '_session_id', '') or '',
                 )
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 1542, exc_info=True)
 
         # 走主线程注入的同步执行器（DCC API 必须在主线程）
         if self._sync_tool_runner is None:
@@ -1623,7 +1624,7 @@ class AgentWorker(QObject):
                     session_id=getattr(self, '_session_id', '') or '',
                 )
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 1625, exc_info=True)
 
     # ------------------------------------------------------------------ #
     # Todo 回调（tools/todo_tools.py 变更时触发）
@@ -1727,7 +1728,7 @@ class AgentWorker(QObject):
             try:
                 self.status_changed.emit('生成回复中…')
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 1729, exc_info=True)
         with self._chunk_buf_lock:
             self._chunk_buf.append(chunk)
             total = sum(len(c) for c in self._chunk_buf)
@@ -1776,7 +1777,7 @@ class AgentWorker(QObject):
         try:
             self.usage_received.emit(pt, ct, tt, cost)
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 1778, exc_info=True)
 
         # ---------- 预算守卫（#12） ---------- #
         # 累计到 BudgetGuard；触发 warn/exceeded 时通过 system_notice
@@ -1789,13 +1790,13 @@ class AgentWorker(QObject):
                     try:
                         self.system_notice.emit('warn', snap.message)
                     except Exception:  # pylint: disable=broad-except
-                        pass
+                        logger.debug('silent except at %s:%d', __name__, 1791, exc_info=True)
                 elif snap.status == 'exceeded' and not self._budget_alerted:
                     self._budget_alerted = True
                     try:
                         self.system_notice.emit('error', snap.message)
                     except Exception:  # pylint: disable=broad-except
-                        pass
+                        logger.debug('silent except at %s:%d', __name__, 1797, exc_info=True)
                     # 同时给 LLM 注入 system note 让它立刻收尾
                     try:
                         self._conv.add_system_note(
@@ -1804,7 +1805,7 @@ class AgentWorker(QObject):
                             '并停止任何新的工具调用。',
                         )
                     except Exception:  # pylint: disable=broad-except
-                        pass
+                        logger.debug('silent except at %s:%d', __name__, 1806, exc_info=True)
             except Exception as exc:  # pylint: disable=broad-except
                 logger.debug('BudgetGuard accumulate 异常: %s', exc)
 
@@ -1815,12 +1816,14 @@ class AgentWorker(QObject):
             try:
                 return repr(o)
             except Exception:  # pylint: disable=broad-except
+                logger.debug('silent except at %s:%d', __name__, 1817, exc_info=True)
                 return '<unserializable>'
 
         try:
             return json.dumps(obj, ensure_ascii=False, default=_default)
         except Exception:  # pylint: disable=broad-except
             # 兜底：保证一定能塞回 LLM
+            logger.debug('silent except at %s:%d', __name__, 1822, exc_info=True)
             return json.dumps(
                 {'ok': False, 'error': 'tool result not serializable'},
                 ensure_ascii=False,
@@ -1880,6 +1883,7 @@ class AgentWorker(QObject):
                 'error': '生成摘要失败: {}'.format(exc),
             }
         except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('silent except at %s:%d', __name__, 1882, exc_info=True)
             return {
                 'ok': False, 'removed': 0, 'summary': '',
                 'error': '生成摘要异常: {}'.format(exc),
@@ -2131,7 +2135,7 @@ class AgentWorker(QObject):
                 if events:
                     return True
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 2133, exc_info=True)
         return False
 
     def _update_skill_telemetry(self, tool_stats):
@@ -2172,13 +2176,13 @@ class AgentWorker(QObject):
                 try:
                     mgr.save(sk, overwrite=True)
                 except Exception:  # pylint: disable=broad-except
-                    pass
+                    logger.debug('silent except at %s:%d', __name__, 2174, exc_info=True)
             logger.debug(
                 '更新 Skill telemetry: matched=%d failed=%s',
                 len(matched), failed,
             )
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 2180, exc_info=True)
 
     def _detect_user_correction(self):
         # type: () -> bool

@@ -186,7 +186,7 @@ def _format_http_error(exc: "urllib.error.HTTPError", url: str) -> str:
             if v:
                 interesting_headers.append("{}={}".format(k, v))
     except Exception:  # pylint: disable=broad-except
-        pass
+        logger.debug('silent except at %s:%d', __name__, 188, exc_info=True)
 
     parts = ["HTTP {}".format(exc.code)]
     if pretty_msg:
@@ -482,7 +482,7 @@ class LLMClient(object):
             if requires_temperature_one(self._model):
                 effective_temp = 1.0
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 484, exc_info=True)
 
         payload: Dict[str, Any] = {
             "model": self._model,
@@ -731,7 +731,7 @@ class LLMClient(object):
                             cancelled = True
                             break
                     except Exception:  # pylint: disable=broad-except
-                        pass
+                        logger.debug('silent except at %s:%d', __name__, 733, exc_info=True)
                 if not line or not line.startswith("data:"):
                     continue
                 data_str = line[5:].strip()
@@ -763,7 +763,7 @@ class LLMClient(object):
                             on_delta(text)
                         except Exception:  # pylint: disable=broad-except
                             # 回调异常不能影响主流程
-                            pass
+                            logger.debug('silent except at %s:%d', __name__, 764, exc_info=True)
 
                 # 1.5 推理过程增量（DeepSeek thinking 模式专属）
                 # reasoning_content 不投递给 on_delta（不显示给用户），
@@ -814,7 +814,7 @@ class LLMClient(object):
             try:
                 resp.close()
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 816, exc_info=True)
 
         if cancelled:
             raise LLMError("用户取消")
@@ -872,7 +872,7 @@ class LLMClient(object):
                     if cancel_check():
                         return
                 except Exception:  # pylint: disable=broad-except
-                    pass
+                    logger.debug('silent except at %s:%d', __name__, 874, exc_info=True)
             chunk = resp.read(1024)
             if not chunk:
                 if buf:

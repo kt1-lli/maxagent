@@ -98,7 +98,7 @@ class ToolDispatcher(object):
                 )
         except Exception:  # pylint: disable=broad-except
             # 禁用模块异常不应阻塞正常调用
-            pass
+            logger.debug('silent except at %s:%d', __name__, 99, exc_info=True)
 
         if not isinstance(arguments, dict):
             return _err(
@@ -125,6 +125,7 @@ class ToolDispatcher(object):
                 if not self._confirm_cb(tool_name, arguments):
                     return _err("用户已取消执行", "user_cancelled")
             except Exception as exc:  # pylint: disable=broad-except
+                logger.debug('silent except at %s:%d', __name__, 127, exc_info=True)
                 return _err(
                     "确认回调异常: {}".format(exc), "confirm_error",
                 )
@@ -278,7 +279,7 @@ class ToolDispatcher(object):
                         "tool_disabled",
                     )
             except Exception:  # pylint: disable=broad-except
-                pass
+                logger.debug('silent except at %s:%d', __name__, 280, exc_info=True)
             parsed.append((tool_name, spec, arguments))
 
         # 3. 前置参数校验
@@ -304,6 +305,7 @@ class ToolDispatcher(object):
                     },
                 )
             except Exception as exc:  # pylint: disable=broad-except
+                logger.debug('silent except at %s:%d', __name__, 306, exc_info=True)
                 return _err(
                     "批量危险操作确认回调异常: {}".format(exc),
                     "confirm_error",
@@ -475,7 +477,7 @@ class ToolDispatcher(object):
             from ..user_tools_loader import bump_tool_usage
             bump_tool_usage(tool_name, ok=ok)
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 477, exc_info=True)
 
     def _invoke(self, spec, arguments, stages):
         """根据 spec 决定如何调用 func。
@@ -630,7 +632,7 @@ def _safe_serialize(obj):
         try:
             return _safe_serialize(obj._asdict())
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 632, exc_info=True)
     # pymxs Point3 / Color 等通常有 .x .y .z 或可索引
     for attrs in (("x", "y", "z"), ("r", "g", "b", "a")):
         if all(hasattr(obj, a) for a in attrs):
@@ -643,6 +645,7 @@ def _safe_serialize(obj):
         try:
             return str(obj)
         except Exception:  # pylint: disable=broad-except
+            logger.debug('silent except at %s:%d', __name__, 645, exc_info=True)
             return "<unserializable>"
 
 
@@ -663,6 +666,7 @@ def _maybe_truncate_result(out, max_bytes, tool_name=""):
     try:
         body = json.dumps(out, ensure_ascii=False)
     except Exception:  # pylint: disable=broad-except
+        logger.debug('silent except at %s:%d', __name__, 665, exc_info=True)
         return out
     raw_size = len(body.encode("utf-8", errors="replace"))
     if raw_size <= max_bytes:
@@ -838,7 +842,7 @@ def _enrich_create_result(result):
                 (float(bb_min.z) + float(bb_max.z)) / 2.0,
             ]
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 840, exc_info=True)
 
         # 材质名（如有）
         try:
@@ -846,10 +850,10 @@ def _enrich_create_result(result):
             if mat is not None:
                 result['material'] = str(mat.name)
         except Exception:  # pylint: disable=broad-except
-            pass
+            logger.debug('silent except at %s:%d', __name__, 848, exc_info=True)
 
     except Exception:  # pylint: disable=broad-except
         # 任何异常都不应阻塞主路径
-        pass
+        logger.debug('silent except at %s:%d', __name__, 851, exc_info=True)
 
     return result
