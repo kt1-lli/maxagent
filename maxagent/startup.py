@@ -310,7 +310,7 @@ def show_panel(force=False):
 
     # 延迟 import 让 sys.path 先生效
     from maxagent.config import ConfigManager
-    from maxagent.dcc.runtime import set_current_dcc
+    from maxagent.dcc.runtime import ensure_current_dcc
     from maxagent.logger import get_logger
     from maxagent.logger import setup_logging
     from maxagent.qt_compat import QtCore
@@ -320,7 +320,7 @@ def show_panel(force=False):
     from maxagent.ui.emoji_compat import install_app_font_fallback
 
     # 显式锁定 DCC 为 3ds Max，避免自动探测偏差或被历史缓存污染
-    set_current_dcc('3dsmax')
+    ensure_current_dcc('3dsmax')
 
     # 启动日志系统（幂等，重复调用安全）
     setup_logging()

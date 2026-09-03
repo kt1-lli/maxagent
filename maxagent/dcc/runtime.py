@@ -64,6 +64,35 @@ def set_current_dcc(name):
         _ADAPTER = None
 
 
+def ensure_current_dcc(expected):
+    # type: (str) -> str
+    """入口脚本统一使用的 DCC 状态初始化钩子。
+
+    行为：
+    - 若当前状态与 ``expected`` 一致，直接返回。
+    - 否则调用 ``set_current_dcc(expected)`` 强制刷新，并 warning 记录
+      旧值以便排查（探测抖动 / 入口漏调）。
+
+    这样所有入口（maya_entry.py / maxagent.startup / reload_maxagent
+    / 测试 fixture）都收敛到同一入口，避免各自实现漂移。
+    """
+    expected = (expected or '').strip().lower()
+    if expected not in ('3dsmax', 'maya'):
+        raise ValueError(
+            "expected DCC 必须是 '3dsmax' 或 'maya'，got: {}".format(expected),
+        )
+    dcc_state = sys.modules.get(_DCC_STATE_KEY) or {}
+    current = dcc_state.get('name')
+    if current == expected:
+        return expected
+    if current not in (None, expected):
+        logger.warning(
+            'ensure_current_dcc: 强制切换 DCC 从 %s -> %s', current, expected,
+        )
+    set_current_dcc(expected)
+    return expected
+
+
 def current_dcc():
     # type: () -> str
     """返回当前 DCC 标识名。
