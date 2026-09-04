@@ -90,8 +90,8 @@ def restore_workspace_control():
         try:
             if cmds.workspaceControl(control_name, query=True, exists=True):
                 cmds.evalDeferred(
-                    lambda *a: cmds.workspaceControl(
-                        control_name, edit=True, restore=True,
+                    lambda *a: _dw_mod._maya_edit_if_exists(  # noqa: SLF001
+                        cmds, control_name, restore=True,
                     )
                 )
                 return 'already-restored'

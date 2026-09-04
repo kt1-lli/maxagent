@@ -2055,16 +2055,23 @@ def _create_maya_dock(config):
         _reuse_existing_maya_dock(cmds, control_name, _DOCK_WIDGET)
         return control_name
 
-    # 内容没了但 control 还在（例如 Maya 重启后 layout 恢复）：
-    # 复用这个 control，只重建内部 widget，不销毁宿主容器。
-    control_exists = cmds.workspaceControl(control_name, query=True,
-                                           exists=True)
-    if control_exists:
-        # control 存在说明上次退出留下了 workspaceControlState（位置/
-        # 尺寸/floating）。残留 state 会与新停靠指令冲突，Maya 在每次
-        # layout 重算时反复尝试回到旧位置——表现为面板跳动、停靠失效、
-        # 重复启动开销累积。必须清掉。
-        _clear_workspace_control_state(cmds, control_name)
+    # ---- 需要重建：清残留 -> 销毁 -> 全新创建 ---- #
+    # control 存在说明上次退出留下了 workspaceControlState（位置/尺寸/
+    # floating），残留 state 会与新停靠指令冲突，Maya 每次 layout 重算
+    # 都反复尝试回到旧位置——面板跳动、停靠失效、重复启动开销累积。
+    #
+    # 注意：这里必须用实时查询，不能把存在性缓存到局部变量。
+    # workspaceControlState -remove 会让 control 消失，若用清除之前
+    # 捕获的布尔值去走"只 edit 不创建"的分支，edit 会静默失败、
+    # 创建被整个跳过，随后 evalDeferred 里的 restore 就会抛
+    # RuntimeError: 找不到对象 MaxAgentWorkspaceControl。
+    _clear_workspace_control_state(cmds, control_name)
+
+    if _maya_control_exists(cmds, control_name):
+        try:
+            cmds.deleteUI(control_name, control=True)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('销毁旧 workspaceControl 失败', exc_info=True)
 
     dock_widget = MaxAgentDockWidget(config_manager=config)
     ui_state = dock_widget.get_ui_state()
@@ -2121,41 +2128,26 @@ def _create_maya_dock(config):
 
     create_kwargs.update(dock_kwargs)
 
-    if control_exists:
-        # control 还在（内容丢了，容器没丢）：用 edit 更新属性即可。
-        # 绝不能再用带停靠 flag 的创建形式——同一 control 上重复施加
-        # 停靠指令会让 Maya 反复重算 layout，这是重复拖拽"越拖越卡"的
-        # 主因。停靠位置沿用容器当前状态，用户想改走设置面板的
-        # "立即重新停靠"（那里会显式清 state 再施加新指令）。
-        _edit_kwargs = {
-            k: v for k, v in create_kwargs.items()
-            if k in ('label', 'uiScript', 'visibleChangeCommand')
-        }
-        try:
-            cmds.workspaceControl(control_name, edit=True, **_edit_kwargs)
-        except Exception:  # pylint: disable=broad-except
-            logger.debug('workspaceControl edit 更新失败', exc_info=True)
-    else:
+    try:
+        cmds.workspaceControl(control_name, **create_kwargs)
+    except Exception:  # pylint: disable=broad-except
+        # 某些 Maya 版本对 tabToControl / dockToControl 支持不同，
+        # 逐级降级：去掉停靠 flag -> 只保留最小参数
+        logger.warning(
+            'workspaceControl 带停靠参数创建失败，降级重试: %s', dock_kwargs,
+        )
+        for key in list(dock_kwargs):
+            create_kwargs.pop(key, None)
         try:
             cmds.workspaceControl(control_name, **create_kwargs)
         except Exception:  # pylint: disable=broad-except
-            # 某些 Maya 版本对 tabToControl / dockToControl 支持不同，
-            # 逐级降级：去掉停靠 flag -> 只保留最小参数
-            logger.warning(
-                'workspaceControl 带停靠参数创建失败，降级重试: %s', dock_kwargs,
+            cmds.workspaceControl(
+                control_name,
+                label=label,
+                retain=False,
+                loadImmediately=True,
+                visible=False,
             )
-            for key in list(dock_kwargs):
-                create_kwargs.pop(key, None)
-            try:
-                cmds.workspaceControl(control_name, **create_kwargs)
-            except Exception:  # pylint: disable=broad-except
-                cmds.workspaceControl(
-                    control_name,
-                    label=label,
-                    retain=False,
-                    loadImmediately=True,
-                    visible=False,
-                )
 
     # 把 QWidget 附加到 workspaceControl
     wrap_instance = get_shiboken_wrap_instance()
@@ -2198,15 +2190,21 @@ def _create_maya_dock(config):
 
     # 延迟恢复/显示面板，确保 Maya 完成布局计算后内容才渲染。
     # 若上次会话结束时用户是关闭状态，这里不强制弹出。
+    #
+    # 每个回调都必须自带存在性校验：evalDeferred 排到 Maya 空闲时才执行，
+    # 那时 control 可能已被用户关闭或被 Maya 的 layout 恢复逻辑销毁。
+    # 不加校验就会抛 RuntimeError: 找不到对象 MaxAgentWorkspaceControl。
     want_visible = bool(getattr(ui_state, 'maya_visible', True))
     if want_visible:
         cmds.evalDeferred(
-            lambda *args: cmds.workspaceControl(
-                control_name, edit=True, visible=True,
+            lambda *args: _maya_edit_if_exists(
+                cmds, control_name, visible=True,
             )
         )
     cmds.evalDeferred(
-        lambda *args: cmds.workspaceControl(control_name, edit=True, restore=True)
+        lambda *args: _maya_edit_if_exists(
+            cmds, control_name, restore=True,
+        )
     )
     # 面板尺寸/位置变化后回写状态，保证下次启动沿用
     cmds.evalDeferred(
@@ -2308,9 +2306,16 @@ def apply_maya_dock_target():
     else:
         kwargs['dockToMainWindow'] = ['right', True]
 
+    # 清掉残留的持久化位置，否则新停靠指令会被旧 state 覆盖。
+    # 这是重新停靠能否真正生效的关键：不清的话 Maya 会在下次 layout
+    # 重算时把面板拉回旧位置。
+    _clear_workspace_control_state(cmds, control_name)
+    if not _maya_control_exists(cmds, control_name):
+        return (False, '面板已被销毁，请重新启动 MaxAgent 面板。')
+
     try:
         cmds.workspaceControl(control_name, edit=True, **kwargs)
-        cmds.workspaceControl(control_name, edit=True, visible=True)
+        _maya_edit_if_exists(cmds, control_name, visible=True)
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning('重新停靠失败: %s', exc)
         return (False, '重新停靠失败：{}'.format(exc))
@@ -2323,6 +2328,43 @@ def apply_maya_dock_target():
     return (True, '已按当前设置重新停靠。')
 
 
+def _maya_control_exists(cmds, control_name):
+    # type: (object, str) -> bool
+    """实时查询 workspaceControl 是否存在。
+
+    存在性会随 Maya 的 layout 恢复、用户关闭面板、以及
+    workspaceControlState -remove 而随时变化，因此任何分支判断都必须
+    现场查询，不能缓存到局部变量后再用。
+    """
+    try:
+        return bool(cmds.workspaceControl(control_name, query=True, exists=True))
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
+def _maya_edit_if_exists(cmds, control_name, **kwargs):
+    # type: (object, str, object) -> bool
+    """在 control 仍然存在时才下发 edit 指令。
+
+    evalDeferred / visibleChangeCommand 这类延迟回调执行时，control 可能
+    已被销毁。直接调 workspaceControl(edit=True) 会抛
+    ``RuntimeError: 找不到对象 MaxAgentWorkspaceControl``，刷屏报错日志。
+
+    :returns: 是否真的执行了 edit。
+    """
+    if not _maya_control_exists(cmds, control_name):
+        return False
+    try:
+        cmds.workspaceControl(control_name, edit=True, **kwargs)
+        return True
+    except Exception:  # pylint: disable=broad-except
+        logger.debug(
+            'workspaceControl edit 失败: %s %s', control_name, kwargs,
+            exc_info=True,
+        )
+        return False
+
+
 def _reuse_existing_maya_dock(cmds, control_name, dock_widget):
     # type: (object, str, object) -> None
     """复用已存在的面板：只补显示与状态，不重建任何东西。
@@ -2333,11 +2375,11 @@ def _reuse_existing_maya_dock(cmds, control_name, dock_widget):
     ui_state = dock_widget.get_ui_state()
     want_visible = bool(getattr(ui_state, 'maya_visible', True))
     if want_visible:
-        cmds.workspaceControl(control_name, edit=True, visible=True)
-        cmds.workspaceControl(control_name, edit=True, restore=True)
+        _maya_edit_if_exists(cmds, control_name, visible=True)
+        _maya_edit_if_exists(cmds, control_name, restore=True)
     try:
         # raise 是 Python 保留字，无法写成关键字参数，只能字典解包
-        cmds.workspaceControl(control_name, edit=True, **{'raise': True})
+        _maya_edit_if_exists(cmds, control_name, **{'raise': True})
     except Exception:  # pylint: disable=broad-except
         logger.debug('workspaceControl raise 失败', exc_info=True)
     return None
