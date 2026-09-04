@@ -17,13 +17,18 @@ Maya 本身没有提供"列出所有可停靠位置"的命令，需要组合三�
 来源 1、2 的数组里记录的是"组件名"，未必都已在当前 workspace 实例化，
 因此必须逐个用 ``workspaceControl(query=True, exists=True)`` 过滤。
 
+来源 3 会把嵌套在别的面板内部的子控件也一起返回（实测 Maya 2022：
+``ChannelBoxLayerEditor`` 内部还挂着 ``ChannelBox`` 与 ``LayerEditor``）。
+这类子控件停靠后不可见，且会让下拉框出现"看起来重复"的项，需要按
+完整路径做层级判定后剔除，详见 :func:`_filter_nested_controls`。
+
 本模块只做枚举与标签翻译，不负责创建/停靠，便于在设置面板与 dock
 创建两处复用。
 """
 
 from __future__ import absolute_import
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ..logger import get_logger
 
@@ -43,6 +48,7 @@ _CONTROL_LABELS = {
     'rangeslider': 'Range Slider（范围条）',
     'commandline': 'Command Line（命令行）',
     'helpline': 'Help Line（帮助行）',
+    'statusline': 'Status Line（状态行）',
     'toolbox': 'Tool Box（工具箱）',
     'mainpane': 'Main Pane（主视口）',
     'uvtoolkitdockcontrol': 'UV Toolkit',
@@ -64,7 +70,7 @@ _DEFAULT_DOCK_PRIORITY = (
     'ToolSettings',
 )
 
-# 刷新下拉框时的推荐项（排在列表最前，其余按字典序）
+# 下拉框里排在最前的推荐项（其余按标签字典序，并用分隔线隔开）
 _RECOMMENDED_CONTROLS = (
     'ChannelBoxLayerEditor',
     'AttributeEditor',
@@ -118,6 +124,66 @@ def _control_exists(cmds, name):
             return False
 
 
+def _control_path(cmds, name):
+    # type: (object, str) -> str
+    """取 workspaceControl 的完整路径名，用于判定层级。
+
+    返回形如 ``|MayaWindow|MainWorkspaceLayout|ChannelBoxLayerEditor``
+    的字符串。查询失败时返回空串，调用方需按"无法判定"保守处理。
+    """
+    try:
+        path = cmds.workspaceControl(name, query=True, fullPathName=True)
+    except Exception:  # pylint: disable=broad-except
+        return ''
+    return str(path) if path else ''
+
+
+def _filter_nested_controls(cmds, names):
+    # type: (object, List[str]) -> List[str]
+    """剔除嵌套在另一个候选内部的子 control。
+
+    ``lsUI(workspaceControls=True)`` 会把嵌套在复合面板内部的子控件也
+    一并返回。实测 Maya 2022 中 ``ChannelBoxLayerEditor`` 内部挂着
+    ``ChannelBox`` 与 ``LayerEditor``：它们单独停靠后不可见，且在下拉框
+    里表现为"和 ChannelBoxLayerEditor 重复"的干扰项。
+
+    判定方式：比较完整路径的层级段。若 A 的路径以 B 的路径为前缀，
+    说明 A 在 B 内部，丢弃 A。用分段比较而非字符串 startswith，避免
+    ``Outliner`` 与 ``OutlinerPanel2`` 这类前缀相同的名字被误判。
+
+    拿不到路径的 control 一律保留——宁可多显示一项，也不要误删用户
+    真正想停靠的面板。
+    """
+    paths = {}  # type: Dict[str, str]
+    for name in names:
+        paths[name] = _control_path(cmds, name)
+
+    def segments_of(path):
+        # type: (str) -> List[str]
+        return [part for part in path.replace('|', ' ').split() if part]
+
+    result = []  # type: List[str]
+    for name in names:
+        path = paths.get(name) or ''
+        if not path:
+            result.append(name)
+            continue
+        own = segments_of(path)
+        is_nested = False
+        for other_name, other_path in paths.items():
+            if other_name == name or not other_path:
+                continue
+            parent = segments_of(other_path)
+            if len(parent) >= len(own):
+                continue
+            if own[:len(parent)] == parent:
+                is_nested = True
+                break
+        if not is_nested:
+            result.append(name)
+    return result
+
+
 def control_label(name):
     # type: (str) -> str
     """把 workspaceControl 名翻译成人类可读标签。
@@ -138,7 +204,7 @@ def list_dock_targets(cmds=None, include_invisible=True):
     :param include_invisible: 是否包含当前不可见（未在当前 workspace
         展开）的 control。False 时只返回已可见的，用于"停靠到用户
         当前看得见的面板"这种更保守的场景。
-    :returns: control 名列表，已去重且全部通过存在性校验。
+    :returns: control 名列表，已去重、通过存在性校验，并剔除嵌套子控件。
     """
     if cmds is None:
         try:
@@ -184,7 +250,8 @@ def list_dock_targets(cmds=None, include_invisible=True):
         if not include_invisible and not _is_visible(cmds, name):
             continue
         result.append(name)
-    return result
+    # 最后剔除嵌套在其它候选内部的子控件
+    return _filter_nested_controls(cmds, result)
 
 
 def _is_visible(cmds, name):
@@ -196,26 +263,38 @@ def _is_visible(cmds, name):
         return True
 
 
-def list_dock_targets_with_labels(cmds=None):
-    # type: (Optional[object]) -> List[Tuple[str, str]]
-    """枚举停靠目标并返回 ``(control 名, 显示标签)`` 列表。
+def split_recommended(names):
+    # type: (List[str]) -> Tuple[List[str], List[str]]
+    """把停靠目标拆成（推荐项，其它项）两组。
 
-    排序规则：推荐项按 ``_RECOMMENDED_CONTROLS`` 顺序排在最前，
-    其余按标签字典序排列，保证下拉框稳定且常用的在顶部。
+    推荐项按 :data:`_RECOMMENDED_CONTROLS` 的固定顺序返回，其余原样
+    返回（调用方自行按标签排序）。设置面板据此在两组之间插入分隔线，
+    让常用目标始终排在下拉框顶部。
     """
-    targets = list_dock_targets(cmds=cmds)
-    recommended = []  # type: List[str]
-    others = []  # type: List[str]
     rec_rank = {
         name.lower(): idx
         for idx, name in enumerate(_RECOMMENDED_CONTROLS)
     }
-    for name in targets:
+    recommended = []  # type: List[str]
+    others = []  # type: List[str]
+    for name in names:
         if name.lower() in rec_rank:
             recommended.append(name)
         else:
             others.append(name)
     recommended.sort(key=lambda n: rec_rank[n.lower()])
+    return (recommended, others)
+
+
+def list_dock_targets_with_labels(cmds=None):
+    # type: (Optional[object]) -> List[Tuple[str, str]]
+    """枚举停靠目标并返回 ``(control 名, 显示标签)`` 列表。
+
+    排序规则：推荐项按 :data:`_RECOMMENDED_CONTROLS` 顺序排在最前，
+    其余按标签字典序排列，保证下拉框稳定且常用的在顶部。
+    """
+    targets = list_dock_targets(cmds=cmds)
+    recommended, others = split_recommended(targets)
     others.sort(key=lambda n: control_label(n).lower())
     ordered = recommended + others
     return [(name, '{}  ({})'.format(control_label(name), name))
@@ -252,4 +331,5 @@ __all__ = [
     'list_dock_targets',
     'list_dock_targets_with_labels',
     'resolve_dock_target',
+    'split_recommended',
 ]

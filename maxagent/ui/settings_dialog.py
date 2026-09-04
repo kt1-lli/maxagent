@@ -1909,8 +1909,21 @@ class SettingsDialog(
         if not targets:
             combo.addItem('（未检测到可用停靠目标）', '')
         else:
-            for name, text in targets:
-                combo.addItem(text, name)
+            from ._maya_dock_targets import (  # pylint: disable=import-outside-toplevel
+                split_recommended,
+            )
+            # 推荐项排在顶部，用分隔线跟其余（含第三方）面板区分开
+            recommended, others = split_recommended(
+                [name for name, _label in targets],
+            )
+            label_map = dict(targets)
+            for name in recommended:
+                combo.addItem(label_map.get(name, name), name)
+            if recommended and others:
+                combo.insertSeparator(combo.count())
+            others.sort(key=lambda n: label_map.get(n, n).lower())
+            for name in others:
+                combo.addItem(label_map.get(name, name), name)
         if current:
             idx = combo.findData(current)
             if idx >= 0:
