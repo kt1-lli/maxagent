@@ -346,6 +346,46 @@ def _profile_defaults(profile: "LLMProfile") -> Dict[str, Any]:
     return out
 
 
+def _match_preset_name(base_url: str) -> Optional[str]:
+    """按 base_url 匹配内置预设的运营商名。未命中返回 None。"""
+    if not base_url:
+        return None
+    target = base_url.rstrip("/").lower()
+    for preset in BUILTIN_PROVIDER_PRESETS:
+        if preset.get("base_url", "").rstrip("/").lower() == target:
+            return preset.get("name") or None
+    return None
+
+
+def _fix_up_provider_names(providers: List["Provider"]) -> None:
+    """把命中内置预设 URL 但显示名不匹配的 provider 就地改名。
+
+    早期迁移逻辑用第一个 profile 的 name 作为 provider 名，导致
+    `kimi / kimi`、`ollama-run / ollama-run` 这类冗余显示。启动
+    时统一做一次 fix-up：若某 provider 的 base_url 命中内置预设
+    但 name 不是预设名，则改成预设名。
+    """
+    used_names = {}
+    for p in providers:
+        if not p:
+            continue
+        used_names[p.name] = used_names.get(p.name, 0) + 1
+    for p in providers:
+        preset_name = _match_preset_name(p.base_url)
+        if not preset_name:
+            continue
+        if p.name == preset_name:
+            continue
+        # 若目标名字已被其它 provider 占用（例如两个 Moonshot 账号），
+        # 加 " #2" 后缀避免冲突。
+        target = preset_name
+        n = used_names.get(target, 0)
+        if n > 0 and p.name != target:
+            target = "{} #{}".format(preset_name, n + 1)
+        p.name = target
+        used_names[target] = used_names.get(target, 0) + 1
+
+
 def _build_providers_from_profiles(
     profiles: List["LLMProfile"],
     active_profile_name: str,
@@ -392,8 +432,16 @@ def _build_providers_from_profiles(
 
     for group in groups:
         first = group[0]
-        # 命名：默认用第一个 profile 的 name；若同名冲突则加 " #2" 后缀
-        base_name = (first.name or "Provider").strip() or "Provider"
+        # 命名策略：
+        # 1. 先按 base_url 匹配内置预设，拿到运营商官方名（如
+        #    'Moonshot'），这样迁移出来的运营商分组下拉里显示的是
+        #    <Moonshot> / <kimi-k2> 而不是 <kimi> / <kimi>。
+        # 2. 内置预设未命中时用第一个 profile 的 name 兜底。
+        # 3. 若最终名字与已用过的重复，加 " #2" 后缀。
+        preset_name = _match_preset_name(first.base_url)
+        base_name = preset_name or (
+            (first.name or "Provider").strip() or "Provider"
+        )
         name = base_name
         n = used_names.get(base_name, 0)
         if n > 0:
@@ -866,6 +914,12 @@ class AppConfig:
                     p.to_dict() for p in cfg.profiles
                 ],
             }
+        else:
+            # 已有 providers 时做一次 fix-up：把命中内置预设 URL 但名字
+            # 不是预设名的 provider 改成官方名。这样早期迁移用 profile.name
+            # 命名（如 'kimi'）的用户，下次启动 UI 会显示成 'Moonshot / kimi'
+            # 而不是 'kimi / kimi'。
+            _fix_up_provider_names(cfg.providers)
         return cfg
 
 

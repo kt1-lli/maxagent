@@ -870,16 +870,29 @@ class MaxAgentDockWidget(
         target_idx = -1
 
         if providers:
+            first_group = True
             for provider in providers:
+                if not provider.models:
+                    continue
+                # 运营商之间插分隔线，视觉分组更明显
+                if not first_group:
+                    self.profile_combo.insertSeparator(
+                        self.profile_combo.count(),
+                    )
+                first_group = False
                 for entry in provider.models:
                     label = entry.label or entry.model
                     text = '{} / {}'.format(provider.name, label)
-                    # 用 QComboBox 的 userData 保存 (provider_id, model_id)
                     self.profile_combo.addItem(text, (provider.id, entry.id))
                     if active_ref == (provider.id, entry.id):
                         target_idx = self.profile_combo.count() - 1
-            if target_idx < 0 and self.profile_combo.count() > 0:
-                target_idx = 0
+            if target_idx < 0:
+                # 找第一个可用 item（跳过 separator）
+                for i in range(self.profile_combo.count()):
+                    data = self.profile_combo.itemData(i)
+                    if isinstance(data, tuple):
+                        target_idx = i
+                        break
         else:
             # 兜底：老 profile 视图
             active_name = self._config.get_active_profile_name()
@@ -1089,14 +1102,20 @@ class MaxAgentDockWidget(
         text = self.profile_combo.currentText()
         if not text:
             return
+        # 用户选中 separator 时 data 为 None 但 text 也常为空；
+        # 若走到这里 text 非空但 data 是 None（如老 profile 兜底），
+        # 视为 legacy 名字切换
         try:
             if isinstance(data, tuple) and len(data) == 2:
                 self._config.set_active_model_ref(data[0], data[1])
                 display = text
-            else:
-                # 兜底：老 profile 名字模式
+            elif data is None:
+                # 老 profile 兜底
                 self._config.set_active_profile(text)
                 display = text
+            else:
+                # 未知 data 类型，忽略
+                return
             self._llm = self._build_llm_client()
             self._dispatcher = self._build_dispatcher()
             self._renderer.add_status('已切换到: {}'.format(display))
