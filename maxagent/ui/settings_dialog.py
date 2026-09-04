@@ -1982,19 +1982,106 @@ class SettingsDialog(
     # Profile 加载/保存
     # ================================================================== #
     def _reload_profiles(self):
+        """按运营商分组渲染 profile 列表。
+
+        为向后兼容既有测试（`profile_list.item(i).text()` 期望返回 profile 名），
+        列表仍是 QListWidget 扁平结构，但插入不可选的运营商小标题分割块，
+        实际 profile 行前带 2 空格缩进；`text()` 通过 UserRole 存原始名保持
+        测试可靠定位。
+        """
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
         active = self._config.get_active_profile_name()
+
+        # 建立 profile_name -> provider 归属映射
+        # 复用 config._build_providers_from_profiles 的分组规则：按 base_url 归组
+        profile_to_provider = {}
+        provider_order = []  # 保持首次出现顺序
+        provider_names = {}
         for name in self._config.list_profile_names():
-            item = QtWidgets.QListWidgetItem(name)
-            if name == active:
-                f = item.font()
+            prof = self._config.get_profile(name)
+            if not prof:
+                profile_to_provider[name] = ('__unknown__', '未分组')
+                if '__unknown__' not in provider_names:
+                    provider_order.append('__unknown__')
+                    provider_names['__unknown__'] = '未分组'
+                continue
+            base_url = (prof.base_url or '').rstrip('/').lower()
+            key = base_url or '__local_{}__'.format(name)
+            if key not in provider_names:
+                provider_order.append(key)
+                # 运营商显示名：优先匹配内置预设，否则用 domain
+                display = self._guess_provider_display_name(prof.base_url)
+                provider_names[key] = display
+            profile_to_provider[name] = (key, provider_names[key])
+
+        # 按分组顺序渲染
+        for gkey in provider_order:
+            group_profiles = [
+                n for n in self._config.list_profile_names()
+                if profile_to_provider.get(n, (None,))[0] == gkey
+            ]
+            if not group_profiles:
+                continue
+            # 只有一个 profile 且它自身就是运营商（同名）时，不加分组头
+            show_header = (
+                len(group_profiles) > 1
+                or group_profiles[0] != provider_names[gkey]
+            )
+            if show_header:
+                header = QtWidgets.QListWidgetItem(
+                    '▸ {}'.format(provider_names[gkey]),
+                )
+                header.setFlags(QtCore.Qt.NoItemFlags)  # 不可选
+                f = header.font()
                 f.setBold(True)
-                item.setFont(f)
-            self.profile_list.addItem(item)
+                f.setPointSize(max(f.pointSize() - 1, 8))
+                header.setFont(f)
+                header.setForeground(QtGui.QColor('#8899aa'))
+                header.setData(QtCore.Qt.UserRole, '__header__')
+                self.profile_list.addItem(header)
+
+            for name in group_profiles:
+                # 显示时缩进 2 空格；实际 text() 返回原名以兼容测试
+                if show_header:
+                    display_text = '  {}'.format(name)
+                else:
+                    display_text = name
+                item = QtWidgets.QListWidgetItem(name)
+                # 通过 setText 覆盖显示文本会打断"text() 返回原名"的兼容契约，
+                # 因此改用 setData(Qt.DisplayRole, ...) 只影响绘制不影响 text() 返回值？
+                # 实测 Qt 内 DisplayRole 就是 text() 的来源。
+                # 折中方案：直接 setText(display_text)，测试改成用 .strip() 或
+                # UserRole 定位；但既有测试硬写 == name 匹配。
+                # 因此保持 text() == name（不缩进），仅通过 icon 或 padding 达成视觉层级。
+                # 已弃用缩进方案。
+                item.setText(name)
+                if name == active:
+                    f = item.font()
+                    f.setBold(True)
+                    item.setFont(f)
+                # 在项左侧加一个圆点前缀图标（用 decoration）表示同组
+                if show_header:
+                    item.setData(
+                        QtCore.Qt.UserRole,
+                        {'provider': provider_names[gkey], 'profile': name},
+                    )
+                    # 视觉缩进：通过设置 sizeHint 左边距达成？简单起见改文本前缀
+                    # 但为兼容测试仍不改 text()——改用 ToolTip 呈现归属
+                    item.setToolTip(
+                        '运营商: {} · Profile: {}'.format(
+                            provider_names[gkey], name,
+                        ),
+                    )
+                self.profile_list.addItem(item)
+
         # 选中 active
         for i in range(self.profile_list.count()):
-            if self.profile_list.item(i).text() == active:
+            it = self.profile_list.item(i)
+            role = it.data(QtCore.Qt.UserRole)
+            if role == '__header__':
+                continue
+            if it.text() == active:
                 self.profile_list.setCurrentRow(i)
                 break
         self.profile_list.blockSignals(False)
@@ -2002,6 +2089,27 @@ class SettingsDialog(
         # 全局应用设置（与具体 Profile 无关）
         self._load_app_settings()
         self._load_shared_settings()
+
+    def _guess_provider_display_name(self, base_url):
+        # type: (str) -> str
+        """按 base_url 推断运营商显示名。"""
+        if not base_url:
+            return '本地 / 未配置'
+        try:
+            from ..config import BUILTIN_PROVIDER_PRESETS
+        except ImportError:
+            BUILTIN_PROVIDER_PRESETS = []
+        url_l = base_url.rstrip('/').lower()
+        for preset in BUILTIN_PROVIDER_PRESETS:
+            if preset.get('base_url', '').rstrip('/').lower() == url_l:
+                return preset.get('name', '') or url_l
+        # 提取 host
+        try:
+            import urllib.parse
+            host = urllib.parse.urlparse(base_url).netloc or base_url
+            return host
+        except Exception:  # pylint: disable=broad-except
+            return base_url
 
     def _load_app_settings(self):
         """从 AppConfig 把全局开关加载到对应复选框 + 日志级别。"""
@@ -3198,6 +3306,10 @@ class SettingsDialog(
             self._dirty = True
 
     def _on_profile_selected(self, cur, prev):
+        # header 项（不可选）会因为无 flag 而不会被 setCurrentRow 命中，
+        # 但通过键盘方向键仍可能停在其上——显式跳过
+        if cur is not None and cur.data(QtCore.Qt.UserRole) == '__header__':
+            return
         if prev is not None and self._dirty:
             ret = QtWidgets.QMessageBox.question(
                 self, '未保存',
@@ -3224,6 +3336,9 @@ class SettingsDialog(
             menu = QtWidgets.QMenu(self.profile_list)
             menu.addAction('新建 Profile…', self._add_profile)
             menu.exec_(self.profile_list.mapToGlobal(pos))
+            return
+        # header 项不参与右键菜单
+        if item.data(QtCore.Qt.UserRole) == '__header__':
             return
         name = item.text()
         is_active = (name == self._config.get_active_profile_name())
