@@ -28,6 +28,20 @@ from typing import Optional
 CONFIG_VERSION = 1
 
 
+# 内置运营商 Base URL 预设（用于 UI 下拉快速填充）
+BUILTIN_PROVIDER_PRESETS = [
+    {"name": "OpenAI", "base_url": "https://api.openai.com/v1"},
+    {"name": "Moonshot", "base_url": "https://api.moonshot.cn/v1"},
+    {"name": "DeepSeek", "base_url": "https://api.deepseek.com"},
+    {"name": "智谱 AI", "base_url": "https://open.bigmodel.cn/api/paas/v4"},
+    {"name": "硅基流动", "base_url": "https://api.siliconflow.cn/v1"},
+    {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1"},
+    {"name": "Together", "base_url": "https://api.together.xyz/v1"},
+    {"name": "Ollama (本地)", "base_url": "http://localhost:11434/v1"},
+    {"name": "LM Studio (本地)", "base_url": "http://localhost:1234/v1"},
+]
+
+
 def _get_logger():
     """Lazy 获取 logger。
 
@@ -190,6 +204,267 @@ class LLMProfile:
         return cls(**data)
 
 
+# ---------------------------------------------------------------------------
+# 新数据模型：Provider + ModelEntry
+# ---------------------------------------------------------------------------
+# 目的：把「运营商」和「模型」分离。同一运营商（同 base_url + api_key + header）
+# 可挂多个模型，用户在对话窗口切模型时不再切整套 profile。
+#
+# 迁移策略（保守）：老 Profile 保留不删；启动时把 base_url 相同、api_key 相同
+# 的 profile 合并为一个 Provider，每个 profile 变为 Provider 下的一个
+# ModelEntry。老 active_profile 通过 (provider_id, model_id) 引用继续可用。
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ModelEntry:
+    """运营商下的单个模型条目。
+
+    ``model`` 是发给 LLM API 的原始模型 id；``label`` 是显示名（可与 model
+    相同）。``overrides`` 允许模型级别覆盖运营商默认参数（如 temperature、
+    max_tokens、vision_supported、force_temperature_one 等）。
+    """
+
+    id: str = ""            # 运营商内唯一 id，通常等于 model；空时由 upsert 生成
+    model: str = ""         # 发送给 API 的 model 字段
+    label: str = ""         # 显示名；空时回退到 model
+    overrides: Dict[str, Any] = field(default_factory=dict)
+    # 该条目是否为运营商的默认模型（对话下拉里选中态）
+    default: bool = False
+
+    def to_dict(self) -> Dict:
+        return {
+            "id": self.id or self.model,
+            "model": self.model,
+            "label": self.label or self.model,
+            "overrides": dict(self.overrides),
+            "default": bool(self.default),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "ModelEntry":
+        data = dict(data or {})
+        model = str(data.get("model", "") or "")
+        ident = str(data.get("id", "") or model)
+        label = str(data.get("label", "") or model)
+        ov = data.get("overrides") or {}
+        if not isinstance(ov, dict):
+            ov = {}
+        return cls(
+            id=ident,
+            model=model,
+            label=label,
+            overrides=ov,
+            default=bool(data.get("default", False)),
+        )
+
+
+@dataclass
+class Provider:
+    """运营商配置。多个 ModelEntry 共享同一份 Key / URL / Header / 默认参数。"""
+
+    id: str = ""             # 全局唯一 id；由 upsert 保证
+    name: str = ""           # 显示名，如 "Moonshot"、"Ollama (本地)"
+    base_url: str = ""
+    api_key: str = ""
+    extra_headers: Dict[str, str] = field(default_factory=dict)
+    # 运营商级默认参数（同 LLMProfile 中的采样/超时/能力字段）
+    # 未在 ModelEntry.overrides 中覆盖时全部沿用这里。
+    defaults: Dict[str, Any] = field(default_factory=dict)
+    # 该运营商下挂的模型
+    models: List[ModelEntry] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        api_key = self.api_key or ""
+        if api_key:
+            api_key = "b64:" + base64.b64encode(
+                api_key.encode("utf-8"),
+            ).decode("ascii")
+        return {
+            "id": self.id,
+            "name": self.name,
+            "base_url": self.base_url,
+            "api_key": api_key,
+            "extra_headers": dict(self.extra_headers),
+            "defaults": dict(self.defaults),
+            "models": [m.to_dict() for m in self.models],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "Provider":
+        data = dict(data or {})
+        api_key = data.get("api_key", "") or ""
+        if api_key.startswith("b64:"):
+            try:
+                api_key = base64.b64decode(api_key[4:]).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                api_key = ""
+        headers = data.get("extra_headers") or {}
+        if not isinstance(headers, dict):
+            headers = {}
+        defaults = data.get("defaults") or {}
+        if not isinstance(defaults, dict):
+            defaults = {}
+        raw_models = data.get("models") or []
+        models = [ModelEntry.from_dict(m) for m in raw_models]
+        return cls(
+            id=str(data.get("id", "") or ""),
+            name=str(data.get("name", "") or ""),
+            base_url=str(data.get("base_url", "") or ""),
+            api_key=api_key,
+            extra_headers=headers,
+            defaults=defaults,
+            models=models,
+        )
+
+    def get_default_model(self) -> Optional[ModelEntry]:
+        for m in self.models:
+            if m.default:
+                return m
+        return self.models[0] if self.models else None
+
+
+# 从 LLMProfile 复制到 Provider.defaults / ModelEntry.overrides 的字段集合。
+# 保留在这里方便 UI / 迁移共享，避免多处硬编码。
+_PARAM_FIELDS = (
+    "kind", "supports_tools", "stream", "timeout",
+    "temperature", "max_tokens", "force_temperature_one",
+    "max_tool_loops", "max_history_tokens",
+    "vision_supported", "auto_summarize_threshold",
+    "tool_result_max_bytes",
+    "price_input_per_1m", "price_output_per_1m",
+    "param_overrides",
+)
+
+
+def _profile_defaults(profile: "LLMProfile") -> Dict[str, Any]:
+    """把 LLMProfile 中的运营商级默认参数字段抽出成 dict。"""
+    out = {}
+    for k in _PARAM_FIELDS:
+        if hasattr(profile, k):
+            out[k] = getattr(profile, k)
+    return out
+
+
+def _build_providers_from_profiles(
+    profiles: List["LLMProfile"],
+    active_profile_name: str,
+) -> "tuple[List[Provider], Optional[tuple[str, str]]]":
+    """按 base_url 归并 profile 为 provider 列表。
+
+    合并规则（保守，无损）：
+      - 组 key = (base_url, api_key)；同 base_url 但不同 api_key 视为不同
+        运营商（多账号场景不合并，命名加序号）。
+      - 运营商名 = 该组第一个 profile 的 name；若多个 profile 归并到一组，
+        显示名保留第一个，其它 profile 变为该 provider 下的模型条目。
+      - Provider.defaults 取组内第一个 profile 的参数；组内后续 profile
+        若参数不同，仅差异部分落到 ModelEntry.overrides。
+      - default model = 与 active_profile_name 对应的那一条；未匹配则组内
+        第一条。
+
+    返回 (providers, active_model_ref)，active_model_ref 为
+    (provider_id, model_id) 或 None（若无 profile）。
+    """
+    if not profiles:
+        return [], None
+
+    # 保持原始顺序进行分组
+    groups: List[List["LLMProfile"]] = []
+    key_to_index: Dict[tuple, int] = {}
+    for prof in profiles:
+        # 空 base_url 视为独立分组，避免把默认值不同的 profile 挤在一起
+        key = (
+            (prof.base_url or "").rstrip("/"),
+            prof.api_key or "",
+        )
+        if not key[0]:
+            groups.append([prof])
+            continue
+        if key not in key_to_index:
+            key_to_index[key] = len(groups)
+            groups.append([prof])
+        else:
+            groups[key_to_index[key]].append(prof)
+
+    providers: List[Provider] = []
+    active_ref: Optional[tuple] = None
+    used_names: Dict[str, int] = {}
+
+    for group in groups:
+        first = group[0]
+        # 命名：默认用第一个 profile 的 name；若同名冲突则加 " #2" 后缀
+        base_name = (first.name or "Provider").strip() or "Provider"
+        name = base_name
+        n = used_names.get(base_name, 0)
+        if n > 0:
+            name = "{} #{}".format(base_name, n + 1)
+        used_names[base_name] = n + 1
+
+        provider_id = _slugify(name) or "provider_{}".format(len(providers) + 1)
+        defaults = _profile_defaults(first)
+        provider = Provider(
+            id=provider_id,
+            name=name,
+            base_url=first.base_url,
+            api_key=first.api_key,
+            extra_headers=dict(first.extra_headers or {}),
+            defaults=defaults,
+            models=[],
+        )
+
+        # 组内每个 profile → 一个 ModelEntry
+        for prof in group:
+            overrides: Dict[str, Any] = {}
+            for k in _PARAM_FIELDS:
+                if hasattr(prof, k) and getattr(prof, k) != defaults.get(k):
+                    overrides[k] = getattr(prof, k)
+            entry = ModelEntry(
+                id=prof.model or _slugify(prof.name),
+                model=prof.model,
+                label=prof.name,
+                overrides=overrides,
+                default=False,
+            )
+            provider.models.append(entry)
+
+        # 判定 default model
+        wanted = next(
+            (p for p in group if p.name == active_profile_name),
+            None,
+        )
+        if wanted is not None and provider.models:
+            # 用与 wanted 对应的那条 entry 作为默认
+            wanted_entry = provider.models[group.index(wanted)]
+            wanted_entry.default = True
+            if active_ref is None:
+                active_ref = (provider.id, wanted_entry.id)
+        elif provider.models:
+            provider.models[0].default = True
+
+        providers.append(provider)
+
+    if active_ref is None and providers and providers[0].models:
+        active_ref = (providers[0].id, providers[0].models[0].id)
+
+    return providers, active_ref
+
+
+def _slugify(text: str) -> str:
+    """把任意字符串转为文件名/id 友好的 slug（保留中文原样，替换空白与斜杠）。"""
+    if not text:
+        return ""
+    out = []
+    for ch in text:
+        if ch.isalnum() or ch in "-_":
+            out.append(ch)
+        elif '\u4e00' <= ch <= '\u9fff':  # CJK 汉字保留
+            out.append(ch)
+        else:
+            out.append("_")
+    slug = "".join(out).strip("_")
+    return slug or ""
+
+
 @dataclass
 class AppConfig:
     """全局配置。"""
@@ -197,6 +472,10 @@ class AppConfig:
     version: int = CONFIG_VERSION
     active_profile: str = "Ollama (本地)"
     profiles: List[LLMProfile] = field(default_factory=list)
+    # 新数据模型：运营商列表 + 当前激活模型引用 (provider_id, model_id)
+    # 首次加载时若 providers 为空，会从 profiles 自动迁移生成。
+    providers: List[Provider] = field(default_factory=list)
+    active_model_ref: Optional[List[str]] = None
     # 安全：是否允许执行 run_maxscript / run_python 等脚本工具
     allow_script_tools: bool = True
     # 是否每次执行脚本工具前弹窗确认
@@ -343,7 +622,7 @@ class AppConfig:
         return self.profiles[0] if self.profiles else None
 
     def to_dict(self) -> Dict:
-        return {
+        base = {
             "version": self.version,
             "active_profile": self.active_profile,
             "profiles": [p.to_dict() for p in self.profiles],
@@ -385,6 +664,12 @@ class AppConfig:
             "enable_project_memory": self.enable_project_memory,
             "shared_resources_dir": self.shared_resources_dir,
         }
+        # 新字段：providers / active_model_ref
+        base["providers"] = [p.to_dict() for p in self.providers]
+        base["active_model_ref"] = (
+            list(self.active_model_ref) if self.active_model_ref else None
+        )
+        return base
 
     @classmethod
     def from_dict(cls, data: Dict) -> "AppConfig":
@@ -552,6 +837,25 @@ class AppConfig:
         cfg.shared_resources_dir = str(
             data.get("shared_resources_dir", "") or "",
         )
+        # ---- 运营商 / 模型引用 ---- #
+        raw_providers = data.get("providers")
+        if isinstance(raw_providers, list) and raw_providers:
+            cfg.providers = [Provider.from_dict(p) for p in raw_providers]
+        else:
+            cfg.providers = []
+        raw_ref = data.get("active_model_ref")
+        if isinstance(raw_ref, (list, tuple)) and len(raw_ref) == 2:
+            cfg.active_model_ref = [str(raw_ref[0]), str(raw_ref[1])]
+        else:
+            cfg.active_model_ref = None
+        # 自动迁移：若无 providers 但有 profiles，则从 profiles 构建一份
+        if not cfg.providers and cfg.profiles:
+            providers, ref = _build_providers_from_profiles(
+                cfg.profiles, cfg.active_profile,
+            )
+            cfg.providers = providers
+            if ref is not None:
+                cfg.active_model_ref = list(ref)
         return cfg
 
 
@@ -804,6 +1108,78 @@ class ConfigManager:
         self.save()
         if len(self._cfg.profiles) < before:
             _get_logger().info("Profile 已删除: %s", name)
+
+    # -------- 运营商 / 模型引用 --------
+    def list_providers(self) -> List[Provider]:
+        return list(self._cfg.providers)
+
+    def get_provider(self, provider_id: str) -> Optional[Provider]:
+        for p in self._cfg.providers:
+            if p.id == provider_id:
+                return p
+        return None
+
+    def get_active_model_ref(self) -> Optional[tuple]:
+        ref = self._cfg.active_model_ref
+        if ref and len(ref) == 2:
+            return (ref[0], ref[1])
+        return None
+
+    def set_active_model_ref(self, provider_id: str, model_id: str) -> None:
+        provider = self.get_provider(provider_id)
+        if provider is None:
+            raise ValueError("Provider 不存在: {}".format(provider_id))
+        entry = next((m for m in provider.models if m.id == model_id), None)
+        if entry is None:
+            raise ValueError(
+                "Provider {} 下不存在模型 {}".format(provider_id, model_id),
+            )
+        old = self._cfg.active_model_ref
+        self._cfg.active_model_ref = [provider_id, model_id]
+        # 同步 legacy active_profile：优先匹配同名 profile，用于兼容尚未
+        # 切换到 provider 视图的老代码路径
+        for prof in self._cfg.profiles:
+            if prof.model == entry.model and prof.base_url == provider.base_url:
+                self._cfg.active_profile = prof.name
+                break
+        self.save()
+        if old != self._cfg.active_model_ref:
+            _get_logger().info(
+                "切换激活模型: %s -> (%s, %s)",
+                old, provider_id, model_id,
+            )
+
+    def resolve_active_llm(self) -> Optional[LLMProfile]:
+        """把 active_model_ref 解析为一个可用于发请求的 LLMProfile。
+
+        运营商级 defaults + 模型级 overrides 合并后填入 LLMProfile。
+        当 providers 为空或 active_model_ref 无效时回退到 legacy
+        get_active_profile() 保证兼容。
+        """
+        ref = self.get_active_model_ref()
+        if not ref:
+            return self.get_active_profile()
+        provider = self.get_provider(ref[0])
+        if provider is None:
+            return self.get_active_profile()
+        entry = next(
+            (m for m in provider.models if m.id == ref[1]),
+            provider.get_default_model(),
+        )
+        if entry is None:
+            return self.get_active_profile()
+        merged = dict(provider.defaults or {})
+        merged.update(entry.overrides or {})
+        merged["name"] = "{} / {}".format(provider.name, entry.label or entry.model)
+        merged["base_url"] = provider.base_url
+        merged["api_key"] = provider.api_key
+        merged["model"] = entry.model
+        if provider.extra_headers:
+            merged["extra_headers"] = dict(provider.extra_headers)
+        # 只保留 LLMProfile 认识的字段
+        valid = set(LLMProfile.__dataclass_fields__.keys())
+        clean = {k: v for k, v in merged.items() if k in valid}
+        return LLMProfile(**clean)
 
 
 if __name__ == "__main__":
