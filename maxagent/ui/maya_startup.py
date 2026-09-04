@@ -55,6 +55,34 @@ def _ensure_maxagent_on_path():
         return
 
 
+def restore_workspace_control():
+    # type: () -> Optional[str]
+    """workspaceControl 的 ``uiScript`` 回调入口。
+
+    当用户切换 Maya workspace / layout，或从折叠状态重新展开面板时，
+    Maya 会执行创建 control 时登记的 ``uiScript``。若此时面板内容还
+    没建起来（进程刚启动就被 layout 恢复），在这里补建一次。
+
+    已经存在且内容正常时直接返回，避免重复创建。
+    """
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    from maxagent.dcc.runtime import (  # pylint: disable=import-outside-toplevel
+        ensure_current_dcc,
+    )
+    from maxagent.ui.dock_widget import (  # pylint: disable=import-outside-toplevel
+        _DOCK_WIDGET,
+        get_or_create_dock,
+    )
+
+    if _DOCK_WIDGET is not None:
+        return 'already-restored'
+    ensure_current_dcc('maya')
+    if not cmds.workspaceControl('MaxAgentWorkspaceControl', exists=True):
+        return 'control-missing'
+    get_or_create_dock()
+    return 'restored'
+
+
 def _startup():
     # type: () -> None
     """导入并启动 MaxAgent UI。"""

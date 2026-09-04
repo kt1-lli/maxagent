@@ -434,6 +434,102 @@ class SettingsDialog(
         self.wrap_undo_chk.toggled.connect(self._on_app_setting_changed)
         form.addRow('', self.wrap_undo_chk)
 
+        # ---- Maya 停靠位置（仅 Maya 环境显示） ---- #
+        if is_maya:
+            self.maya_dock_box = QtWidgets.QGroupBox('Maya 面板停靠位置')
+            dock_form = QtWidgets.QFormLayout(self.maya_dock_box)
+            dock_form.setSpacing(6)
+            dock_form.setLabelAlignment(QtCore.Qt.AlignRight)
+            dock_form.setFormAlignment(
+                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop,
+            )
+            dock_form.setFieldGrowthPolicy(
+                QtWidgets.QFormLayout.ExpandingFieldsGrow,
+            )
+
+            self.maya_dock_target_combo = QtWidgets.QComboBox()
+            self.maya_dock_target_combo.setMinimumWidth(260)
+            self.maya_dock_target_combo.setToolTip(
+                '选择 MaxAgent 面板停靠到哪个 Maya 面板上。\n'
+                '列表来自当前会话真实存在的 workspaceControl，\n'
+                '括号里是 control 的内部名称。选择后立即重新停靠。',
+            )
+            self.maya_dock_target_combo.currentIndexChanged.connect(
+                self._on_maya_dock_target_changed,
+            )
+            dock_form.addRow('停靠到:', self.maya_dock_target_combo)
+
+            self.maya_dock_mode_combo = QtWidgets.QComboBox()
+            self.maya_dock_mode_combo.addItem('并入目标标签页（tab）', 'tab')
+            self.maya_dock_mode_combo.addItem('停靠到目标右侧（dock）', 'dock')
+            self.maya_dock_mode_combo.addItem('停靠到主窗口边缘（main）', 'main')
+            self.maya_dock_mode_combo.setToolTip(
+                'tab  = 与目标面板共用一个标签栏（最稳定，推荐）\n'
+                'dock = 停在目标面板旁边，占独立区域\n'
+                'main = 直接贴到 Maya 主窗口的某一条边',
+            )
+            self.maya_dock_mode_combo.currentIndexChanged.connect(
+                self._on_maya_dock_target_changed,
+            )
+            dock_form.addRow('停靠方式:', self.maya_dock_mode_combo)
+
+            self.maya_dock_side_combo = QtWidgets.QComboBox()
+            for side, text in (
+                ('left', '左'),
+                ('right', '右'),
+                ('top', '上'),
+                ('bottom', '下'),
+            ):
+                self.maya_dock_side_combo.addItem(text, side)
+            self.maya_dock_side_combo.setToolTip(
+                '仅"停靠到主窗口边缘"模式生效。',
+            )
+            self.maya_dock_side_combo.currentIndexChanged.connect(
+                self._on_maya_dock_target_changed,
+            )
+            dock_form.addRow('主窗口方位:', self.maya_dock_side_combo)
+
+            self.maya_dock_floating_chk = QtWidgets.QCheckBox(
+                '浮动显示（脱离 Maya 布局）',
+            )
+            self.maya_dock_floating_chk.setToolTip(
+                '勾选后面板作为独立窗口显示，不占用 Maya 停靠区域。',
+            )
+            self.maya_dock_floating_chk.toggled.connect(
+                self._on_maya_dock_target_changed,
+            )
+            dock_form.addRow('', self.maya_dock_floating_chk)
+
+            dock_btn_row = QtWidgets.QWidget()
+            dock_btn_h = QtWidgets.QHBoxLayout(dock_btn_row)
+            dock_btn_h.setContentsMargins(0, 0, 0, 0)
+            dock_btn_h.setSpacing(6)
+            self.maya_dock_refresh_btn = QtWidgets.QPushButton(
+                _btn_label('🔄', '刷新列表'),
+            )
+            self.maya_dock_refresh_btn.setToolTip(
+                '重新枚举当前 Maya 会话里可用的停靠目标。\n'
+                '新打开 Outliner / UV 编辑器等面板后点这里即可看到它们。',
+            )
+            self.maya_dock_refresh_btn.clicked.connect(
+                self._on_maya_dock_refresh,
+            )
+            dock_btn_h.addWidget(self.maya_dock_refresh_btn)
+            self.maya_dock_apply_btn = QtWidgets.QPushButton(
+                _btn_label('📌', '立即重新停靠'),
+            )
+            self.maya_dock_apply_btn.setToolTip(
+                '按当前选择立刻把面板重新停靠一次（无需重启 Maya）。',
+            )
+            self.maya_dock_apply_btn.clicked.connect(
+                self._on_maya_dock_apply,
+            )
+            dock_btn_h.addWidget(self.maya_dock_apply_btn)
+            dock_btn_h.addStretch(1)
+            dock_form.addRow('', dock_btn_row)
+
+            form.addRow(self.maya_dock_box)
+
         # ---- 视觉/多模态 ---- #
         self.vision_enabled_chk = QtWidgets.QCheckBox(
             '启用图片视觉（仅向支持视觉的模型发送图片）',
@@ -1735,6 +1831,142 @@ class SettingsDialog(
         self.vision_whitelist_edit.blockSignals(True)
         self.vision_whitelist_edit.setPlainText(text)
         self.vision_whitelist_edit.blockSignals(False)
+
+        # ---- Maya 停靠位置 ---- #
+        self._load_maya_dock_settings()
+
+    def _load_maya_dock_settings(self):
+        """填充 Maya 停靠目标下拉框并同步当前配置。
+
+        非 Maya 环境（没有这些控件）直接返回，保证设置页在 Max /
+        独立模式下不受影响。
+        """
+        combo = getattr(self, 'maya_dock_target_combo', None)
+        if combo is None:
+            return
+        self._on_maya_dock_refresh(silent=True)
+
+        state = self._maya_dock_ui_state()
+        saved_target = (getattr(state, 'maya_dock_target', '') or '').strip()
+        if saved_target:
+            idx = combo.findData(saved_target)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                # 目标面板当前没打开，保留配置值并加一个占位项，
+                # 避免用户已保存的选择被静默清空。
+                combo.addItem(
+                    '{}  (当前不可用)'.format(saved_target), saved_target,
+                )
+                combo.setCurrentIndex(combo.count() - 1)
+
+        mode = str(getattr(state, 'maya_dock_mode', 'tab') or 'tab')
+        mode_idx = self.maya_dock_mode_combo.findData(mode)
+        self.maya_dock_mode_combo.setCurrentIndex(
+            mode_idx if mode_idx >= 0 else 0
+        )
+
+        side = str(getattr(state, 'maya_dock_side', 'right') or 'right')
+        side_idx = self.maya_dock_side_combo.findData(side)
+        self.maya_dock_side_combo.setCurrentIndex(
+            side_idx if side_idx >= 0 else 1
+        )
+
+        self.maya_dock_floating_chk.setChecked(
+            bool(getattr(state, 'maya_floating', False))
+        )
+
+    def _maya_dock_ui_state(self):
+        """取当前 UIState；拿不到时返回默认值，避免设置页崩。"""
+        try:
+            from .ui_state import UIStateManager
+        except Exception:  # pylint: disable=broad-except
+            from maxagent.ui_state import UIStateManager  # type: ignore
+        try:
+            return UIStateManager().load()
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    def _on_maya_dock_refresh(self, silent=False):
+        # type: (bool) -> None
+        """重新枚举停靠目标并重建下拉框内容。"""
+        combo = getattr(self, 'maya_dock_target_combo', None)
+        if combo is None:
+            return
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        try:
+            from ._maya_dock_targets import list_dock_targets_with_labels
+        except Exception:  # pylint: disable=broad-except
+            list_dock_targets_with_labels = None  # type: ignore
+        targets = []
+        if list_dock_targets_with_labels is not None:
+            try:
+                targets = list_dock_targets_with_labels()
+            except Exception:  # pylint: disable=broad-except
+                targets = []
+        if not targets:
+            combo.addItem('（未检测到可用停靠目标）', '')
+        else:
+            for name, text in targets:
+                combo.addItem(text, name)
+        if current:
+            idx = combo.findData(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+        if not silent and not targets:
+            QtWidgets.QMessageBox.information(
+                self,
+                '未检测到停靠目标',
+                '当前 Maya 会话没有找到可用的 workspaceControl。\n'
+                '请确认已正常加载 Maya 界面（非 batch 模式）后重试。',
+            )
+
+    def _on_maya_dock_target_changed(self, _index=0):
+        """停靠设置变更：写盘但不立即重新停靠（避免拖动时抖动）。"""
+        self._save_maya_dock_settings()
+
+    def _save_maya_dock_settings(self):
+        """把当前停靠选择写入 ui_state.json。"""
+        combo = getattr(self, 'maya_dock_target_combo', None)
+        if combo is None:
+            return
+        target = combo.currentData() or ''
+        mode = self.maya_dock_mode_combo.currentData() or 'tab'
+        side = self.maya_dock_side_combo.currentData() or 'right'
+        floating = bool(self.maya_dock_floating_chk.isChecked())
+        try:
+            from .ui_state import UIStateManager
+        except Exception:  # pylint: disable=broad-except
+            from maxagent.ui_state import UIStateManager  # type: ignore
+        try:
+            mgr = UIStateManager()
+            state = mgr.load()
+            state.maya_dock_target = str(target)
+            state.maya_dock_mode = str(mode)
+            state.maya_dock_side = str(side)
+            state.maya_floating = floating
+            mgr.save(state)
+        except Exception as exc:  # pylint: disable=broad-except
+            if not getattr(self, '_maya_dock_save_warned', False):
+                self._maya_dock_save_warned = True
+                QtWidgets.QMessageBox.warning(
+                    self, '保存失败', 'Maya 停靠设置写盘失败: {}'.format(exc),
+                )
+
+    def _on_maya_dock_apply(self):
+        """按当前选择立刻把面板重新停靠一次。"""
+        self._save_maya_dock_settings()
+        from .dock_widget import (  # pylint: disable=import-outside-toplevel
+            apply_maya_dock_target,
+        )
+        ok, message = apply_maya_dock_target()
+        if ok:
+            QtWidgets.QMessageBox.information(self, '已重新停靠', message)
+        else:
+            QtWidgets.QMessageBox.warning(self, '重新停靠失败', message)
 
     def _on_app_setting_changed(self, _checked):
         cfg = self._config.config

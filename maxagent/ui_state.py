@@ -26,6 +26,18 @@
         QSplitter 的 sizes() 列表。
     chat_height / input_height
         分割器无法保存时的 fallback。
+
+Maya 专用字段说明（Qt 的 geometry_b64 / main_state_b64 在 Maya 下无意义，
+Maya 的停靠由 workspaceControl 自己管理，必须单独存）：
+    maya_dock_target
+        停靠到的 workspaceControl 名（如 ``ChannelBoxLayerEditor``）。
+    maya_dock_mode
+        ``tab`` = tabToControl 并入目标标签页；``dock`` = dockToControl
+        停靠到目标旁；``main`` = dockToMainWindow 停靠到主窗口某侧。
+    maya_dock_side
+        mode=main 时的方位：left / right / top / bottom。
+    maya_floating / maya_visible / maya_width / maya_height
+        浮动状态、可见性与尺寸，用于启动时还原用户上次的样子。
 """
 
 from __future__ import absolute_import
@@ -71,6 +83,24 @@ class UIState:
     maximized: bool = False
     # QSplitter.sizes() 列表（聊天区 / 输入区）
     splitter_sizes: List[int] = field(default_factory=lambda: [400, 100])
+
+    # ---- Maya 专用停靠状态（Qt 的 geometry/saveState 在 Maya 下无意义） ---- #
+    # 停靠到的 workspaceControl 名，如 'ChannelBoxLayerEditor'。
+    # 空串表示走默认优先级自动选择。
+    maya_dock_target: str = ''
+    # 停靠方式：'tab'（tabToControl，并入目标标签页）/
+    #           'dock'（dockToControl，停靠到目标旁边）/
+    #           'main'（dockToMainWindow，停靠到主窗口某侧）
+    maya_dock_mode: str = 'tab'
+    # 停靠到主窗口时的方位：left / right / top / bottom
+    maya_dock_side: str = 'right'
+    # 是否浮动（脱离 Maya 布局成为独立窗口）
+    maya_floating: bool = False
+    # 面板当前是否可见（用户手动关掉后不应强制弹回）
+    maya_visible: bool = True
+    # 面板宽高（workspaceControl 的 width/height 查询结果）
+    maya_width: int = 0
+    maya_height: int = 0
     # 设置面板上次活跃的 tab 索引（备用）
     last_settings_tab: int = 0
     # 上次启动是否成功嵌入到 Max 主窗口（用于诊断 / 启动统计）

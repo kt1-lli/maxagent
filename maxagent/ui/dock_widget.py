@@ -55,6 +55,7 @@ from ._dock_session_mixin import _SessionMixin
 from ._dock_worker_signals_mixin import _WorkerSignalsMixin
 from ._dock_usage_mixin import _UsageBudgetMixin
 from ._dock_vision_web_mixin import _VisionWebMixin
+from ._maya_dock_targets import resolve_dock_target
 from .markdown_render import html_escape
 from .bubbles import AssistantBubble as _AssistantBubble
 from .bubbles import BubbleFrame as _BubbleFrame  # noqa: F401
@@ -75,6 +76,22 @@ from .tool_block import ToolCallBlock as _ToolCallBlock
 logger = get_logger(__name__)
 
 QApplication = QtWidgets.QApplication
+
+
+# ---------------------------------------------------------------------- #
+# Maya 停靠相关常量
+# ---------------------------------------------------------------------- #
+# uiScript：切换 workspace / layout 时由 Maya 回调，用于重建面板内容。
+# 这里只做"重新触发一次启动"，实际创建逻辑会复用同一个 control 名，
+# 不会重复创建（get_or_create_dock 内部有存在性判断）。
+_MAYA_UI_SCRIPT = (
+    'import maxagent.ui.maya_startup as _ms; _ms.restore_workspace_control()'
+)
+# visibleChangeCommand：面板可见性变化时回调，用于写回停靠状态。
+_MAYA_VISIBLE_CHANGE_CMD = (
+    'import maxagent.ui.dock_widget as _dw;'
+    " _dw._save_maya_dock_state('MaxAgentWorkspaceControl')"
+)
 
 
 # ---------------------------------------------------------------------- #
@@ -946,7 +963,7 @@ class MaxAgentDockWidget(
 
     def save_ui_state(self, geometry_b64='', floating=None,
                       dock_area=None, embedded_ok=None,
-                      main_state_b64=None):
+                      main_state_b64=None, maya_dock=None):
         """持久化当前 UI 状态到磁盘。
 
         :param geometry_b64: 调用方（startup.py）从 QDockWidget /
@@ -958,6 +975,9 @@ class MaxAgentDockWidget(
         :param embedded_ok: 本次启动是否成功嵌入到 Max
         :param main_state_b64: Max 主窗口 ``saveState()`` 的 base64，
             None 表示沿用旧值
+        :param maya_dock: Maya 停靠状态字典，可含 ``target`` / ``mode``
+            / ``side`` / ``floating`` / ``visible`` / ``width`` /
+            ``height``；None 表示不修改（沿用旧值）
         """
         st = self._ui_state
         # 分割器尺寸总是从当前 widget 取
@@ -978,6 +998,7 @@ class MaxAgentDockWidget(
                 pass
         if embedded_ok is not None:
             st.last_embedded_ok = bool(embedded_ok)
+        self._apply_maya_dock_state(st, maya_dock)
         # 独立窗口模式下记录窗口尺寸
         try:
             if self.isWindow():
@@ -990,6 +1011,43 @@ class MaxAgentDockWidget(
         except Exception:  # pylint: disable=broad-except
             pass
         self._ui_state_mgr.save(st)
+
+    @staticmethod
+    def _apply_maya_dock_state(st, maya_dock):
+        # type: (object, object) -> None
+        """把 Maya 停靠状态字典写入 UIState。
+
+        单独抽成静态方法，便于测试直接验证字段映射，无需构造 widget。
+        只认白名单 key，避免调用方传错字段名污染配置。
+        """
+        if not maya_dock:
+            return
+        str_keys = ('target', 'mode', 'side')
+        value_map = {
+            'target': 'maya_dock_target',
+            'mode': 'maya_dock_mode',
+            'side': 'maya_dock_side',
+        }
+        for key in str_keys:
+            if key not in maya_dock:
+                continue
+            value = maya_dock[key]
+            if value is None:
+                continue
+            setattr(st, value_map[key], str(value))
+        for key, attr in (
+            ('floating', 'maya_floating'),
+            ('visible', 'maya_visible'),
+        ):
+            if key in maya_dock and maya_dock[key] is not None:
+                setattr(st, attr, bool(maya_dock[key]))
+        for key, attr in (('width', 'maya_width'), ('height', 'maya_height')):
+            if key not in maya_dock or maya_dock[key] is None:
+                continue
+            try:
+                setattr(st, attr, max(0, int(maya_dock[key])))
+            except (TypeError, ValueError):
+                pass
 
     def get_ui_state(self):
         """返回当前 UIState（供 startup.py 决定如何恢复几何）。"""
@@ -1998,31 +2056,75 @@ def _create_maya_dock(config):
         except Exception:  # pylint: disable=broad-except
             pass
 
+    # ---- 停靠目标：优先用持久化的，其次按默认优先级自动选择 ---- #
+    preferred_target = (getattr(ui_state, 'maya_dock_target', '') or '').strip()
+    target = resolve_dock_target(preferred=preferred_target or None, cmds=cmds)
+    dock_mode = str(getattr(ui_state, 'maya_dock_mode', 'tab') or 'tab')
+    dock_side = str(getattr(ui_state, 'maya_dock_side', 'right') or 'right')
+    want_floating = bool(getattr(ui_state, 'maya_floating', False))
+
     has_geometry = bool((ui_state.geometry_b64 or '').strip())
-    # 使用 tabToControl=["AttributeEditor", -1] 让面板停靠在右侧属性编辑器旁，
-    # 这是 Maya 2017+ 官方示例中兼容性最好的停靠方式；dockToControl 部分版本不识别。
+    saved_w = int(getattr(ui_state, 'maya_width', 0) or 0)
+    saved_h = int(getattr(ui_state, 'maya_height', 0) or 0)
+
     create_kwargs = {
         'label': label,
-        'tabToControl': ['AttributeEditor', -1],
         'retain': False,
         'loadImmediately': True,
         'visible': False,
+        # 切换 workspace / layout 时让 Maya 能自行重建面板内容
+        'uiScript': _MAYA_UI_SCRIPT,
+        # 可见性变化时回写停靠状态，实现"记住用户拖到哪"
+        'visibleChangeCommand': _MAYA_VISIBLE_CHANGE_CMD,
     }  # type: dict
-    if not has_geometry:
+
+    # 尺寸：优先用上次记录的宽高，其次用默认初始尺寸
+    if saved_w > 0:
+        create_kwargs['initialWidth'] = saved_w
+    elif not has_geometry:
         create_kwargs['initialWidth'] = 440
+    if saved_h > 0:
+        create_kwargs['initialHeight'] = saved_h
+    elif not has_geometry:
         create_kwargs['initialHeight'] = 760
+
+    # 按停靠方式生成对应的 flag
+    dock_kwargs = {}  # type: dict
+    if want_floating:
+        dock_kwargs['floating'] = True
+    elif dock_mode == 'main':
+        dock_kwargs['dockToMainWindow'] = [dock_side, True]
+    elif dock_mode == 'dock' and target:
+        dock_kwargs['dockToControl'] = [target, 'right']
+    elif target:
+        # tabToControl 是 Maya 里兼容性最好的方式：并入目标标签页
+        dock_kwargs['tabToControl'] = [target, -1]
+    else:
+        # 一个可用目标都没有，退化为停靠到主窗口右侧
+        dock_kwargs['dockToMainWindow'] = ['right', True]
+
+    create_kwargs.update(dock_kwargs)
 
     try:
         cmds.workspaceControl(control_name, **create_kwargs)
     except Exception:  # pylint: disable=broad-except
-        # 某些 Maya 版本对 tabToControl 支持不同，回退到最小参数创建
-        cmds.workspaceControl(
-            control_name,
-            label=label,
-            retain=False,
-            loadImmediately=True,
-            visible=False,
+        # 某些 Maya 版本对 tabToControl / dockToControl 支持不同，
+        # 逐级降级：去掉停靠 flag -> 只保留最小参数
+        logger.warning(
+            'workspaceControl 带停靠参数创建失败，降级重试: %s', dock_kwargs,
         )
+        for key in list(dock_kwargs):
+            create_kwargs.pop(key, None)
+        try:
+            cmds.workspaceControl(control_name, **create_kwargs)
+        except Exception:  # pylint: disable=broad-except
+            cmds.workspaceControl(
+                control_name,
+                label=label,
+                retain=False,
+                loadImmediately=True,
+                visible=False,
+            )
 
     # 把 QWidget 附加到 workspaceControl
     wrap_instance = get_shiboken_wrap_instance()
@@ -2063,17 +2165,158 @@ def _create_maya_dock(config):
     else:
         logger.warning('当前环境未找到 shiboken，无法把 Widget 嵌入 Maya')
 
-    # 延迟恢复/显示面板，确保 Maya 完成布局计算后内容才渲染
-    cmds.evalDeferred(
-        lambda *args: cmds.workspaceControl(control_name, edit=True, visible=True)
-    )
+    # 延迟恢复/显示面板，确保 Maya 完成布局计算后内容才渲染。
+    # 若上次会话结束时用户是关闭状态，这里不强制弹出。
+    want_visible = bool(getattr(ui_state, 'maya_visible', True))
+    if want_visible:
+        cmds.evalDeferred(
+            lambda *args: cmds.workspaceControl(
+                control_name, edit=True, visible=True,
+            )
+        )
     cmds.evalDeferred(
         lambda *args: cmds.workspaceControl(control_name, edit=True, restore=True)
+    )
+    # 面板尺寸/位置变化后回写状态，保证下次启动沿用
+    cmds.evalDeferred(
+        lambda *args: _save_maya_dock_state(control_name, dock_widget),
     )
 
     _DOCK_WIDGET = dock_widget
     _DOCK_HOLDER = control_name
     return control_name
+
+
+def _save_maya_dock_state(control_name, dock_widget=None):
+    # type: (str, object) -> None
+    """读取 workspaceControl 当前状态并写回 ui_state.json。
+
+    Maya 的停靠位置无法通过 Qt 的 saveGeometry 拿到，只能逐个查询
+    workspaceControl 的 flag。查询失败时保留旧值，绝不用脏数据覆盖。
+    """
+    # pylint: disable=import-outside-toplevel
+    try:
+        import maya.cmds as cmds  # type: ignore
+    except Exception:  # pylint: disable=broad-except
+        return
+    if not cmds.workspaceControl(control_name, query=True, exists=True):
+        return
+
+    state = {}  # type: dict
+    try:
+        state['floating'] = bool(
+            cmds.workspaceControl(control_name, query=True, floating=True)
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+    try:
+        state['visible'] = bool(
+            cmds.workspaceControl(control_name, query=True, visible=True)
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+    for key, flag in (('width', 'width'), ('height', 'height')):
+        try:
+            state[key] = int(
+                cmds.workspaceControl(control_name, query=True, **{flag: True})
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    target = _query_dock_parent(cmds, control_name)
+    if target:
+        state['target'] = target
+
+    target_widget = dock_widget
+    if target_widget is None:
+        target_widget = _DOCK_WIDGET
+    if target_widget is None:
+        return
+    try:
+        target_widget.save_ui_state(maya_dock=state)
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('写回 Maya 停靠状态失败', exc_info=True)
+
+
+def apply_maya_dock_target():
+    # type: () -> tuple
+    """按 ui_state 里保存的停靠设置，立刻重新停靠已存在的面板。
+
+    用于设置面板的"立即重新停靠"按钮，不必重启 Maya。
+
+    :returns: ``(是否成功, 提示信息)``
+    """
+    # pylint: disable=import-outside-toplevel
+    try:
+        import maya.cmds as cmds  # type: ignore
+    except Exception:  # pylint: disable=broad-except
+        return (False, '当前不是 Maya 环境。')
+
+    control_name = 'MaxAgentWorkspaceControl'
+    if not cmds.workspaceControl(control_name, query=True, exists=True):
+        return (False, '面板尚未创建，请先启动 MaxAgent 面板。')
+
+    from ..ui_state import UIStateManager  # pylint: disable=import-outside-toplevel
+
+    state = UIStateManager().load()
+    target = resolve_dock_target(
+        preferred=(state.maya_dock_target or '').strip() or None, cmds=cmds,
+    )
+    mode = str(state.maya_dock_mode or 'tab')
+    side = str(state.maya_dock_side or 'right')
+
+    kwargs = {}  # type: dict
+    if state.maya_floating:
+        kwargs['floating'] = True
+    elif mode == 'main':
+        kwargs['dockToMainWindow'] = [side, True]
+    elif mode == 'dock' and target:
+        kwargs['dockToControl'] = [target, 'right']
+    elif target:
+        kwargs['tabToControl'] = [target, -1]
+    else:
+        kwargs['dockToMainWindow'] = ['right', True]
+
+    try:
+        cmds.workspaceControl(control_name, edit=True, **kwargs)
+        cmds.workspaceControl(control_name, edit=True, visible=True)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning('重新停靠失败: %s', exc)
+        return (False, '重新停靠失败：{}'.format(exc))
+
+    if target:
+        state.maya_dock_target = target
+        UIStateManager().save(state)
+        from ._maya_dock_targets import control_label  # pylint: disable=import-outside-toplevel
+        return (True, '已停靠到：{}'.format(control_label(target)))
+    return (True, '已按当前设置重新停靠。')
+
+
+def _query_dock_parent(cmds, control_name):
+    # type: (object, str) -> str
+    """查询 workspaceControl 当前停靠在哪个 control 上。
+
+    Maya 没有直接命令返回"停靠父级"，只能通过 ``cmds.control`` 的
+    full path name 往上找父级 workspaceControl。拿不到时返回空串，
+    调用方会用旧值兜底。
+    """
+    try:
+        full = cmds.workspaceControl(control_name, query=True, fullPathName=True)
+    except Exception:  # pylint: disable=broad-except
+        return ''
+    if not full:
+        return ''
+    parts = [p for p in str(full).replace('|', ' ').split() if p]
+    # 从自身往前找第一个同样是 workspaceControl 的名字
+    for name in reversed(parts[:-1]):
+        if name == control_name:
+            continue
+        try:
+            if cmds.workspaceControl(name, query=True, exists=True):
+                return name
+        except Exception:  # pylint: disable=broad-except
+            continue
+    return ''
 
 
 def _create_standalone_window(config):
