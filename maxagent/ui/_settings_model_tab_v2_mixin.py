@@ -828,14 +828,44 @@ class SettingsModelTabV2Mixin(object):
                 self, '拉取模型', '请先填 Base URL',
             )
             return
+
+        # 拉取期间锁按钮，避免重复点击打出一串请求
+        btn = getattr(self, 'provider_fetch_models_btn', None)
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText('拉取中…')
+        QtWidgets.QApplication.processEvents()
         try:
             from ..llm_provider_probe import list_models
-            models = list_models(base_url, api_key, timeout=15)
+            # list_models 的契约是 (models, error)，不是裸列表。
+            # 不解包的话会拿到元组 [list, str]，遍历出的元素是 list，
+            # 后面 m.get('id') 直接 AttributeError；而且元组非空恒为
+            # truthy，失败分支永远走不到，错误被彻底吞掉。
+            models, err = list_models(base_url, api_key, timeout=15)
+        except ImportError as exc:
+            QtWidgets.QMessageBox.critical(
+                self, '拉取模型', '未能加载探测模块: {}'.format(exc),
+            )
+            return
         except Exception as exc:  # pylint: disable=broad-except
             QtWidgets.QMessageBox.warning(
                 self, '拉取失败',
                 '未能获取模型列表：\n{}\n\n'
                 '若为本地模型，请确认服务已启动。'.format(exc),
+            )
+            return
+        finally:
+            if btn is not None:
+                btn.setEnabled(True)
+                btn.setText('↻ 拉取')
+
+        # 有缓存兜底时即使出错也继续展示缓存内容，不阻断用户
+        if err and not models:
+            QtWidgets.QMessageBox.warning(
+                self, '拉取失败',
+                '未能获取模型列表：\n{}\n\n'
+                '请确认 Base URL 与 API Key 正确，或该运营商不支持 '
+                '/models 端点，可继续手动填写模型名。'.format(err),
             )
             return
         if not models:
@@ -859,10 +889,12 @@ class SettingsModelTabV2Mixin(object):
                 continue
             it = QtWidgets.QListWidgetItem(mid)
             it.setFlags(it.flags() | QtCore.Qt.ItemIsUserCheckable)
-            it.setCheckState(
-                QtCore.Qt.Unchecked if mid in existing_ids
-                else QtCore.Qt.Unchecked,
-            )
+            if mid in existing_ids:
+                it.setCheckState(QtCore.Qt.Unchecked)
+                it.setForeground(QtGui.QColor('#888'))
+                it.setToolTip('已存在，勾选无效')
+            else:
+                it.setCheckState(QtCore.Qt.Unchecked)
             if mid in existing_ids:
                 it.setForeground(QtGui.QColor('#888'))
                 it.setToolTip('已存在')
