@@ -287,7 +287,21 @@ class SettingsDialog(
         # 子项顶部对齐，避免 form 给该单元分配多余高度时
         # base_url_edit 被向下推（resize 时表现为"漂移"）
         base_url_box_layout.setAlignment(QtCore.Qt.AlignTop)
-        base_url_box_layout.addWidget(self.base_url_edit)
+
+        # Base URL 输入框 + 预设按钮同一行（直接把 HBox 作为 VBox 的子 layout，
+        # 不引入额外 wrapper widget，保持 base_url_edit.parentWidget() == base_url_box）
+        base_url_row = QtWidgets.QHBoxLayout()
+        base_url_row.setContentsMargins(0, 0, 0, 0)
+        base_url_row.setSpacing(4)
+        base_url_row.addWidget(self.base_url_edit, 1)
+        self.preset_btn = QtWidgets.QPushButton('▼ 预设')
+        self.preset_btn.setToolTip('从内置运营商预设中选择，自动填充 Base URL')
+        self.preset_btn.setAutoDefault(False)
+        self.preset_btn.setDefault(False)
+        self.preset_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.preset_btn.clicked.connect(self._on_preset_clicked)
+        base_url_row.addWidget(self.preset_btn)
+        base_url_box_layout.addLayout(base_url_row)
 
         self.base_url_hint = QtWidgets.QLabel('')
         self.base_url_hint.setStyleSheet('color:#b8923a;')
@@ -384,7 +398,25 @@ class SettingsDialog(
         self.model_edit.setPlaceholderText(
             '如: deepseek-v4-flash / qwen2.5:7b / gpt-4o-mini',
         )
-        right.addRow('模型:', self.model_edit)
+
+        # 模型输入框 + "↻ 拉取"按钮
+        model_row = QtWidgets.QHBoxLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(4)
+        model_row.addWidget(self.model_edit, 1)
+        self.fetch_models_btn = QtWidgets.QPushButton('↻ 拉取')
+        self.fetch_models_btn.setToolTip(
+            '从当前 Base URL 拉取该运营商的模型列表\n'
+            '（结果缓存在 ~/.config/maxagent/model_cache.json）',
+        )
+        self.fetch_models_btn.setAutoDefault(False)
+        self.fetch_models_btn.setDefault(False)
+        self.fetch_models_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.fetch_models_btn.clicked.connect(self._on_fetch_models_clicked)
+        model_row.addWidget(self.fetch_models_btn)
+        model_row_widget = QtWidgets.QWidget()
+        model_row_widget.setLayout(model_row)
+        right.addRow('模型:', model_row_widget)
 
         self.temperature_spin = QtWidgets.QDoubleSpinBox()
         self.temperature_spin.setRange(0.0, 2.0)
@@ -3001,6 +3033,169 @@ class SettingsDialog(
             if item.checkState() == QtCore.Qt.CheckState.Checked:
                 names.append(item.text())
         return names
+
+    # ---------------- Base URL 预设 & 模型拉取 ---------------- #
+    def _on_preset_clicked(self):
+        # type: () -> None
+        """点击"▼ 预设"弹出内置运营商菜单。"""
+        try:
+            from ..config import BUILTIN_PROVIDER_PRESETS
+        except ImportError:
+            BUILTIN_PROVIDER_PRESETS = []
+        if not BUILTIN_PROVIDER_PRESETS:
+            return
+        menu = QtWidgets.QMenu(self.preset_btn)
+        for preset in BUILTIN_PROVIDER_PRESETS:
+            name = preset.get('name', '')
+            url = preset.get('base_url', '')
+            act = menu.addAction('{}   —   {}'.format(name, url))
+            # 用 lambda 需捕获当前值，避免闭包变量迟绑定
+            act.triggered.connect(
+                lambda _checked=False, u=url, n=name:
+                self._apply_preset(n, u),
+            )
+        menu.exec_(
+            self.preset_btn.mapToGlobal(
+                self.preset_btn.rect().bottomLeft(),
+            ),
+        )
+
+    def _apply_preset(self, name, base_url):
+        # type: (str, str) -> None
+        """把选中的预设 URL 写入 Base URL 输入框。
+
+        注意：不覆盖 API Key / 模型名，避免误删用户已配置内容。
+        用户会看到 URL 变化 + 提示，再手动填 Key / 拉取模型即可。
+        """
+        if not base_url:
+            return
+        self.base_url_edit.setText(base_url)
+        # 若名称是空的，帮忙填一下（避免用户看着 profile 名叫默认值）
+        if not self.name_edit.text().strip():
+            self.name_edit.setText(name)
+        # 触发提示刷新
+        try:
+            self._refresh_base_url_hint(base_url)
+        except (AttributeError, TypeError):
+            pass
+
+    def _on_fetch_models_clicked(self):
+        # type: () -> None
+        """点击"↻ 拉取"从 API 拉取模型列表并弹选择框。"""
+        base_url = self.base_url_edit.text().strip()
+        api_key = self.api_key_edit.text().strip()
+        if not base_url:
+            QtWidgets.QMessageBox.warning(
+                self, '拉取模型',
+                '请先填写 Base URL 后再点拉取。',
+            )
+            return
+
+        # 弹一个非模态忙碌提示（用状态栏更轻量）
+        self.fetch_models_btn.setEnabled(False)
+        self.fetch_models_btn.setText('拉取中…')
+        QtWidgets.QApplication.processEvents()
+        try:
+            from ..llm_provider_probe import list_models
+            models, err = list_models(
+                base_url, api_key,
+                force_refresh=True,
+            )
+        except ImportError as exc:
+            QtWidgets.QMessageBox.critical(
+                self, '拉取模型',
+                '未能加载探测模块: {}'.format(exc),
+            )
+            return
+        finally:
+            self.fetch_models_btn.setEnabled(True)
+            self.fetch_models_btn.setText('↻ 拉取')
+
+        if err and not models:
+            QtWidgets.QMessageBox.warning(
+                self, '拉取失败',
+                '未能获取模型列表：\n{}\n\n'
+                '请确认 Base URL 与 API Key 正确，或该运营商不支持 '
+                '/models 端点，可继续手动填写模型名。'.format(err),
+            )
+            return
+
+        if not models:
+            QtWidgets.QMessageBox.information(
+                self, '拉取模型',
+                '未返回任何模型。',
+            )
+            return
+
+        # 弹选择框：单选，允许用户过滤
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('选择模型 · 共 {} 个'.format(len(models)))
+        dlg.resize(420, 480)
+        vbox = QtWidgets.QVBoxLayout(dlg)
+        vbox.setSpacing(6)
+
+        tip = QtWidgets.QLabel(
+            '从下方列表中选择要使用的模型（双击或选中后点确定）。'
+            + ('\n注：拉取结果包含 {} 个模型，'
+               '已缓存到本地，下次可直接从缓存加载。'.format(len(models))),
+        )
+        tip.setWordWrap(True)
+        tip.setStyleSheet('color:#888;')
+        vbox.addWidget(tip)
+
+        filter_edit = QtWidgets.QLineEdit()
+        filter_edit.setPlaceholderText('过滤: 输入关键字…')
+        vbox.addWidget(filter_edit)
+
+        list_widget = QtWidgets.QListWidget()
+        for m in models:
+            mid = m.get('id') or ''
+            label = mid
+            ctx = m.get('context')
+            if ctx:
+                label = '{}    ({}k ctx)'.format(mid, ctx // 1024)
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, mid)
+            list_widget.addItem(item)
+        vbox.addWidget(list_widget, 1)
+
+        def _apply_filter(text):
+            t = (text or '').strip().lower()
+            for i in range(list_widget.count()):
+                it = list_widget.item(i)
+                mid = it.data(QtCore.Qt.UserRole) or ''
+                it.setHidden(bool(t) and t not in mid.lower())
+
+        filter_edit.textChanged.connect(_apply_filter)
+
+        # 若当前 model_edit 有值，尝试预选
+        current = self.model_edit.text().strip()
+        if current:
+            for i in range(list_widget.count()):
+                it = list_widget.item(i)
+                if it.data(QtCore.Qt.UserRole) == current:
+                    list_widget.setCurrentRow(i)
+                    break
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok
+            | QtWidgets.QDialogButtonBox.Cancel,
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        list_widget.itemDoubleClicked.connect(lambda _it: dlg.accept())
+        vbox.addWidget(btns)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        cur = list_widget.currentItem()
+        if not cur:
+            return
+        mid = cur.data(QtCore.Qt.UserRole)
+        if mid:
+            self.model_edit.setText(str(mid))
+            self._dirty = True
 
     def _on_profile_selected(self, cur, prev):
         if prev is not None and self._dirty:
