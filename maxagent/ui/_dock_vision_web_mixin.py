@@ -150,7 +150,7 @@ class _VisionWebMixin(object):
             has_atts = bool(self.attachment_strip.attachments())
             vision_on = bool(getattr(cfg, 'vision_enabled', True))
             whitelist = list(getattr(cfg, 'vision_model_whitelist', []))
-            prof = self._config.get_active_profile()
+            prof = ((getattr(self._config, "resolve_active_llm", lambda: None)() or self._config.get_active_profile()))
             model_name = ''
             prof_vision_supported = False
             if prof is not None:

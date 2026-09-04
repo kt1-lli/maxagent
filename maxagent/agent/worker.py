@@ -316,7 +316,7 @@ class AgentWorker(QObject, _StreamMixin, _ReflectionMixin):
         # 尝试切回原始主 profile（如果 config 中有记录）
         try:
             active = (
-                self._config_manager.get_active_profile()
+                ((getattr(self._config_manager, "resolve_active_llm", lambda: None)() or self._config_manager.get_active_profile()))
                 if self._config_manager else None
             )
             primary = getattr(self, '_primary_profile_name', '') or ''
@@ -361,7 +361,7 @@ class AgentWorker(QObject, _StreamMixin, _ReflectionMixin):
         if self._config_manager is None:
             return None, True
         try:
-            active = self._config_manager.get_active_profile()
+            active = ((getattr(self._config_manager, "resolve_active_llm", lambda: None)() or self._config_manager.get_active_profile()))
         except Exception:  # pylint: disable=broad-except
             logger.debug('silent except at %s:%d', __name__, 363, exc_info=True)
             return None, True

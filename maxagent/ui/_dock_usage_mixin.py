@@ -30,7 +30,7 @@ class _UsageBudgetMixin(object):
 
     def _get_active_prices(self):
         """读当前 profile 的 (input, output) 计费单价（USD per 1M tokens）。"""
-        prof = self._config.get_active_profile()
+        prof = ((getattr(self._config, "resolve_active_llm", lambda: None)() or self._config.get_active_profile()))
         try:
             pin = float(getattr(prof, 'price_input_per_1m', 0.0) or 0.0)
         except (TypeError, ValueError):
@@ -45,7 +45,7 @@ class _UsageBudgetMixin(object):
         # type: () -> int
         """从当前 profile 读取工具调用最大循环数；缺省/异常时回退到默认。"""
         try:
-            prof = self._config.get_active_profile()
+            prof = ((getattr(self._config, "resolve_active_llm", lambda: None)() or self._config.get_active_profile()))
             v = int(getattr(prof, 'max_tool_loops', 0) or 0)
             if v > 0:
                 return v
@@ -67,7 +67,7 @@ class _UsageBudgetMixin(object):
         Ollama 端点会被特殊处理（按 8K 兜底，避免 num_ctx 默认 2048 撑爆）。
         """
         try:
-            prof = self._config.get_active_profile()
+            prof = ((getattr(self._config, "resolve_active_llm", lambda: None)() or self._config.get_active_profile()))
         except Exception:  # pylint: disable=broad-except
             return 32000
         # 优先：模型库推断
@@ -98,7 +98,7 @@ class _UsageBudgetMixin(object):
         # type: () -> str
         """获取当前 profile 的模型标签（用于 UI 提示），失败时返回空串。"""
         try:
-            prof = self._config.get_active_profile()
+            prof = ((getattr(self._config, "resolve_active_llm", lambda: None)() or self._config.get_active_profile()))
             return (getattr(prof, 'model', '') or '').strip()
         except Exception:  # pylint: disable=broad-except
             return ''

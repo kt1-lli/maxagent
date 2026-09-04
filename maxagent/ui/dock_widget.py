@@ -581,15 +581,21 @@ class MaxAgentDockWidget(
         outer.setContentsMargins(6, 6, 6, 6)
         outer.setSpacing(4)
 
-        # === 顶部条第 1 行：Profile + 设置 ===
+        # === 顶部条第 1 行：LLM 选择 + 设置 ===
         top = QtWidgets.QHBoxLayout()
         top.setSpacing(6)
-        top.addWidget(QtWidgets.QLabel('Profile:'))
+        top.addWidget(QtWidgets.QLabel('LLM:'))
         self.profile_combo = QtWidgets.QComboBox()
-        self.profile_combo.setMinimumWidth(160)
+        self.profile_combo.setMinimumWidth(180)
         self.profile_combo.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.profile_combo.setToolTip(
+            '选择要用于对话的具体模型。\n'
+            '格式：<运营商> / <模型>\n'
+            '每个运营商可挂多个模型，共享同一份 API Key 与 Base URL。\n'
+            '在设置面板 → 模型 tab 中管理运营商和模型清单。',
         )
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         top.addWidget(self.profile_combo, 1)
@@ -850,23 +856,51 @@ class MaxAgentDockWidget(
     # Profile / LLM
     # ------------------------------------------------------------------ #
     def _refresh_profiles(self):
+        """按新数据模型（Provider + ModelEntry）刷新顶部 LLM 下拉。
+
+        条目形态：``<Provider>/<ModelLabel>``；用运营商分组的分隔线增强
+        可读性。当运营商列表为空（极端 corrupted config）时回退到 legacy
+        profile 列表，避免用户没有任何可选。
+        """
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
-        active = self._config.get_active_profile_name()
-        for name in self._config.list_profile_names():
-            self.profile_combo.addItem(name)
-        idx = self.profile_combo.findText(active)
-        if idx >= 0:
-            self.profile_combo.setCurrentIndex(idx)
+
+        providers = self._config.list_providers()
+        active_ref = self._config.get_active_model_ref()
+        target_idx = -1
+
+        if providers:
+            for provider in providers:
+                for entry in provider.models:
+                    label = entry.label or entry.model
+                    text = '{} / {}'.format(provider.name, label)
+                    # 用 QComboBox 的 userData 保存 (provider_id, model_id)
+                    self.profile_combo.addItem(text, (provider.id, entry.id))
+                    if active_ref == (provider.id, entry.id):
+                        target_idx = self.profile_combo.count() - 1
+            if target_idx < 0 and self.profile_combo.count() > 0:
+                target_idx = 0
+        else:
+            # 兜底：老 profile 视图
+            active_name = self._config.get_active_profile_name()
+            for name in self._config.list_profile_names():
+                self.profile_combo.addItem(name, None)
+                if name == active_name:
+                    target_idx = self.profile_combo.count() - 1
+
+        if target_idx >= 0:
+            self.profile_combo.setCurrentIndex(target_idx)
         self.profile_combo.blockSignals(False)
 
     def _build_llm_client(self):
-        prof = self._config.get_active_profile()
+        prof = self._config.resolve_active_llm()
+        if prof is None:
+            prof = self._config.get_active_profile()
         return build_client_from_profile(prof, self._config.config)
 
     def _build_dispatcher(self):
-        """根据当前 profile 构造 dispatcher（含工具结果裁剪上限）。"""
-        prof = self._config.get_active_profile()
+        """根据当前 LLM 构造 dispatcher（含工具结果裁剪上限）。"""
+        prof = self._config.resolve_active_llm() or self._config.get_active_profile()
         try:
             cap = int(getattr(prof, 'tool_result_max_bytes', 0) or 0)
         except (TypeError, ValueError):
@@ -1050,18 +1084,26 @@ class MaxAgentDockWidget(
     # 槽：用户操作
     # ------------------------------------------------------------------ #
     def _on_profile_changed(self, _idx):
-        name = self.profile_combo.currentText()
-        if not name:
+        """顶部 LLM 下拉切换：新数据模型走 active_model_ref，兜底 legacy。"""
+        data = self.profile_combo.currentData()
+        text = self.profile_combo.currentText()
+        if not text:
             return
         try:
-            self._config.set_active_profile(name)
+            if isinstance(data, tuple) and len(data) == 2:
+                self._config.set_active_model_ref(data[0], data[1])
+                display = text
+            else:
+                # 兜底：老 profile 名字模式
+                self._config.set_active_profile(text)
+                display = text
             self._llm = self._build_llm_client()
             self._dispatcher = self._build_dispatcher()
-            self._renderer.add_status('已切换到 Profile: {}'.format(name))
+            self._renderer.add_status('已切换到: {}'.format(display))
             self._refresh_context_label()
             self._refresh_vision_hint()
         except Exception as exc:  # pylint: disable=broad-except
-            self._renderer.add_error('切换 Profile 失败: {}'.format(exc))
+            self._renderer.add_error('切换 LLM 失败: {}'.format(exc))
 
     def _open_settings(self):
         from .settings_dialog import SettingsDialog
@@ -1288,7 +1330,7 @@ class MaxAgentDockWidget(
                                  'vision_model_whitelist', []))
         cfg_vision_on = bool(getattr(self._config.config,
                                      'vision_enabled', True))
-        active_prof = self._config.get_active_profile()
+        active_prof = self._config.resolve_active_llm() or self._config.get_active_profile()
         prof_vision_supported = bool(
             getattr(active_prof, 'vision_supported', False)
         ) if active_prof is not None else False

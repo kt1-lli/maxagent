@@ -53,6 +53,11 @@ def _resolve_profile(config_manager, profile_name):
             'dispatch_task: profile "%s" not found, fallback to active',
             profile_name,
         )
+    resolver = getattr(config_manager, 'resolve_active_llm', None)
+    if callable(resolver):
+        resolved = resolver()
+        if resolved is not None:
+            return resolved
     return config_manager.get_active_profile()
 
 
