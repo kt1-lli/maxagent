@@ -267,6 +267,35 @@ class SettingsDialog(
             QtWidgets.QFormLayout.ExpandingFieldsGrow,
         )
 
+        # 运营商归属提示条：显示"参数继承自 XX 运营商"，右侧提供
+        # 一键把当前 profile 的可覆盖参数同步给同运营商所有 profile
+        self.provider_hint_label = QtWidgets.QLabel('')
+        self.provider_hint_label.setWordWrap(True)
+        self.provider_hint_label.setStyleSheet(
+            'QLabel { color:#7fa8d1; background:#1e2a38;'
+            ' border:1px solid #2f4562; border-radius:3px;'
+            ' padding:4px 8px; }',
+        )
+        self.share_to_provider_btn = QtWidgets.QPushButton(
+            '一键共享给该运营商所有模型',
+        )
+        self.share_to_provider_btn.setAutoDefault(False)
+        self.share_to_provider_btn.setDefault(False)
+        self.share_to_provider_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.share_to_provider_btn.setToolTip(
+            '把当前 Profile 的采样参数、能力开关、超时等\n'
+            '写入同运营商下所有 Profile（Base URL / API Key / 模型名保持不变）。',
+        )
+        self.share_to_provider_btn.clicked.connect(
+            self._on_share_to_provider,
+        )
+        provider_hint_row = QtWidgets.QHBoxLayout()
+        provider_hint_row.setContentsMargins(0, 0, 0, 0)
+        provider_hint_row.setSpacing(6)
+        provider_hint_row.addWidget(self.provider_hint_label, 1)
+        provider_hint_row.addWidget(self.share_to_provider_btn)
+        right.addRow(provider_hint_row)
+
         self.name_edit = QtWidgets.QLineEdit()
         self.name_edit.setPlaceholderText('如: my-deepseek')
         right.addRow('名称:', self.name_edit)
@@ -2599,6 +2628,8 @@ class SettingsDialog(
         # （避免 UI 不暴露的字段 kind / 计费 / tool_result_max_bytes / 等
         # 在每次「应用」时被 dataclass 默认值悄悄擦掉）
         self._current_profile = profile_name
+        # 刷新运营商归属提示
+        self._refresh_provider_hint()
 
     # ================================================================== #
     # 一键恢复默认（OpenAI 兼容出厂模板）
@@ -3186,6 +3217,205 @@ class SettingsDialog(
             self._refresh_base_url_hint(base_url)
         except (AttributeError, TypeError):
             pass
+
+    # ---------------- 运营商归属 / 参数共享 ---------------- #
+    def _refresh_provider_hint(self):
+        # type: () -> None
+        """刷新运营商归属提示条 + 一键共享按钮可用性。
+
+        - 若当前 profile 所属运营商组下只有它自己，隐藏共享按钮
+          （没有其它 profile 可共享目标）。
+        - 若有兄弟 profile，显示 "参数继承自 XXX · 共 N 个模型"
+          并允许一键共享。
+        """
+        if not hasattr(self, 'provider_hint_label'):
+            return
+        cur_name = getattr(self, '_current_profile', None) or \
+            self.name_edit.text().strip()
+        cur_url = (self.base_url_edit.text() or '').strip().rstrip('/').lower()
+        if not cur_name or not cur_url:
+            self.provider_hint_label.setText(
+                '尚未设置 Base URL，无法识别运营商归属。',
+            )
+            self.share_to_provider_btn.setEnabled(False)
+            return
+
+        # 统计同 base_url 的兄弟 profile
+        siblings = []
+        for name in self._config.list_profile_names():
+            prof = self._config.get_profile(name)
+            if not prof:
+                continue
+            if (prof.base_url or '').rstrip('/').lower() != cur_url:
+                continue
+            if name == cur_name:
+                continue
+            siblings.append(name)
+
+        provider_display = self._guess_provider_display_name(
+            self.base_url_edit.text(),
+        )
+        if not siblings:
+            self.provider_hint_label.setText(
+                '运营商: <b>{}</b> · 该运营商下仅此一个模型。'.format(
+                    provider_display,
+                ),
+            )
+            self.share_to_provider_btn.setEnabled(False)
+        else:
+            self.provider_hint_label.setText(
+                '运营商: <b>{}</b> · 兄弟模型 {} 个 ({})'.format(
+                    provider_display,
+                    len(siblings),
+                    ', '.join(siblings[:3]) + (
+                        '…' if len(siblings) > 3 else ''
+                    ),
+                ),
+            )
+            self.share_to_provider_btn.setEnabled(True)
+
+    # 需要共享的参数字段：能力开关 + 采样参数 + 超时 + 循环上限
+    # Base URL / API Key / model / name / extra_headers 不共享，
+    # 因为这些是每个 profile 的独立身份
+    _SHAREABLE_FIELDS = (
+        'temperature',
+        'max_tokens',
+        'timeout',
+        'max_tool_loops',
+        'max_history_tokens',
+        'stream',
+        'supports_tools',
+        'vision_supported',
+        'param_overrides',
+    )
+
+    def _on_share_to_provider(self):
+        # type: () -> None
+        """把当前 profile 的可共享参数写入同运营商下所有兄弟 profile。"""
+        cur_name = getattr(self, '_current_profile', None) or \
+            self.name_edit.text().strip()
+        cur_prof = self._config.get_profile(cur_name)
+        if not cur_prof:
+            return
+        cur_url = (cur_prof.base_url or '').rstrip('/').lower()
+        siblings = []
+        for name in self._config.list_profile_names():
+            if name == cur_name:
+                continue
+            prof = self._config.get_profile(name)
+            if not prof:
+                continue
+            if (prof.base_url or '').rstrip('/').lower() == cur_url:
+                siblings.append(prof)
+        if not siblings:
+            QtWidgets.QMessageBox.information(
+                self, '共享参数',
+                '该运营商下没有其它模型 profile，无需共享。',
+            )
+            return
+
+        # 二次确认
+        ret = QtWidgets.QMessageBox.question(
+            self, '共享参数确认',
+            '将把当前 Profile 的以下参数写入同运营商下 {} 个兄弟 Profile：\n'
+            '  · 采样参数 (temperature / max_tokens)\n'
+            '  · 超时 / 工具调用上限 / 历史 token 预算\n'
+            '  · 能力开关 (流式 / FC / 视觉)\n'
+            '  · 自定义 param_overrides\n\n'
+            'Base URL / API Key / 模型名 / 自定义 Header 不会被覆盖。\n'
+            '继续吗？'.format(len(siblings)),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if ret != QtWidgets.QMessageBox.Yes:
+            return
+
+        # 从表单读取最新值（可能用户还没点应用）
+        # 复用 _read_form_to_new_profile 但只提取可共享字段
+        try:
+            src_snapshot = self._read_form_snapshot()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '共享失败',
+                '读取当前表单失败: {}'.format(exc),
+            )
+            return
+
+        applied = 0
+        for sib in siblings:
+            new_prof = LLMProfile.from_dict(sib.to_dict())
+            for f in self._SHAREABLE_FIELDS:
+                if f in src_snapshot:
+                    setattr(new_prof, f, src_snapshot[f])
+            self._config.upsert_profile(new_prof)
+            applied += 1
+
+        try:
+            self._config.save()
+        except Exception as exc:  # pylint: disable=broad-except
+            QtWidgets.QMessageBox.warning(
+                self, '写盘失败',
+                '共享参数已应用到内存但写盘失败: {}'.format(exc),
+            )
+            return
+
+        QtWidgets.QMessageBox.information(
+            self, '共享完成',
+            '已把当前参数写入 {} 个兄弟 Profile。'.format(applied),
+        )
+        self._refresh_provider_hint()
+
+    def _read_form_snapshot(self):
+        # type: () -> dict
+        """从当前表单读取可共享参数的快照。
+
+        不构造完整 LLMProfile，避免与既有 _read_form 逻辑耦合。
+        """
+        snap = {}
+        try:
+            snap['temperature'] = float(self.temperature_spin.value())
+        except AttributeError:
+            pass
+        try:
+            snap['max_tokens'] = int(self.max_tokens_spin.value())
+        except AttributeError:
+            pass
+        try:
+            snap['timeout'] = int(self.timeout_spin.value())
+        except AttributeError:
+            pass
+        try:
+            snap['max_tool_loops'] = int(self.max_loops_spin.value())
+        except AttributeError:
+            pass
+        try:
+            snap['max_history_tokens'] = int(
+                self.max_history_tokens_spin.value(),
+            )
+        except AttributeError:
+            pass
+        try:
+            snap['stream'] = bool(self.stream_chk.isChecked())
+        except AttributeError:
+            pass
+        try:
+            snap['supports_tools'] = bool(self.tools_chk.isChecked())
+        except AttributeError:
+            pass
+        try:
+            snap['vision_supported'] = bool(
+                self.vision_supported_chk.isChecked(),
+            )
+        except AttributeError:
+            pass
+        # force_temperature_one 通过 param_overrides.temperature 实现，
+        # 这里连带带上 param_overrides
+        try:
+            if self.force_temp_one_chk.isChecked():
+                snap['param_overrides'] = {'temperature': 1.0}
+        except AttributeError:
+            pass
+        return snap
 
     def _on_fetch_models_clicked(self):
         # type: () -> None
