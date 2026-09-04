@@ -2042,19 +2042,35 @@ def _create_maya_dock(config):
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
     import maya.OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
 
+    control_name = 'MaxAgentWorkspaceControl'
+
+    # ---- 复用优先 ---- #
+    # 拖拽启动是高频操作：用户改两行代码就拖一次。此前这里无条件
+    # deleteUI + 重建，意味着每次拖拽都要重跑 MaxAgentDockWidget 构造
+    # （会话回放、技能扫描、字体递归遍历）+ 完整 layout 重算。
+    # 面板已存在且业务 widget 还活着时，直接复用并 raise 即可。
+    if _DOCK_WIDGET is not None and cmds.workspaceControl(
+        control_name, query=True, exists=True,
+    ):
+        _reuse_existing_maya_dock(cmds, control_name, _DOCK_WIDGET)
+        return control_name
+
+    # 内容没了但 control 还在（例如 Maya 重启后 layout 恢复）：
+    # 复用这个 control，只重建内部 widget，不销毁宿主容器。
+    control_exists = cmds.workspaceControl(control_name, query=True,
+                                           exists=True)
+    if control_exists:
+        # control 存在说明上次退出留下了 workspaceControlState（位置/
+        # 尺寸/floating）。残留 state 会与新停靠指令冲突，Maya 在每次
+        # layout 重算时反复尝试回到旧位置——表现为面板跳动、停靠失效、
+        # 重复启动开销累积。必须清掉。
+        _clear_workspace_control_state(cmds, control_name)
+
     dock_widget = MaxAgentDockWidget(config_manager=config)
     ui_state = dock_widget.get_ui_state()
 
-    control_name = 'MaxAgentWorkspaceControl'
     # 标题跟随 DCC 标签（已由 MaxAgentDockWidget.__init__ 自动处理）
     label = dock_widget.windowTitle() or 'MaxAgent · AI 助手'
-
-    # 已存在则先关闭再重建，避免重复创建导致句柄冲突
-    if cmds.workspaceControl(control_name, exists=True):
-        try:
-            cmds.deleteUI(control_name, control=True)
-        except Exception:  # pylint: disable=broad-except
-            pass
 
     # ---- 停靠目标：优先用持久化的，其次按默认优先级自动选择 ---- #
     preferred_target = (getattr(ui_state, 'maya_dock_target', '') or '').strip()
@@ -2105,26 +2121,41 @@ def _create_maya_dock(config):
 
     create_kwargs.update(dock_kwargs)
 
-    try:
-        cmds.workspaceControl(control_name, **create_kwargs)
-    except Exception:  # pylint: disable=broad-except
-        # 某些 Maya 版本对 tabToControl / dockToControl 支持不同，
-        # 逐级降级：去掉停靠 flag -> 只保留最小参数
-        logger.warning(
-            'workspaceControl 带停靠参数创建失败，降级重试: %s', dock_kwargs,
-        )
-        for key in list(dock_kwargs):
-            create_kwargs.pop(key, None)
+    if control_exists:
+        # control 还在（内容丢了，容器没丢）：用 edit 更新属性即可。
+        # 绝不能再用带停靠 flag 的创建形式——同一 control 上重复施加
+        # 停靠指令会让 Maya 反复重算 layout，这是重复拖拽"越拖越卡"的
+        # 主因。停靠位置沿用容器当前状态，用户想改走设置面板的
+        # "立即重新停靠"（那里会显式清 state 再施加新指令）。
+        _edit_kwargs = {
+            k: v for k, v in create_kwargs.items()
+            if k in ('label', 'uiScript', 'visibleChangeCommand')
+        }
+        try:
+            cmds.workspaceControl(control_name, edit=True, **_edit_kwargs)
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('workspaceControl edit 更新失败', exc_info=True)
+    else:
         try:
             cmds.workspaceControl(control_name, **create_kwargs)
         except Exception:  # pylint: disable=broad-except
-            cmds.workspaceControl(
-                control_name,
-                label=label,
-                retain=False,
-                loadImmediately=True,
-                visible=False,
+            # 某些 Maya 版本对 tabToControl / dockToControl 支持不同，
+            # 逐级降级：去掉停靠 flag -> 只保留最小参数
+            logger.warning(
+                'workspaceControl 带停靠参数创建失败，降级重试: %s', dock_kwargs,
             )
+            for key in list(dock_kwargs):
+                create_kwargs.pop(key, None)
+            try:
+                cmds.workspaceControl(control_name, **create_kwargs)
+            except Exception:  # pylint: disable=broad-except
+                cmds.workspaceControl(
+                    control_name,
+                    label=label,
+                    retain=False,
+                    loadImmediately=True,
+                    visible=False,
+                )
 
     # 把 QWidget 附加到 workspaceControl
     wrap_instance = get_shiboken_wrap_instance()
@@ -2290,6 +2321,59 @@ def apply_maya_dock_target():
         from ._maya_dock_targets import control_label  # pylint: disable=import-outside-toplevel
         return (True, '已停靠到：{}'.format(control_label(target)))
     return (True, '已按当前设置重新停靠。')
+
+
+def _reuse_existing_maya_dock(cmds, control_name, dock_widget):
+    # type: (object, str, object) -> None
+    """复用已存在的面板：只补显示与状态，不重建任何东西。
+
+    Maya 侧不发出任何停靠指令，避免触发 layout 重算——这是重复拖拽
+    启动不再变快的关键。
+    """
+    ui_state = dock_widget.get_ui_state()
+    want_visible = bool(getattr(ui_state, 'maya_visible', True))
+    if want_visible:
+        cmds.workspaceControl(control_name, edit=True, visible=True)
+        cmds.workspaceControl(control_name, edit=True, restore=True)
+    try:
+        # raise 是 Python 保留字，无法写成关键字参数，只能字典解包
+        cmds.workspaceControl(control_name, edit=True, **{'raise': True})
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('workspaceControl raise 失败', exc_info=True)
+    return None
+
+
+def _clear_workspace_control_state(cmds, control_name):
+    # type: (object, str) -> bool
+    """清除 workspaceControl 持久化的位置/尺寸状态。
+
+    Maya 用 ``workspaceControlState`` 跨会话记住 control 的停靠位置与
+    尺寸。state 存在时，新传入的 ``tabToControl`` / ``dockToControl``
+    会被旧位置覆盖，Maya 在每次 layout 重算时反复尝试回到旧位置——
+    表现为面板跳动、停靠不生效，以及重复启动时开销累积。
+
+    需要在"需要重新决定停靠位置"的场景调用：首次创建、用户手动改了
+    停靠目标、或显式要求重新停靠。
+
+    :returns: 是否成功清除；control 本身不存在时返回 False。
+    """
+    try:
+        exists = cmds.workspaceControl(control_name, query=True, exists=True)
+    except Exception:  # pylint: disable=broad-except
+        return False
+    if not exists:
+        return False
+    try:
+        cmds.workspaceControlState(control_name, remove=True)
+        return True
+    except Exception:  # pylint: disable=broad-except
+        # 部分 Maya 版本把该命令写作 workspaceControlState -remove，
+        # 参数形态可能不同；失败不阻断主流程，旧 state 最多让停靠位置
+        # 沿用上次，不会导致功能失效。
+        logger.debug(
+            'workspaceControlState 清理失败: %s', control_name, exc_info=True,
+        )
+        return False
 
 
 def _query_dock_parent(cmds, control_name):

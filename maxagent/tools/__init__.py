@@ -111,9 +111,21 @@ def load_all_tools(include_escape_hatch=True, load_user_tools=True, force_dcc=No
     :returns: 已注册工具的总数
     """
     global _LOADED  # pylint: disable=global-statement
-
     import importlib
     import sys
+
+    # 幂等短路：启动链路里 maya_entry._startup() 与
+    # get_or_create_dock() 会各调一次本函数。此前 _LOADED 只写不读，
+    # 导致第二次调用把所有工具模块 importlib.reload 一遍（重复执行
+    # 装饰器、重复构建 JSON Schema），是拖拽启动卡顿的来源之一。
+    #
+    # 判定条件用"本次要加载的模块是否已在 sys.modules 且注册表非空"，
+    # 而不是单纯看 _LOADED 布尔值：后者在测试里清空 registry 或切换
+    # DCC 后会残留 True，导致后续用例拿不到工具。
+    if _LOADED and force_dcc is None:
+        wanted = _discover_modules(force_dcc=force_dcc)
+        if all(name in sys.modules for name in wanted) and list_tools():
+            return len(list_tools())
 
     for name in _discover_modules(force_dcc=force_dcc):
         try:

@@ -16,6 +16,11 @@ import os
 import sys
 from typing import Optional
 
+from ..logger import get_logger
+
+
+logger = get_logger(__name__)
+
 
 # Maya 内置 dropped 回调要求函数签名：
 #   def onMayaDroppedPythonFile(*args, **kwargs): ...
@@ -69,17 +74,37 @@ def restore_workspace_control():
     from maxagent.dcc.runtime import (  # pylint: disable=import-outside-toplevel
         ensure_current_dcc,
     )
-    from maxagent.ui.dock_widget import (  # pylint: disable=import-outside-toplevel
-        _DOCK_WIDGET,
-        get_or_create_dock,
-    )
+    from maxagent.ui import dock_widget as _dw_mod  # pylint: disable=import-outside-toplevel
 
-    if _DOCK_WIDGET is not None:
-        return 'already-restored'
-    ensure_current_dcc('maya')
-    if not cmds.workspaceControl('MaxAgentWorkspaceControl', exists=True):
+    control_name = 'MaxAgentWorkspaceControl'
+    # 读模块属性而不是 from-import：后者会把当前值拷到局部名，语义上
+    # 容易误判成"快照"。虽然函数内的 from-import 每次调用都会重新绑定，
+    # 但显式取属性让"读的是最新值"这件事一目了然。
+    need_rebuild = _dw_mod._DOCK_WIDGET is None  # noqa: SLF001
+
+    # control 已存在且内容还在：只补一次显示，绝不重建。
+    # uiScript 会在每次 workspace 切换 / layout 恢复 / 面板重新展开时
+    # 被 Maya 回调；此前这里一进来就 get_or_create_dock()，导致每次
+    # 切 workspace 都重跑一遍 load_all_tools + 完整 UI 构建。
+    if not need_rebuild:
+        try:
+            if cmds.workspaceControl(control_name, query=True, exists=True):
+                cmds.evalDeferred(
+                    lambda *a: cmds.workspaceControl(
+                        control_name, edit=True, restore=True,
+                    )
+                )
+                return 'already-restored'
+        except Exception:  # pylint: disable=broad-except
+            logger.debug('uiScript 复用分支查询失败', exc_info=True)
+
+    # 走到这里说明内容确实没了（进程刚启动就被 layout 恢复，或面板被
+    # 销毁过）。此时 control 可能还在，要复用它而不是再建一个。
+    if not cmds.workspaceControl(control_name, exists=True):
         return 'control-missing'
-    get_or_create_dock()
+    # 切到 Maya 主线程之外先锁定 DCC，避免探测漂移
+    ensure_current_dcc('maya')
+    _dw_mod.get_or_create_dock()
     return 'restored'
 
 
