@@ -856,6 +856,16 @@ class AppConfig:
             cfg.providers = providers
             if ref is not None:
                 cfg.active_model_ref = list(ref)
+            # 记录迁移摘要（runtime 字段，不参与序列化）
+            # 供 UI 在设置面板顶部展示迁移提示条
+            cfg.migration_notice = {
+                'from_profiles': len(cfg.profiles),
+                'to_providers': len(providers),
+                'to_models': sum(len(p.models) for p in providers),
+                'legacy_profiles_snapshot': [
+                    p.to_dict() for p in cfg.profiles
+                ],
+            }
         return cfg
 
 

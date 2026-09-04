@@ -172,6 +172,12 @@ class SettingsDialog(
         self.stack.addWidget(self._build_page_bridge())
         self.stack.addWidget(self._build_page_log())
         self.stack.addWidget(self._build_page_help())
+        # 迁移提示 bar：当从旧 profiles 自动构建了 providers 时展示
+        # 用户点"知道了"后本 dialog 生命周期内不再显示
+        self.migration_bar = self._build_migration_bar()
+        if self.migration_bar is not None:
+            right_box.addWidget(self.migration_bar)
+
         right_box.addWidget(self.stack, 1)
 
         # 底部统一关闭按钮：放在 stack 之外，所有页面共享
@@ -3416,6 +3422,104 @@ class SettingsDialog(
         except AttributeError:
             pass
         return snap
+
+    # ---------------- 迁移提示条 ---------------- #
+    def _build_migration_bar(self):
+        # type: () -> Optional[QtWidgets.QWidget]
+        """若本次启动检测到自动迁移，返回一条提示 bar；否则返回 None。"""
+        notice = getattr(self._config.config, 'migration_notice', None)
+        if not notice:
+            return None
+        bar = QtWidgets.QFrame()
+        bar.setStyleSheet(
+            'QFrame { background:#3a2f1e; border:1px solid #6b5323;'
+            ' border-radius:3px; }'
+            ' QLabel { color:#f0d68b; padding:2px; }'
+            ' QPushButton { padding:3px 10px; }',
+        )
+        h = QtWidgets.QHBoxLayout(bar)
+        h.setContentsMargins(10, 6, 10, 6)
+        h.setSpacing(8)
+        label = QtWidgets.QLabel(
+            '已从旧配置自动迁移 <b>{}</b> 个 Profile → <b>{}</b> 个运营商 · '
+            '<b>{}</b> 个模型。'.format(
+                notice.get('from_profiles', 0),
+                notice.get('to_providers', 0),
+                notice.get('to_models', 0),
+            ),
+        )
+        label.setWordWrap(True)
+        h.addWidget(label, 1)
+        export_btn = QtWidgets.QPushButton('导出旧配置备份')
+        export_btn.setAutoDefault(False)
+        export_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        export_btn.clicked.connect(self._export_legacy_profiles)
+        h.addWidget(export_btn)
+        dismiss_btn = QtWidgets.QPushButton('知道了')
+        dismiss_btn.setAutoDefault(False)
+        dismiss_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+        dismiss_btn.clicked.connect(self._dismiss_migration_bar)
+        h.addWidget(dismiss_btn)
+        return bar
+
+    def _export_legacy_profiles(self):
+        # type: () -> None
+        """把 legacy_profiles_snapshot 导出到用户选择的 JSON 文件。"""
+        notice = getattr(self._config.config, 'migration_notice', None) or {}
+        snapshot = notice.get('legacy_profiles_snapshot') or []
+        if not snapshot:
+            QtWidgets.QMessageBox.information(
+                self, '导出旧配置',
+                '未发现旧配置快照，可能已导出过或未发生迁移。',
+            )
+            return
+        import datetime as _dt
+        import json as _json
+        default_name = 'maxagent_legacy_profiles_{}.json'.format(
+            _dt.datetime.now().strftime('%Y%m%d_%H%M%S'),
+        )
+        default_path = os.path.join(
+            os.path.expanduser('~'), default_name,
+        )
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, '导出旧 Profile 备份', default_path,
+            'JSON 文件 (*.json)',
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                _json.dump(
+                    {
+                        'version': 'legacy_v1',
+                        'exported_at': _dt.datetime.now().isoformat(
+                            timespec='seconds',
+                        ),
+                        'profiles': snapshot,
+                    },
+                    f, ensure_ascii=False, indent=2,
+                )
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(
+                self, '导出失败',
+                '写入文件失败: {}'.format(exc),
+            )
+            return
+        QtWidgets.QMessageBox.information(
+            self, '导出成功',
+            '旧 Profile 备份已写入:\n{}'.format(path),
+        )
+
+    def _dismiss_migration_bar(self):
+        # type: () -> None
+        """隐藏迁移 bar（当前进程内不再显示）。"""
+        if self.migration_bar is not None:
+            self.migration_bar.hide()
+        # 清空 migration_notice 以免后续再次构造 dialog 又弹出来
+        try:
+            self._config.config.migration_notice = None
+        except AttributeError:
+            pass
 
     def _on_fetch_models_clicked(self):
         # type: () -> None
