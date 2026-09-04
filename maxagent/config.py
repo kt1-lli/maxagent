@@ -1066,6 +1066,13 @@ class ConfigManager:
                 LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
             ]
             cfg.active_profile = cfg.profiles[0].name
+            # 首次启动同时生成 providers（同 URL 合并）
+            providers, ref = _build_providers_from_profiles(
+                cfg.profiles, cfg.active_profile,
+            )
+            cfg.providers = providers
+            if ref is not None:
+                cfg.active_model_ref = list(ref)
             self._save(cfg)
             return cfg
         try:
@@ -1088,6 +1095,13 @@ class ConfigManager:
                 LLMProfile.from_dict(p) for p in BUILTIN_PROFILES
             ]
             cfg.active_profile = cfg.profiles[0].name
+            # 生成 providers（同 URL 合并）
+            providers, ref = _build_providers_from_profiles(
+                cfg.profiles, cfg.active_profile,
+            )
+            cfg.providers = providers
+            if ref is not None:
+                cfg.active_model_ref = list(ref)
             # 立即把默认值写回磁盘，对齐正常首次启动路径行为
             try:
                 self._save(cfg)
