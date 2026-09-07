@@ -70,6 +70,7 @@ _MAYA_MODULES = [
     'maxagent.tools.maya.deformer',
     'maxagent.tools.maya.geometry',
     'maxagent.tools.maya.gt_tools_bridge',
+    'maxagent.tools.maya.gt_tools_bridge_2',
     'maxagent.tools.maya.light_camera',
     'maxagent.tools.maya.material',
     'maxagent.tools.maya.nodes',
