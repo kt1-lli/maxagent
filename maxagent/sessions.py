@@ -3,7 +3,8 @@
 """会话（Session）管理模块。
 
 每个 Session 对应一次完整的对话历史，独立持久化为 JSON 文件，
-位于 ``{config_dir}/sessions/<session_id>.json``。
+位于 ``{config_dir}/sessions/<dcc>/<session_id>.json``（``<dcc>`` 为
+当前 DCC 标识：``3dsmax`` / ``maya`` / ``unknown``）。
 
 设计要点：
 1. 与 ``agent.conversation.Conversation`` 解耦：Session 负责"元信息 +
@@ -12,8 +13,12 @@
 2. 文件名使用 ``YYYYMMDD-HHMMSS-<short>`` 形式，方便目录里按时间排序，
    不依赖文件系统的 mtime。
 3. 标题首选用户主动设置；缺省时取首条 user 消息前 20 字。
-4. 独立索引文件 ``sessions/_index.json`` 用于快速列出，避免每次扫盘
+4. 独立索引文件 ``sessions/<dcc>/_index.json`` 用于快速列出，避免每次扫盘
    都加载所有 Conversation。索引允许丢失：丢失时按目录扫描重建。
+5. **DCC 隔离**：Max 与 Maya 的会话目录互相独立，避免对话记录串 DCC。
+   老版本存放在 ``sessions/`` 顶层（无 DCC 子目录）的会话，会在每个
+   DCC 首次使用时按 system_prompt 特征词自动分离迁移到各自目录
+   （见 ``_migrate_legacy_sessions``），无法判定归属的会话原地保留。
 """
 
 from __future__ import absolute_import
@@ -30,11 +35,37 @@ from typing import Optional
 
 from .agent.conversation import Conversation
 from .config import get_config_dir
+from .dcc.runtime import current_dcc
 from .logger import get_logger
 
 
 SESSIONS_DIRNAME = 'sessions'
 INDEX_FILENAME = '_index.json'
+
+# 老版本顶层目录迁移完成标记文件（放在各 DCC 子目录内，每个 DCC 只扫一次）
+_MIGRATION_MARKER = '.dcc_migrated'
+
+# 老 system_prompt 中的 DCC 特征词（仅用于无 meta.dcc 的老会话文件判定；
+# 每个特征词都在 build_default_system_prompt 中按 DCC 分支逐字出现，
+# 两边互不重叠）。判定方式：两侧特征词命中计数取大者，平局视为未知。
+_LEGACY_DCC_HINTS = {
+    'maya': (
+        'Maya 环境中',
+        'list_maya_objects',
+        'get_maya_object_info',
+        'Maya current linear unit',
+        'Maya 世界观速查',
+        'list_maya_knowledge_topics',
+    ),
+    '3dsmax': (
+        '3ds Max 环境中',
+        'run_maxscript',
+        'Max system unit',
+        '3ds Max 世界观速查',
+        'list_max_knowledge_topics',
+        'list_scene_objects',
+    ),
+}
 
 logger = get_logger(__name__)
 
@@ -80,7 +111,7 @@ class SessionMeta(object):
     """会话元信息（不含消息体，索引和列表里用这个）。"""
 
     def __init__(self, sid, title, created_at, updated_at, message_count=0,
-                 file_path=None):
+                 file_path=None, dcc=''):
         self.sid = sid
         self.title = title
         self.created_at = float(created_at)
@@ -88,6 +119,9 @@ class SessionMeta(object):
         self.message_count = int(message_count)
         # file_path 为运行时填充，序列化到索引时也会带上
         self.file_path = file_path
+        # 该会话归属的 DCC 标识（'3dsmax' / 'maya' / 'unknown'）。
+        # 新会话写入时记录；老会话迁移后补写，便于排查与后续按 DCC 过滤。
+        self.dcc = dcc or ''
 
     def to_dict(self):
         return {
@@ -97,6 +131,7 @@ class SessionMeta(object):
             'updated_at': self.updated_at,
             'message_count': self.message_count,
             'file_path': self.file_path,
+            'dcc': self.dcc,
         }
 
     @classmethod
@@ -108,6 +143,7 @@ class SessionMeta(object):
             updated_at=float(data.get('updated_at', 0.0) or 0.0),
             message_count=int(data.get('message_count', 0) or 0),
             file_path=data.get('file_path'),
+            dcc=data.get('dcc', ''),
         )
 
 
@@ -127,7 +163,18 @@ class SessionManager(object):
 
     def __init__(self, base_dir=None):
         # type: (Optional[str]) -> None
-        self._base = base_dir or get_sessions_dir()
+        if base_dir:
+            # 显式指定 base_dir（测试 / 特殊部署）：完全按调用方意图使用，
+            # 不追加 DCC 子目录、不做老版本迁移。
+            self._base = base_dir
+            self._dcc = current_dcc()
+        else:
+            # 默认路径：按当前 DCC 隔离到 sessions/<dcc>/ 子目录，
+            # 并在首次使用时把老版本顶层目录里的本 DCC 会话迁移过来。
+            self._dcc = current_dcc()
+            root = get_sessions_dir()
+            self._base = os.path.join(root, self._dcc)
+            self._migrate_legacy_sessions(root, self._base, self._dcc)
         if not os.path.isdir(self._base):
             os.makedirs(self._base)
 
@@ -244,6 +291,7 @@ class SessionManager(object):
             created_at=now,
             updated_at=now,
             message_count=0,
+            dcc=self._dcc,
         )
         meta.file_path = self._file_path_for(meta)
         # 写入空 conversation 文件，确保 list 时能看到。
@@ -374,6 +422,109 @@ class SessionManager(object):
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _classify_legacy_dcc(data):
+        # type: (Dict[str, Any]) -> str
+        """按 system_prompt 特征词判定老会话文件归属的 DCC。
+
+        :param data: 会话 JSON 反序列化后的完整 dict
+        :returns: '3dsmax' / 'maya'；无法判定（含空会话）返回 ''
+        """
+        conv = data.get('conversation') or {}
+        prompt = conv.get('system_prompt') or ''
+        if not prompt:
+            return ''
+        best_name = ''
+        best_score = 0
+        for name, hints in _LEGACY_DCC_HINTS.items():
+            score = 0
+            for hint in hints:
+                if hint in prompt:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_name = name
+        # 命中数不足 2 视为证据不足（避免巧合词误判），平局也视为未知
+        if best_score < 2:
+            return ''
+        return best_name
+
+    def _migrate_legacy_sessions(self, legacy_dir, target_dir, dcc_name):
+        # type: (str, str, str) -> None
+        """把老版本顶层 sessions/ 目录里属于当前 DCC 的会话迁移过来。
+
+        迁移规则（幂等，每个 DCC 子目录只执行一次）：
+        - ``target_dir`` 已有 ``.dcc_migrated`` 标记则直接跳过；
+        - 扫描 ``legacy_dir`` 顶层的 ``*.json``（跳过索引与临时文件）；
+        - meta 里已带 ``dcc`` 字段的（新格式误落顶层）：仅当与当前 DCC
+          一致时搬走；
+        - 无 ``dcc`` 字段的老文件：按 system_prompt 特征词判定归属，
+          仅搬走属于当前 DCC 的；无法判定的原地保留（两个 DCC 各判各的，
+          都判不出的会话不丢失）；
+        - 搬运 = 复制到目标目录（补写 meta.dcc）+ 删除源文件；任何单个
+          文件失败不影响其余文件。
+        """
+        marker = os.path.join(target_dir, _MIGRATION_MARKER)
+        if os.path.exists(marker):
+            return
+        if not os.path.isdir(legacy_dir) or legacy_dir == target_dir:
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+                with open(marker, 'w', encoding='utf-8') as fh:
+                    fh.write(dcc_name)
+            except OSError:
+                logger.warning('无法写入 DCC 迁移标记: %s', marker)
+            return
+        moved = 0
+        skipped = 0
+        try:
+            names = os.listdir(legacy_dir)
+        except OSError as exc:
+            logger.warning('扫描老版本会话目录失败 %s: %s', legacy_dir, exc)
+            names = []
+        for fname in names:
+            if fname == INDEX_FILENAME or not fname.endswith('.json'):
+                continue
+            src = os.path.join(legacy_dir, fname)
+            if not os.path.isfile(src):
+                continue
+            try:
+                with open(src, 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                skipped += 1
+                continue
+            meta_dict = data.get('meta') or {}
+            owner = meta_dict.get('dcc') or ''
+            if not owner:
+                owner = self._classify_legacy_dcc(data)
+            if owner != dcc_name:
+                # 属于其他 DCC 或无法判定：留在原地
+                continue
+            # 目标目录补写归属字段后落盘，再删除源文件
+            meta_dict['dcc'] = dcc_name
+            data['meta'] = meta_dict
+            dst = os.path.join(target_dir, fname)
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+                with open(dst, 'w', encoding='utf-8') as fh:
+                    json.dump(data, fh, ensure_ascii=False, indent=2)
+                os.remove(src)
+                moved += 1
+            except OSError as exc:
+                logger.warning('迁移会话 %s 失败: %s', fname, exc)
+                skipped += 1
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            with open(marker, 'w', encoding='utf-8') as fh:
+                fh.write(dcc_name)
+        except OSError:
+            logger.warning('无法写入 DCC 迁移标记: %s', marker)
+        logger.info(
+            'sessions DCC 迁移(%s): 迁入 %d 个会话, 保留 %d 个',
+            dcc_name, moved, skipped,
+        )
+
     def _write_session_file(self, meta, conversation):
         # type: (SessionMeta, Conversation) -> None
         path = self._file_path_for(meta)
