@@ -829,8 +829,10 @@ class SettingsModelTabV2Mixin(object):
             )
             return
 
-        # 拉取期间锁按钮，避免重复点击打出一串请求
-        btn = getattr(self, 'provider_fetch_models_btn', None)
+        # 拉取期间锁按钮，避免重复点击打出一串请求。
+        # 注意属性名必须是 fetch_models_btn（构建处 line 231 的真实命名）；
+        # 用 getattr 猜错名字会静默返回 None，防抖形同虚设。
+        btn = getattr(self, 'fetch_models_btn', None)
         if btn is not None:
             btn.setEnabled(False)
             btn.setText('拉取中…')
@@ -881,7 +883,10 @@ class SettingsModelTabV2Mixin(object):
         vbox.addWidget(QtWidgets.QLabel(
             '勾选后点确定，将批量加入该运营商的模型列表。'
         ))
-        existing_ids = {m.model for m in p.models}
+        # 已存在判断必须同时看 id 和 model：手动添加遇到重名时会产生
+        # id=kimi-k3_2 / model=kimi-k3 这类错位条目，只比对 model 会漏判，
+        # 于是同一个模型被追加第二次——表现为"最后一个多了一份"。
+        existing_ids = {m.id for m in p.models} | {m.model for m in p.models}
         lst = QtWidgets.QListWidget()
         for m in models:
             mid = m.get('id') or ''
@@ -895,9 +900,6 @@ class SettingsModelTabV2Mixin(object):
                 it.setToolTip('已存在，勾选无效')
             else:
                 it.setCheckState(QtCore.Qt.Unchecked)
-            if mid in existing_ids:
-                it.setForeground(QtGui.QColor('#888'))
-                it.setToolTip('已存在')
             lst.addItem(it)
         vbox.addWidget(lst, 1)
         btns = QtWidgets.QDialogButtonBox(

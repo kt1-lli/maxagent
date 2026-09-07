@@ -984,9 +984,15 @@ def get_config_path() -> str:
     return os.path.join(get_config_dir(), "config.json")
 
 
-def load_config() -> AppConfig:
-    """加载配置；首次运行时写入内置预设。"""
-    path = get_config_path()
+def load_config(path: Optional[str] = None) -> AppConfig:
+    """加载配置；首次运行时写入内置预设。
+
+    :param path: 指定配置文件路径；None 时用全局默认路径。
+        ConfigManager.reload() 需要按实例自身的路径重读，否则自定义
+        路径部署（及测试）会读到别的配置文件。
+    """
+    if path is None:
+        path = get_config_path()
     if not os.path.exists(path):
         cfg = AppConfig()
         cfg.profiles = [LLMProfile.from_dict(p) for p in BUILTIN_PROFILES]
@@ -1121,6 +1127,31 @@ class ConfigManager:
             os.rename(tmp, path)
 
     # -------- 公共 API --------
+    def reload(self) -> None:
+        """从磁盘重新载入配置，原地替换 ``self._cfg``。
+
+        用于"面板被复用但期间配置已被别的入口改过"的场景：设置对话框
+        保存后磁盘是最新的，而长驻的内存实例可能还是旧快照。重建
+        ConfigManager 会丢掉 ``self._path``（构造时才确定），所以这里
+        只换 ``_cfg``，保持实例身份与其它持有者的引用一致。
+
+        载入失败时保留旧配置，绝不把实例置于不可用状态。
+        """
+        # 必须按实例自己的路径读：load_config() 用的是全局默认路径，
+        # 会绕过本实例的 _custom_path（测试与自定义部署都依赖它）。
+        try:
+            new_cfg = load_config(self._path())
+        except TypeError:
+            # 老签名不接受 path 参数，退回全局载入
+            new_cfg = load_config()
+        except Exception as exc:  # pylint: disable=broad-except
+            _get_logger().warning(
+                "重载配置失败，沿用内存中的旧配置: %s", exc,
+            )
+            return
+        if new_cfg is not None:
+            self._cfg = new_cfg
+
     def save(self) -> None:
         """持久化当前配置到磁盘。"""
         self._save(self._cfg)

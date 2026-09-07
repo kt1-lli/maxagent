@@ -220,6 +220,26 @@ def _probe_gemini(base_url, api_key, extra_headers=None, timeout=DEFAULT_TIMEOUT
     return result
 
 
+def _dedup_models(models):
+    # type: (List[Dict[str, Any]]) -> List[Dict[str, Any]]
+    """按 id 去重，保留首次出现顺序。
+
+    部分兼容网关（含自建代理）会在 /models 里返回重复 id。不去重的话
+    上层"批量加入"会把同一模型写两遍，用户看到列表末尾多一份。
+    """
+    seen = set()
+    out = []
+    for m in models:
+        mid = m.get('id') if isinstance(m, dict) else None
+        if not mid:
+            continue
+        if mid in seen:
+            continue
+        seen.add(mid)
+        out.append(m)
+    return out
+
+
 _PROBERS = {
     'openai': _probe_openai,
     'ollama': _probe_ollama,
@@ -264,6 +284,8 @@ def list_models(
     prober = _PROBERS.get(flavor, _probe_openai)
     try:
         models = prober(base_url, api_key, extra_headers, timeout)
+        # 网关可能返回重复 id，统一收敛，避免上层批量加入时写两份
+        models = _dedup_models(models)
     except urllib.error.HTTPError as exc:
         err = 'HTTP {}: {}'.format(exc.code, exc.reason)
         if exc.code == 401:

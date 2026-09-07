@@ -872,6 +872,29 @@ class MaxAgentDockWidget(
     # ------------------------------------------------------------------ #
     # Profile / LLM
     # ------------------------------------------------------------------ #
+    def _reload_config(self):
+        """从磁盘重新载入配置，并重建依赖它的内存对象。
+
+        场景：面板被复用（拖拽启动命中既有 control）时，设置对话框可能
+        已经改过运营商/模型并落盘，而本实例持有的还是旧快照。必须让
+        LLM 客户端与 dispatcher 一起重建，否则会出现"下拉里选了新模型，
+        请求却仍发往旧 base_url / 旧 model"的错位。
+        """
+        try:
+            self._config.reload()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('重载配置失败: %s', exc)
+            return
+        # 配置换了，派生的客户端/调度器必须跟着换，不能继续用旧的
+        try:
+            self._llm = self._build_llm_client()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('重载后重建 LLM 客户端失败: %s', exc)
+        try:
+            self._dispatcher = self._build_dispatcher()
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug('重载后重建 dispatcher 失败: %s', exc)
+
     def _refresh_profiles(self):
         """按新数据模型（Provider + ModelEntry）刷新顶部 LLM 下拉。
 
@@ -2377,6 +2400,24 @@ def _reuse_existing_maya_dock(cmds, control_name, dock_widget):
     if want_visible:
         _maya_edit_if_exists(cmds, control_name, visible=True)
         _maya_edit_if_exists(cmds, control_name, restore=True)
+
+    # 复用不等于"什么都不做"：面板是上一次拖拽建的，期间用户可能已经
+    # 在设置里增删过运营商/模型（磁盘上的 config 变了，但内存里这份
+    # ConfigManager 还是旧的）。不重新载入的话，顶部 LLM 下拉会停在上
+    # 次的快照——表现为"设置里明明有 4 个模型，下拉里只有 1 个"。
+    # 这里只做配置重载 + 下拉刷新，不重建任何 widget，不触发 layout
+    # 重算，因此不会抵消掉复用带来的性能收益。
+    try:
+        reload_cfg = getattr(dock_widget, '_reload_config', None)
+        if callable(reload_cfg):
+            reload_cfg()
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('复用时重载配置失败', exc_info=True)
+    try:
+        dock_widget._refresh_profiles()  # pylint: disable=protected-access
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('复用时刷新 LLM 下拉失败', exc_info=True)
+
     try:
         # raise 是 Python 保留字，无法写成关键字参数，只能字典解包
         _maya_edit_if_exists(cmds, control_name, **{'raise': True})
