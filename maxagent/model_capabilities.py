@@ -168,9 +168,21 @@ FALLBACK_CONTEXT = 0
 # 400 "invalid temperature: only 1 is allowed for this model"。
 # 这里维护模型名前缀/包含匹配表，命中时自动强制 temperature=1，且允许
 # param_overrides 中用户显式覆盖。
+#
+# 注意：Moonshot（api.moonshot.cn）是**全系**强制 temperature=1，不是
+# 只有 kimi-k3。实测 kimi-k2 / kimi-latest / kimi 等同样返回 400，因此
+# 除了具体型号，还要按平台关键词兜底（见 _TEMPERATURE_ONE_PLATFORMS）。
 _TEMPERATURE_ONE_MODELS = [
     'kimi-k3',
     'moonshot-v1',
+    'moonshot',
+]
+
+# 平台级关键词：命中即认为该服务商所有模型都强制 temperature=1。
+# 用于覆盖 kimi-k2 / kimi-latest 等没被上面名单点名、但服务端同样
+# 拒绝非 1 温度的模型。
+_TEMPERATURE_ONE_PLATFORMS = [
+    'kimi',
     'moonshot',
 ]
 
@@ -228,14 +240,25 @@ def requires_temperature_one(model_id):
     # type: (str) -> bool
     """判断模型是否强制要求 temperature 必须为 1.0。
 
+    命中逻辑分两层，任一命中即返回 True：
+
+    1. 精确名单 ``_TEMPERATURE_ONE_MODELS``（含 kimi-k3 / moonshot-v1 等）；
+    2. 平台关键词 ``_TEMPERATURE_ONE_PLATFORMS``（kimi / moonshot）。
+
+    第 2 层是必需的：Moonshot 是**全系**强制 temperature=1，只按具体
+    型号点名会漏掉 kimi-k2、kimi-latest 等同样返回 400 的模型。
+
     :param model_id: 原始 model 字符串。
-    :return: 命中已知模型表时返回 True。
+    :return: 命中已知模型表或平台关键词时返回 True。
     """
     if not model_id:
         return False
     norm = _normalize_model_id(model_id)
     for candidate in _TEMPERATURE_ONE_MODELS:
         if candidate in norm or norm.startswith(candidate):
+            return True
+    for platform in _TEMPERATURE_ONE_PLATFORMS:
+        if platform in norm:
             return True
     return False
 

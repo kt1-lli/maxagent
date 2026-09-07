@@ -503,10 +503,22 @@ class LLMClient(object):
         # 通用参数覆盖：profile.param_overrides 最后生效，可覆盖
         # temperature / top_p / max_tokens 等任意字段，兼容不同模型/网关
         # 的特殊要求（如 Moonshot kimi-k3 需要 temperature=1）。
+        #
+        # 但对强制 temperature=1 的模型，overrides 里的 temperature 必须
+        # 被钳制为 1.0：老配置可能残留 0.7（用户在知道该限制前设的），
+        # 若放任覆盖就会重新触发 400。温和对待——只在冲突时改写这一项。
         profile = getattr(self, '_profile', None)
         overrides = getattr(profile, 'param_overrides', None)
         if overrides:
             payload.update(overrides)
+        try:
+            from .model_capabilities import requires_temperature_one
+            if requires_temperature_one(self._model):
+                payload["temperature"] = 1.0
+        except Exception:  # pylint: disable=broad-except
+            logger.debug(
+                'silent except at %s:%d', __name__, 512, exc_info=True,
+            )
         # DeepSeek 增强：本客户端已在 _chat_stream / _chat_blocking 中
         # 完整支持 reasoning_content 的收集与回传（见 reasoning_chunks
         # 处理逻辑）。对于支持 thinking 的模型（如 deepseek-reasoner），
