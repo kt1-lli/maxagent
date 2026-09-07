@@ -11,6 +11,7 @@ from typing import Dict
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
 from ._common import _ensure_in_maya
+from ._common import _normalize_names
 from ...tools.registry import tool
 
 
@@ -63,4 +64,44 @@ def add_maya_deformer(name: str, deformer_type: str = 'bend'):
     return {'name': name, 'deformer': deformer_node}
 
 
-__all__ = ['add_maya_deformer']
+@tool(
+    dcc=['maya'],
+    description='删除 Maya 对象的构建历史（Delete History，冻结当前变形结果为建模结果）。',
+    category='modifier',
+    examples=[
+        {
+            'summary': '删除 pCube1 的全部历史',
+            'args': {'objects': 'pCube1'},
+        },
+    ],
+    notes=[
+        '删除后变形器/建模历史不可再调参，但场景更轻、绑定前必做。',
+        '作用于 shape 节点的 constructionHistory；undo 可恢复。',
+    ],
+    returns_desc='dict {"ok": True, "cleared": [...]}',
+)
+def delete_maya_history(objects):
+    # type: (Any) -> Dict[str, Any]
+    """删除 Maya 对象构建历史。
+
+    :param objects: 对象名（str/list）
+    :returns: dict {"ok": True, "cleared": [对象名列表]}
+    """
+    _ensure_in_maya()
+
+    targets = _normalize_names(objects)
+
+    def _do():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        if not targets:
+            raise ValueError('objects 不能为空')
+        missing = [n for n in targets if not cmds.objExists(n)]
+        if missing:
+            raise ValueError('对象不存在: {}'.format(', '.join(missing)))
+        cmds.delete(targets, constructionHistory=True)
+        return {'ok': True, 'cleared': targets}
+
+    return run_on_main(_do)
+
+
+__all__ = ['add_maya_deformer', 'delete_maya_history']

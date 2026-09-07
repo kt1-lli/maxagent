@@ -15,8 +15,25 @@ from typing import List
 from typing import Optional
 
 from ...dcc.runtime import current_dcc
+from ...dcc.runtime import run_on_main
 from ._common import _ensure_in_maya
 from ...tools.registry import tool
+
+
+# Maya 时间单位名 -> FPS 映射（currentUnit -q -time 返回值）
+_TIME_UNIT_FPS = {
+    'game': 15,
+    'film': 24,
+    'fps': 24,
+    'show': 48,
+    'pal': 25,
+    'ntsc': 30,
+    'ntscf': 60,
+    'palf': 50,
+    'hour': 3600,
+    'minute': 60,
+    'sec': 1,
+}
 
 
 # ---------------------------------------------------------------------- #
@@ -199,9 +216,162 @@ def get_maya_object_info(name: str, detail: bool = False):
     return info
 
 
+@tool(
+    dcc=['maya'],
+    description="获取 Maya 场景统计信息（对象数、材质数、灯光数、相机数、帧范围等）。",
+    category="scene_query",
+    wrap_undo=False,
+    examples=[
+        {
+            'summary': '获取场景整体统计',
+            'args': {},
+        },
+    ],
+    notes=[
+        '各计数字段为估计值：objects 指所有 DAG transform，meshes 指 mesh 形节点。',
+        'frame_range 取自 playbackSlider 的 playback 范围（-inf/-inf 时回退到 1-24）。',
+    ],
+    returns_desc=(
+        'dict {"objects": int, "meshes": int, "materials": int, "lights": int, '
+        '"cameras": int, "joints": int, "references": int, '
+        '"frame_range": [start, end], "current_frame": float}'
+    ),
+)
+def get_maya_scene_stats():
+    # type: () -> Dict[str, Any]
+    """获取 Maya 场景统计信息。"""
+    _ensure_in_maya()
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    def _impl():
+        # 各类型节点计数（mesh 数的是 shape 节点）
+        stats: Dict[str, Any] = {
+            'objects': len(cmds.ls(dag=True, transforms=True) or []),
+            'meshes': len(cmds.ls(type='mesh') or []),
+            'materials': len(cmds.ls(mat=True) or []),
+            'lights': len(cmds.ls(lights=True) or []),
+            'cameras': len(cmds.ls(cameras=True) or []),
+            'joints': len(cmds.ls(type='joint') or []),
+            'references': len(cmds.ls(type='reference') or []) - 1,
+        }
+        # 帧范围（playbackOptions 记录的是 UI 播放范围）
+        stats['frame_range'] = [
+            float(cmds.playbackOptions(query=True, minTime=True)),
+            float(cmds.playbackOptions(query=True, maxTime=True)),
+        ]
+        try:
+            stats['current_frame'] = float(cmds.currentTime(query=True))
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return stats
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description="获取 Maya 当前播放范围与时间相关设置（FPS、当前帧、播放范围、动画范围）。",
+    category="scene_query",
+    wrap_undo=False,
+    examples=[
+        {
+            'summary': '查询时间与播放设置',
+            'args': {},
+        },
+    ],
+    notes=[
+        'fps 单位是帧每秒；无法识别的帧率返回 None。',
+        'playback_range 来自 playbackOptions；animation_range 取时间轴上下限。',
+    ],
+    returns_desc=(
+        'dict {"current_frame": float, "fps": int | None, "playback_range": [start, end], '
+        '"animation_range": [start, end]}'
+    ),
+)
+def get_maya_time_info():
+    # type: () -> Dict[str, Any]
+    """获取 Maya 时间与播放设置信息。"""
+    _ensure_in_maya()
+
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    def _impl():
+        info: Dict[str, Any] = {
+            'current_frame': float(cmds.currentTime(query=True)),
+            'fps': None,
+            'playback_range': [
+                float(cmds.playbackOptions(query=True, minTime=True)),
+                float(cmds.playbackOptions(query=True, maxTime=True)),
+            ],
+            'animation_range': [
+                float(cmds.playbackOptions(query=True, animationStartTime=True)),
+                float(cmds.playbackOptions(query=True, animationEndTime=True)),
+            ],
+        }
+        # 帧率识别失败不阻断主流程
+        try:
+            unit = cmds.currentUnit(query=True, time=True)
+            info['fps'] = _TIME_UNIT_FPS.get(unit)
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return info
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description="按名称模式（通配符）查找 Maya 对象，返回匹配的节点名列表。",
+    category="scene_query",
+    wrap_undo=False,
+    examples=[
+        {
+            'summary': '查找所有名字含 cube 的对象',
+            'args': {'pattern': '*cube*'},
+        },
+        {
+            'summary': '查找所有 transform 顶层节点',
+            'args': {'pattern': '*', 'object_type': 'transform'},
+        },
+    ],
+    notes=[
+        'pattern 支持 Maya 通配符语法：* 任意长度、? 单字符、[abc] 字符集。',
+        'object_type 可选过滤，如 mesh / joint / camera；为空表示不过滤。',
+        '返回带路径的长名，重名对象（父子同名）可以据此区分。',
+    ],
+    returns_desc='list[str]: 匹配的节点长名列表',
+)
+def find_maya_objects_by_name(pattern: str, object_type: str = ""):
+    # type: (str, str) -> List[str]
+    """按名称模式查找 Maya 对象。
+
+    :param pattern: 通配符模式，如 "*cube*"、"*Ctrl"
+    :param object_type: 可选类型过滤，如 "mesh" / "joint"；空串不过滤
+    """
+    _ensure_in_maya()
+
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    def _impl():
+        if not pattern:
+            raise ValueError('pattern 不能为空')
+        kwargs: Dict[str, Any] = {'long': True}
+        if object_type:
+            kwargs['type'] = object_type
+        else:
+            # 与 list_maya_objects 一致：默认只搜 DAG 对象
+            kwargs['dag'] = True
+        return list(cmds.ls(pattern, **kwargs) or [])
+
+    return run_on_main(_impl)
+
+
 __all__ = [
     'get_maya_info',
     'list_maya_objects',
     'get_maya_selection',
     'get_maya_object_info',
+    'get_maya_scene_stats',
+    'get_maya_time_info',
+    'find_maya_objects_by_name',
 ]
