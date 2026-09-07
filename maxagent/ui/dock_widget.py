@@ -1896,6 +1896,16 @@ class MaxAgentDockWidget(
 _DOCK_WIDGET = None  # type: Optional[MaxAgentDockWidget]
 _DOCK_HOLDER = None  # type: Optional[Any]
 
+# Maya 创建 workspaceControl 时的重入保护。
+#
+# workspaceControl(loadImmediately=True) 会在创建调用*期间*同步回调
+# uiScript，而 uiScript 又调回 get_or_create_dock()。此时 _DOCK_WIDGET
+# 还没赋值（它只在 _create_maya_dock 末尾才写），于是 uiScript 判定
+# "内容缺失" 并再建一个业务 widget 挂到同一个 control 上——表现为
+# 面板里多出一块空白界面。必须用一个独立于 _DOCK_WIDGET 的标志把
+# "正在创建" 这件事表达出来。
+_MAYA_DOCK_CREATING = False
+
 
 def get_or_create_dock(force=False):
     # type: (bool) -> Optional[Any]
@@ -2057,7 +2067,7 @@ def _create_maya_dock(config):
       再真正显示/恢复面板，否则第一次创建时内容区域可能空白。
     """
     # pylint: disable=import-outside-toplevel
-    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    global _DOCK_WIDGET, _DOCK_HOLDER, _MAYA_DOCK_CREATING  # noqa: F824
     from ..qt_compat import QtCore
     from ..qt_compat import QtWidgets
     from ..qt_compat import get_shiboken_wrap_instance
@@ -2066,6 +2076,33 @@ def _create_maya_dock(config):
     import maya.OpenMayaUI as omui  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
 
     control_name = 'MaxAgentWorkspaceControl'
+
+    # ---- 重入保护 ---- #
+    # loadImmediately=True 会让 Maya 在本次创建调用内同步回调 uiScript，
+    # 而 uiScript 又调回本函数。没有这道锁就会建出第二个业务 widget，
+    # 面板里表现为多出一块空白界面。
+    if _MAYA_DOCK_CREATING:
+        logger.debug('Maya 面板正在创建中，跳过重入')
+        return control_name
+    _MAYA_DOCK_CREATING = True
+    try:
+        return _create_maya_dock_inner(config, cmds, omui, control_name)
+    finally:
+        _MAYA_DOCK_CREATING = False
+
+
+def _create_maya_dock_inner(config, cmds, omui, control_name):
+    # type: (ConfigManager, object, object, str) -> str
+    """``_create_maya_dock`` 的实现体。
+
+    拆出来是为了让外层能用 ``try/finally`` 保证重入标志一定被复位——
+    Maya 创建路径上任何一步抛异常，都绝不能把面板永久锁在"正在创建"。
+    """
+    # pylint: disable=import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    from ..qt_compat import QtCore
+    from ..qt_compat import QtWidgets
+    from ..qt_compat import get_shiboken_wrap_instance
 
     # ---- 复用优先 ---- #
     # 拖拽启动是高频操作：用户改两行代码就拖一次。此前这里无条件
@@ -2190,15 +2227,36 @@ def _create_maya_dock(config):
                     layout = QtWidgets.QVBoxLayout(control_widget)
                     layout.setContentsMargins(0, 0, 0, 0)
                     layout.setSpacing(0)
-                else:
-                    # 清空旧占位控件
-                    while layout.count():
-                        item = layout.takeAt(0)
-                        child = item.widget()
-                        if child is not None:
-                            child.setParent(None)
-                            child.deleteLater()
+
+                # 两个分支都必须清空：Maya 在 loadImmediately=True 下
+                # 常已往 control 里塞了占位控件，即便 layout() 返回
+                # None（Qt 尚未把布局挂上）这些子控件也可能已经存在。
+                # 只在 else 分支清空的话，新建 layout 后旧占位仍在，
+                # 加上我们的 widget 布局里就有两项——面板多一块空白。
+                for child in list(control_widget.findChildren(
+                    QtWidgets.QWidget,
+                )):
+                    if child is dock_widget:
+                        continue
+                    child.setParent(None)
+                    child.deleteLater()
+                while layout.count():
+                    item = layout.takeAt(0)
+                    child = item.widget()
+                    if child is not None and child is not dock_widget:
+                        child.setParent(None)
+                        child.deleteLater()
+
+                # 幂等：同一实例绝不重复挂入
+                if dock_widget.parent() is not control_widget:
+                    dock_widget.setParent(control_widget)
                 layout.addWidget(dock_widget)
+                # 挂完后布局里必须只剩业务 widget 一项
+                if layout.count() > 1:
+                    logger.warning(
+                        'workspaceControl 布局里残留 %d 项，'
+                        '面板可能出现空白区域', layout.count(),
+                    )
                 # 标题已经通过 workspaceControl label 体现，无需再次设置
             except Exception:  # pylint: disable=broad-except
                 logger.exception(
@@ -2229,13 +2287,30 @@ def _create_maya_dock(config):
             cmds, control_name, restore=True,
         )
     )
-    # 面板尺寸/位置变化后回写状态，保证下次启动沿用
+    # 面板尺寸/位置变化后回写状态，保证下次启动沿用。
+    #
+    # 必须排在停靠补发*之后*：evalDeferred 按入队顺序执行，若先保存，
+    # 写进去的是补发停靠之前的位置——这正是"停靠是对的，但配置里记的
+    # 位置不准"的来源。
+    _DOCK_WIDGET = dock_widget
+    _DOCK_HOLDER = control_name
+
+    # ---- 停靠补发 ---- #
+    # 只靠创建时的 dock_kwargs 不够：Maya 的 layout 恢复会在稍后把面板
+    # 拉回它自己记住的位置（尤其 tabToControl 到 Channel Box 这类场景），
+    # 表现为"刚建出来是停靠的，随即又飘出来"。这里在 Maya 完成布局后
+    # 再补发一次停靠指令，才能真正钉住位置。
+    if dock_kwargs:
+        cmds.evalDeferred(
+            lambda *args: _maya_edit_if_exists(
+                cmds, control_name, **dock_kwargs
+            )
+        )
+
+    # 停靠补发完成后再写状态，确保落盘的是最终位置
     cmds.evalDeferred(
         lambda *args: _save_maya_dock_state(control_name, dock_widget),
     )
-
-    _DOCK_WIDGET = dock_widget
-    _DOCK_HOLDER = control_name
     return control_name
 
 

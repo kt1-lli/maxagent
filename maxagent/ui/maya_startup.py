@@ -77,6 +77,17 @@ def restore_workspace_control():
     from maxagent.ui import dock_widget as _dw_mod  # pylint: disable=import-outside-toplevel
 
     control_name = 'MaxAgentWorkspaceControl'
+
+    # 正在创建的调用栈里（loadImmediately=True 会同步回调 uiScript）：
+    # 此刻 _DOCK_WIDGET 还没赋值，若据此判定"内容缺失"就会再建一个业务
+    # widget 挂到同一个 control 上——面板里多出一块空白界面。创建由外层
+    # 调用栈负责完成，这里直接返回。
+    try:
+        if _dw_mod._MAYA_DOCK_CREATING:  # noqa: SLF001
+            return 'creating-in-progress'
+    except Exception:  # pylint: disable=broad-except
+        logger.debug('读取创建中标志失败', exc_info=True)
+
     # 读模块属性而不是 from-import：后者会把当前值拷到局部名，语义上
     # 容易误判成"快照"。虽然函数内的 from-import 每次调用都会重新绑定，
     # 但显式取属性让"读的是最新值"这件事一目了然。
