@@ -31,6 +31,7 @@ def _startup():
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
     from maxagent.dcc.runtime import current_dcc  # pylint: disable=import-outside-toplevel
     from maxagent.dcc.runtime import ensure_current_dcc  # pylint: disable=import-outside-toplevel
+    from maxagent.logger import setup_logging  # pylint: disable=import-outside-toplevel
     from maxagent.tools import load_all_tools  # pylint: disable=import-outside-toplevel
     from maxagent.ui.dock_widget import get_or_create_dock  # pylint: disable=import-outside-toplevel
 
@@ -39,6 +40,8 @@ def _startup():
         cmds.warning('current_dcc() 未识别为 maya，尝试强制设置为 maya')
     # 显式锁定 DCC 为 maya，避免后续模块从旧缓存或错误探测拿到 3dsmax
     ensure_current_dcc('maya')
+    # 初始化日志（幂等）：只写文件不写控制台，避免 Maya Script Editor 刷屏
+    setup_logging()
 
     load_all_tools()
     get_or_create_dock()

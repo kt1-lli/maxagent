@@ -153,7 +153,9 @@ class ContextCompressor(object):
         history_text = []
         for msg in messages:
             role = msg.get('role', 'user')
-            content = msg.get('content', '')
+            # content 可能为 None：带 tool_calls 的 assistant 消息在
+            # OpenAI 协议中 content 键存在但值为 null
+            content = msg.get('content') or ''
             # 截断过长内容
             if len(content) > 500:
                 content = content[:500] + '...(truncated)'
@@ -296,7 +298,8 @@ class ContextCompressor(object):
         parts = []
         for msg in messages:
             role = msg.get('role', 'user')
-            content = msg.get('content', '')
+            # content 可能为 None（tool_calls assistant 消息）
+            content = msg.get('content') or ''
             if len(content) > 200:
                 content = content[:200] + '...'
             parts.append('[{}] {}'.format(role, content))
@@ -351,7 +354,8 @@ def recommend_auto_compress(
     """
     # 当前 token 估算
     current = sum(
-        len(m.get('content', '').encode('utf-8')) for m in all_messages
+        # content 可能为 None（tool_calls assistant 消息 content=null）
+        len((m.get('content') or '').encode('utf-8')) for m in all_messages
     ) // 3
 
     # 估算模型上下文窗口

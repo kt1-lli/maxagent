@@ -17,6 +17,7 @@ import sys
 from typing import Optional
 
 from ..logger import get_logger
+from ..logger import setup_logging
 
 
 logger = get_logger(__name__)
@@ -115,6 +116,10 @@ def restore_workspace_control():
         return 'control-missing'
     # 切到 Maya 主线程之外先锁定 DCC，避免探测漂移
     ensure_current_dcc('maya')
+    # workspace 恢复可能先于 _startup 执行（如 Maya 启动时自动还原布局），
+    # 必须在这里也初始化日志：未初始化时 maxagent.* logger propagate=True，
+    # 日志会冒泡到 Maya root handler 刷屏 Script Editor
+    setup_logging()
     _dw_mod.get_or_create_dock()
     return 'restored'
 
@@ -133,6 +138,8 @@ def _startup():
         cmds.warning('current_dcc() 未识别为 maya，尝试强制设置为 maya')
     # 显式锁定 DCC 为 maya，避免后续模块从旧缓存或错误探测拿到 3dsmax
     ensure_current_dcc('maya')
+    # 初始化日志（幂等）：只写文件不写控制台，避免 Maya Script Editor 刷屏
+    setup_logging()
 
     load_all_tools()
     get_or_create_dock()
