@@ -2091,6 +2091,104 @@ def _create_maya_dock(config):
         _MAYA_DOCK_CREATING = False
 
 
+def _attach_widget_to_maya_control(omui, control_name, dock_widget):
+    # type: (object, str, MaxAgentDockWidget) -> None
+    """把业务 widget 挂进 workspaceControl 对应的 Qt 容器。
+
+    从 ``_create_maya_dock_inner`` 抽出的公共步骤：全新创建与"收养
+    Maya 恢复的 control"两条路径都要做同样的占位清理 + 挂载，避免
+    两份拷贝随时间漂移。挂载失败只记日志，不向上抛——面板空白总比
+    整个启动流程崩溃好。
+    """
+    # pylint: disable=import-outside-toplevel
+    from ..qt_compat import QtCore
+    from ..qt_compat import QtWidgets
+    from ..qt_compat import get_shiboken_wrap_instance
+
+    wrap_instance = get_shiboken_wrap_instance()
+    if wrap_instance is None:
+        logger.warning('当前环境未找到 shiboken，无法把 Widget 嵌入 Maya')
+        return
+    ptr = omui.MQtUtil.findControl(control_name)
+    if ptr is None:
+        logger.warning(
+            '未找到 workspaceControl %s 的 QWidget 句柄', control_name,
+        )
+        return
+    try:
+        control_widget = wrap_instance(int(ptr), QtWidgets.QWidget)
+        # 让 Maya 关闭该停靠面板时自动销毁内部 widget
+        control_widget.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        # Maya 默认已经给 workspaceControl 一个 QVBoxLayout；
+        # 如果有则复用，没有才新建，避免布局冲突。
+        layout = control_widget.layout()
+        if layout is None:
+            layout = QtWidgets.QVBoxLayout(control_widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+        # 两个分支都必须清空：Maya 在 loadImmediately=True 下
+        # 常已往 control 里塞了占位控件，即便 layout() 返回
+        # None（Qt 尚未把布局挂上）这些子控件也可能已经存在。
+        # 只在 else 分支清空的话，新建 layout 后旧占位仍在，
+        # 加上我们的 widget 布局里就有两项——面板多一块空白。
+        for child in list(control_widget.findChildren(QtWidgets.QWidget)):
+            if child is dock_widget:
+                continue
+            child.setParent(None)
+            child.deleteLater()
+        while layout.count():
+            item = layout.takeAt(0)
+            child = item.widget()
+            if child is not None and child is not dock_widget:
+                child.setParent(None)
+                child.deleteLater()
+
+        # 幂等：同一实例绝不重复挂入
+        if dock_widget.parent() is not control_widget:
+            dock_widget.setParent(control_widget)
+        layout.addWidget(dock_widget)
+        # 挂完后布局里必须只剩业务 widget 一项
+        if layout.count() > 1:
+            logger.warning(
+                'workspaceControl 布局里残留 %d 项，'
+                '面板可能出现空白区域', layout.count(),
+            )
+        # 标题已经通过 workspaceControl label 体现，无需再次设置
+    except Exception:  # pylint: disable=broad-except
+        logger.exception(
+            '把 MaxAgentDockWidget 附加到 Maya workspaceControl 失败'
+        )
+
+
+def _adopt_maya_restored_dock(cmds, omui, control_name, config):
+    # type: (object, object, str, ConfigManager) -> str
+    """收养 Maya 重启后 layout 恢复出来的 workspaceControl。
+
+    Maya 退出时会把 workspaceControl 的位置/尺寸/标签页顺序存进自己的
+    workspaceControlState，下次启动先按它把 control 原样建回去，再回调
+    我们的 uiScript 补内容。此时若按旧的"清 state + deleteUI + 重建"
+    路径走，Maya 刚恢复好的精确位置会被毁掉，再按 ui_state 快照粗粒度
+    重停靠（tabToControl 永远追加为最后一个标签页），表现为"重启后
+    停靠的位置不准确"。
+
+    收养策略：control 已经在正确位置，只补建业务 widget 挂进去；
+    绝不清 state、绝不重发 tabToControl / dockToControl 指令。
+    """
+    # pylint: disable=import-outside-toplevel
+    global _DOCK_WIDGET, _DOCK_HOLDER  # noqa: F824
+    dock_widget = MaxAgentDockWidget(config_manager=config)
+    _attach_widget_to_maya_control(omui, control_name, dock_widget)
+    _DOCK_WIDGET = dock_widget
+    _DOCK_HOLDER = control_name
+    # 布局稳定后回写一次状态，让 ui_state 快照与 Maya 实际恢复的位置
+    # 保持一致（万一之后走重建路径，也能拿到准确目标）。
+    cmds.evalDeferred(
+        lambda *args: _save_maya_dock_state(control_name, dock_widget),
+    )
+    return control_name
+
+
 def _create_maya_dock_inner(config, cmds, omui, control_name):
     # type: (ConfigManager, object, object, str) -> str
     """``_create_maya_dock`` 的实现体。
@@ -2109,11 +2207,21 @@ def _create_maya_dock_inner(config, cmds, omui, control_name):
     # deleteUI + 重建，意味着每次拖拽都要重跑 MaxAgentDockWidget 构造
     # （会话回放、技能扫描、字体递归遍历）+ 完整 layout 重算。
     # 面板已存在且业务 widget 还活着时，直接复用并 raise 即可。
-    if _DOCK_WIDGET is not None and cmds.workspaceControl(
-        control_name, query=True, exists=True,
-    ):
-        _reuse_existing_maya_dock(cmds, control_name, _DOCK_WIDGET)
-        return control_name
+    if cmds.workspaceControl(control_name, query=True, exists=True):
+        if _DOCK_WIDGET is not None:
+            _reuse_existing_maya_dock(cmds, control_name, _DOCK_WIDGET)
+            return control_name
+        # Maya 重启后的 layout 恢复会按它自己保存的 workspaceControlState
+        # 把 control 原样建回用户上次拖出来的位置（标签页顺序、左右
+        # 关系都在）。此时业务 widget 还没建（新进程 _DOCK_WIDGET 为
+        # None），旧逻辑会落到下面"清 state + deleteUI + 重建"分支：
+        # 先毁掉 Maya 刚恢复的精确位置，再按 ui_state 快照粗粒度重
+        # 停靠——tabToControl 永远追加为最后一个标签页，于是表现为
+        # "重启后停靠的位置不准确"。这里改为"收养"：control 已在正确
+        # 位置，只补建业务内容，绝不清 state、绝不重发停靠指令。
+        return _adopt_maya_restored_dock(
+            cmds, omui, control_name, config,
+        )
 
     # ---- 需要重建：清残留 -> 销毁 -> 全新创建 ---- #
     # control 存在说明上次退出留下了 workspaceControlState（位置/尺寸/
@@ -2161,15 +2269,18 @@ def _create_maya_dock_inner(config, cmds, omui, control_name):
         'visibleChangeCommand': _MAYA_VISIBLE_CHANGE_CMD,
     }  # type: dict
 
-    # 尺寸：优先用上次记录的宽高，其次用默认初始尺寸
-    if saved_w > 0:
-        create_kwargs['initialWidth'] = saved_w
-    elif not has_geometry:
-        create_kwargs['initialWidth'] = 440
-    if saved_h > 0:
-        create_kwargs['initialHeight'] = saved_h
-    elif not has_geometry:
-        create_kwargs['initialHeight'] = 760
+    # 尺寸：优先用上次记录的宽高，其次用默认初始尺寸。
+    # 仅全新创建时下发：收养路径（Maya layout 已按 state 恢复好尺寸）
+    # 传 initialWidth/initialHeight 会触发 resize，把恢复好的尺寸打乱。
+    if not _maya_control_exists(cmds, control_name):
+        if saved_w > 0:
+            create_kwargs['initialWidth'] = saved_w
+        elif not has_geometry:
+            create_kwargs['initialWidth'] = 440
+        if saved_h > 0:
+            create_kwargs['initialHeight'] = saved_h
+        elif not has_geometry:
+            create_kwargs['initialHeight'] = 760
 
     # 按停靠方式生成对应的 flag
     dock_kwargs = {}  # type: dict
@@ -2209,65 +2320,8 @@ def _create_maya_dock_inner(config, cmds, omui, control_name):
                 visible=False,
             )
 
-    # 把 QWidget 附加到 workspaceControl
-    wrap_instance = get_shiboken_wrap_instance()
-    if wrap_instance is not None:
-        ptr = omui.MQtUtil.findControl(control_name)
-        if ptr is not None:
-            try:
-                control_widget = wrap_instance(int(ptr), QtWidgets.QWidget)
-                # 让 Maya 关闭该停靠面板时自动销毁内部 widget
-                control_widget.setAttribute(
-                    QtCore.Qt.WA_DeleteOnClose, True
-                )
-                # Maya 默认已经给 workspaceControl 一个 QVBoxLayout；
-                # 如果有则复用，没有才新建，避免布局冲突。
-                layout = control_widget.layout()
-                if layout is None:
-                    layout = QtWidgets.QVBoxLayout(control_widget)
-                    layout.setContentsMargins(0, 0, 0, 0)
-                    layout.setSpacing(0)
-
-                # 两个分支都必须清空：Maya 在 loadImmediately=True 下
-                # 常已往 control 里塞了占位控件，即便 layout() 返回
-                # None（Qt 尚未把布局挂上）这些子控件也可能已经存在。
-                # 只在 else 分支清空的话，新建 layout 后旧占位仍在，
-                # 加上我们的 widget 布局里就有两项——面板多一块空白。
-                for child in list(control_widget.findChildren(
-                    QtWidgets.QWidget,
-                )):
-                    if child is dock_widget:
-                        continue
-                    child.setParent(None)
-                    child.deleteLater()
-                while layout.count():
-                    item = layout.takeAt(0)
-                    child = item.widget()
-                    if child is not None and child is not dock_widget:
-                        child.setParent(None)
-                        child.deleteLater()
-
-                # 幂等：同一实例绝不重复挂入
-                if dock_widget.parent() is not control_widget:
-                    dock_widget.setParent(control_widget)
-                layout.addWidget(dock_widget)
-                # 挂完后布局里必须只剩业务 widget 一项
-                if layout.count() > 1:
-                    logger.warning(
-                        'workspaceControl 布局里残留 %d 项，'
-                        '面板可能出现空白区域', layout.count(),
-                    )
-                # 标题已经通过 workspaceControl label 体现，无需再次设置
-            except Exception:  # pylint: disable=broad-except
-                logger.exception(
-                    '把 MaxAgentDockWidget 附加到 Maya workspaceControl 失败'
-                )
-        else:
-            logger.warning(
-                '未找到 workspaceControl %s 的 QWidget 句柄', control_name
-            )
-    else:
-        logger.warning('当前环境未找到 shiboken，无法把 Widget 嵌入 Maya')
+    # 把 QWidget 附加到 workspaceControl（公共步骤抽到独立 helper）
+    _attach_widget_to_maya_control(omui, control_name, dock_widget)
 
     # 延迟恢复/显示面板，确保 Maya 完成布局计算后内容才渲染。
     # 若上次会话结束时用户是关闭状态，这里不强制弹出。
