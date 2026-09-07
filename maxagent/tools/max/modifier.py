@@ -306,3 +306,153 @@ def collapse_stack(name, to='poly'):
         'face_count': fc,
     }
 
+
+@tool(
+    dcc=['3dsmax'],
+    description='读取对象修改器栈中指定修改器的参数值（按 1-based 索引定位）。',
+    category='modifier',
+    wrap_undo=False,
+    examples=[
+        {
+            'summary': '读取栈顶 Bend 修改器的 angle 参数',
+            'args': {'name': 'Box001', 'index': 1, 'param': 'angle'},
+        },
+        {
+            'summary': '不传 param 时列出全部可读参数名',
+            'args': {'name': 'Box001', 'index': 1},
+        },
+    ],
+    notes=[
+        'index 为 1-based，1 表示最顶层修改器。',
+        'param 不传时返回参数名列表（来自 getSubAnimNames），方便先探查再取值。',
+        'Point3 类型的值会转成 [x, y, z] 数组返回。',
+    ],
+    returns_desc='dict {"object": 对象名, "modifier": 类名, "param": 参数名, "value": 值, "type": 类型名}',
+    prerequisites=['场景中必须存在名为 name 的对象且修改器栈非空'],
+)
+def get_modifier_params(name, index=1, param=None):
+    """读取修改器参数。
+
+    :param name: 对象名
+    :param index: 1-based 修改器索引
+    :param param: 参数名；None 时返回全部参数名列表
+    :returns: dict {"object": ..., "modifier": ..., "param"/"params": ...}
+    """
+    _ensure_in_max()
+    node = _get_node(name)
+    if node.modifiers.count == 0:
+        raise ValueError('对象 {} 修改器栈为空'.format(name))
+    if not 1 <= index <= node.modifiers.count:
+        raise ValueError(
+            '索引越界: {} (栈大小 {})'.format(index, node.modifiers.count),
+        )
+    mod = node.modifiers[index - 1]
+    mod_class = str(rt.classOf(mod))
+    if param is None:
+        names = rt.getSubAnimNames(mod) or []
+        return {
+            'object': str(node.name),
+            'modifier': mod_class,
+            'params': [str(n) for n in names],
+        }
+    try:
+        value = rt.getProperty(mod, param)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ValueError(
+            '读取参数失败: {} ({}): {}'.format(param, mod_class, exc),
+        )
+    # Point3 / 线性值统一转 list
+    if hasattr(value, 'x') and hasattr(value, 'z'):
+        out_value = [float(value.x), float(value.y), float(value.z)]
+    elif isinstance(value, (list, tuple)):
+        out_value = [float(v) for v in value]
+    else:
+        out_value = value
+    return {
+        'object': str(node.name),
+        'modifier': mod_class,
+        'param': str(param),
+        'value': out_value,
+        'type': str(type(value).__name__),
+    }
+
+
+@tool(
+    dcc=['3dsmax'],
+    description='设置对象修改器栈中指定修改器的参数值（按 1-based 索引定位）。',
+    category='modifier',
+    examples=[
+        {
+            'summary': '设置 Bend 的弯曲角度',
+            'args': {'name': 'Box001', 'index': 1, 'param': 'angle', 'value': 45.0},
+        },
+        {
+            'summary': '设置 Point3 类型参数',
+            'args': {'name': 'Box001', 'index': 1, 'param': 'gizmo_pos', 'value': '[1, 2, 3]'},
+        },
+    ],
+    notes=[
+        'index 为 1-based，1 表示最顶层修改器。',
+        'value 支持标量；"[x,y,z]" 形式的 JSON 字符串会自动转成 Point3。',
+        '设置前建议先 get_modifier_params 探查参数名与当前值。',
+    ],
+    returns_desc='dict {"object": 对象名, "modifier": 类名, "param": 参数名, "value": 设置后的值}',
+    prerequisites=['场景中必须存在名为 name 的对象且修改器栈非空'],
+)
+def set_modifier_params(name, index=1, param='', value=None):
+    """设置修改器参数。
+
+    :param name: 对象名
+    :param index: 1-based 修改器索引
+    :param param: 参数名
+    :param value: 参数值（标量或 "[x,y,z]" JSON 字符串）
+    :returns: dict {"object": ..., "modifier": ..., "param": ..., "value": ...}
+    """
+    _ensure_in_max()
+    if not param:
+        raise ValueError('param 不能为空')
+    if value is None:
+        raise ValueError('value 不能为 None')
+    node = _get_node(name)
+    if node.modifiers.count == 0:
+        raise ValueError('对象 {} 修改器栈为空'.format(name))
+    if not 1 <= index <= node.modifiers.count:
+        raise ValueError(
+            '索引越界: {} (栈大小 {})'.format(index, node.modifiers.count),
+        )
+    mod = node.modifiers[index - 1]
+    mod_class = str(rt.classOf(mod))
+    # JSON 字符串形式的坐标转 Point3
+    norm_value = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith('['):
+            try:
+                coords = json.loads(stripped)
+                norm_value = rt.Point3(
+                    float(coords[0]), float(coords[1]), float(coords[2]),
+                )
+            except (ValueError, TypeError, IndexError):
+                pass
+    try:
+        rt.setProperty(mod, param, norm_value)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ValueError(
+            '设置参数失败: {} ({}): {}'.format(param, mod_class, exc),
+        )
+    # 读回确认
+    try:
+        actual = rt.getProperty(mod, param)
+        out_value = (
+            [float(actual.x), float(actual.y), float(actual.z)]
+            if hasattr(actual, 'x') and hasattr(actual, 'z')
+            else actual
+        )
+    except Exception:  # pylint: disable=broad-except
+        out_value = norm_value
+    return {
+        'object': str(node.name),
+        'modifier': mod_class,
+        'param': str(param),
+        'value': out_value,
+    }

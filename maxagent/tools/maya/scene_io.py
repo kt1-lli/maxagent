@@ -545,6 +545,63 @@ def parent_maya_objects(objects, parent=None, unparent=False, world=False):
     return run_on_main(_impl)
 
 
+@tool(
+    dcc=['maya'],
+    description='复制 Maya 对象（duplicate），可选实例化或复制上游连接。',
+    category='scene_io',
+    examples=[
+        {
+            'summary': '复制 pCube1 并命名为 pCube1_copy',
+            'args': {'objects': 'pCube1', 'new_name': 'pCube1_copy'},
+        },
+        {
+            'summary': '实例化复制（改一个另一个跟着变）',
+            'args': {'objects': 'pCube1', 'instance': True},
+        },
+    ],
+    returns_desc='dict: {"ok": True, "duplicates": [新对象名列表]}',
+    notes=[
+        'instance=True 时创建实例（instanceLeaf 控制是否只实例化叶子）。',
+        'un=False（默认）不复制上游历史连接；upstreamNodes=True 时连同上游节点一起复制。',
+        '多对象复制时 new_name 只对第一个对象生效，其余由 Maya 自动命名。',
+    ],
+)
+def duplicate_maya_objects(objects, new_name=None, instance=False, un=False, upstream_nodes=False):
+    # type: (Any, Optional[str], bool, bool, bool) -> Dict[str, Any]
+    """复制 Maya 对象。
+
+    :param objects: 要复制的对象名（str/list）
+    :param new_name: 新对象名；None 自动命名（如 pCube2）
+    :param instance: True 创建实例副本
+    :param un: True 复制上游连接
+    :param upstream_nodes: 同 un 的完整写法；与 un 任一为 True 即生效
+    :returns: dict {"ok": True, "duplicates": [...]}
+    """
+    _ensure_in_maya()
+
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    targets = _normalize_names(objects)
+
+    def _impl():
+        if not targets:
+            raise ValueError('objects 不能为空')
+        missing = [n for n in targets if not cmds.objExists(n)]
+        if missing:
+            raise ValueError('对象不存在: {}'.format(', '.join(missing)))
+        kwargs: Dict[str, Any] = {}
+        if new_name:
+            kwargs['name'] = new_name
+        if instance:
+            kwargs['instanceLeaf'] = True
+        if un or upstream_nodes:
+            kwargs['un'] = True
+        result = cmds.duplicate(*targets, **kwargs)
+        return {'ok': True, 'duplicates': list(result)}
+
+    return run_on_main(_impl)
+
+
 __all__ = [
     'save_maya_file',
     'open_maya_file',
@@ -559,4 +616,5 @@ __all__ = [
     'set_maya_visibility',
     'group_maya_objects',
     'parent_maya_objects',
+    'duplicate_maya_objects',
 ]

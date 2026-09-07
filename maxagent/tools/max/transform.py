@@ -217,6 +217,64 @@ def scale_object(name, x=1.0, y=1.0, z=1.0, mode='set'):
 
 @tool(
     dcc=['3dsmax'],
+    description='沿世界坐标轴镜像对象（负缩放法，实现左右/上下/前后翻转）。',
+    category='transform',
+    examples=[
+        {
+            'summary': '把 Box001 沿 YZ 平面镜像（X 取反，左右翻转）',
+            'args': {'name': 'Box001', 'axis': 'x'},
+        },
+        {
+            'summary': '克隆并镜像出一个镜像副本，原对象保留',
+            'args': {'name': 'Box001', 'axis': 'x', 'copy': True, 'copy_name': 'Box001_mir'},
+        },
+    ],
+    notes=[
+        'axis="x" 沿 YZ 平面镜像（X 分量取反），y/z 同理。',
+        'copy=True 时先克隆再镜像，原对象保留；copy_name 指定克隆体名字。',
+        '采用负缩放实现镜像，保持 Maya/Max 通用语义；'
+        '如需把镜像结果烘焙为几何翻转，可在镜像后再执行 reset_xform 类操作。',
+    ],
+    returns_desc='dict {"name": 对象名, "scale": [x, y, z], "mirrored": bool}',
+    prerequisites=['场景中必须存在名为 name 的对象'],
+)
+def mirror_object(name, axis='x', copy=False, copy_name=None):
+    """沿轴镜像对象。
+
+    :param name: 对象名
+    :param axis: 'x' / 'y' / 'z'，镜像轴（沿该轴取反）
+    :param copy: True 时克隆后再镜像，原对象保留
+    :param copy_name: 克隆体命名
+    :returns: dict {"name": ..., "scale": [x, y, z], "mirrored": True}
+    """
+    _ensure_in_max()
+    node = _get_node(name)
+    if copy:
+        # maxops.cloneNodes 是官方推荐的无 UI 克隆方式
+        clones = rt.maxops.cloneNodes(node, cloneType=rt.Name('copy'))
+        node = clones[0]
+        if copy_name:
+            _set_prop_safe(node, 'name', str(copy_name))
+    axis_lower = str(axis).lower()
+    if axis_lower not in ('x', 'y', 'z'):
+        raise ValueError('axis 必须是 x/y/z: {}'.format(axis))
+    scale_map = {
+        'x': (-1.0, 1.0, 1.0),
+        'y': (1.0, -1.0, 1.0),
+        'z': (1.0, 1.0, -1.0),
+    }
+    sx, sy, sz = scale_map[axis_lower]
+    _set_prop_safe(node, 'scale', rt.Point3(sx, sy, sz))
+    out = node.scale
+    return {
+        'name': str(node.name),
+        'scale': [float(out.x), float(out.y), float(out.z)],
+        'mirrored': True,
+    }
+
+
+@tool(
+    dcc=['3dsmax'],
     description='把一个对象对齐到另一个对象，可独立选择位置、旋转或缩放。',
     category='transform',
     examples=[
