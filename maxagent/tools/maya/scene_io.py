@@ -258,6 +258,77 @@ def list_references():
 
 @tool(
     dcc=['maya'],
+    description='移除文件引用（删除引用节点及其全部内容，不可撤销提示后执行）。',
+    category='scene_io',
+    dangerous=True,
+    wrap_undo=False,
+    examples=[
+        {'summary': '按引用节点名移除', 'args': {'reference': 'charRN'}},
+        {'summary': '按文件路径匹配移除', 'args': {'file_path': 'C:/Work/char.ma'}},
+    ],
+    notes=[
+        'reference 与 file_path 二选一；file_path 会做唯一匹配，多命中时报错列出候选。',
+        '移除后引用内容从场景中消失（区别于 unload 仅隐藏）。',
+        'dangerous=True，走审批流。',
+    ],
+    returns_desc='dict {"ok": True, "removed": 引用节点名, "was_loaded": 移除前是否加载}',
+    prerequisites=['场景中必须存在目标引用'],
+)
+def remove_maya_reference(reference='', file_path=''):
+    # type: (str, str) -> Dict[str, Any]
+    """移除文件引用。
+
+    :param reference: 引用节点名（list_references 返回的 reference_node）
+    :param file_path: 引用文件路径（唯一匹配时使用）
+    :returns: dict {"ok": True, "removed": ..., "was_loaded": ...}
+    """
+    _ensure_in_maya()
+
+    if not reference and not file_path:
+        raise ValueError('reference 与 file_path 至少提供一个')
+
+    import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+
+    def _impl():
+        ref_node = reference
+        if not ref_node:
+            # 按路径匹配
+            norm = os.path.normpath(str(file_path))
+            matches = []
+            for ref in (cmds.ls(type='reference') or []):
+                if ref == 'sharedReferenceNode':
+                    continue
+                try:
+                    p = cmds.referenceQuery(ref, filename=True)
+                except Exception:  # pylint: disable=broad-except
+                    continue
+                if os.path.normpath(p) == norm:
+                    matches.append(ref)
+            if not matches:
+                raise ValueError('没有找到该路径的引用: {}'.format(file_path))
+            if len(matches) > 1:
+                raise ValueError(
+                    '路径命中多个引用，请指定 reference 节点名: {}'.format(
+                        ', '.join(matches),
+                    ),
+                )
+            ref_node = matches[0]
+        else:
+            if ref_node not in (cmds.ls(type='reference') or []):
+                raise ValueError('引用节点不存在: {}'.format(ref_node))
+        was_loaded = cmds.referenceQuery(ref_node, isLoaded=True)
+        cmds.file(removeReference=True, referenceNode=ref_node)
+        return {
+            'ok': True,
+            'removed': ref_node,
+            'was_loaded': bool(was_loaded),
+        }
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
     description='新建空白 Maya 场景（相当于 File > New Scene）。',
     category='scene_io',
     dangerous=True,
@@ -609,6 +680,7 @@ __all__ = [
     'export_selected',
     'create_reference',
     'list_references',
+    'remove_maya_reference',
     'new_maya_scene',
     'select_maya_objects',
     'clear_maya_selection',

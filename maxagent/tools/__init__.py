@@ -72,6 +72,7 @@ _MAYA_MODULES = [
     'maxagent.tools.maya.light_camera',
     'maxagent.tools.maya.material',
     'maxagent.tools.maya.nodes',
+    'maxagent.tools.maya.advanced',
     'maxagent.tools.maya.render',
     'maxagent.tools.maya.rigging',
     'maxagent.tools.maya.scene_io',

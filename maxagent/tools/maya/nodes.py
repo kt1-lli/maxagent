@@ -26,6 +26,7 @@ from typing import Optional
 from ...dcc.runtime import current_dcc
 from ...dcc.runtime import run_on_main
 from ._common import _ensure_in_maya
+from ._common import _normalize_names
 from ...tools.registry import tool
 
 
@@ -709,6 +710,239 @@ def get_maya_node_type(node):
     return run_on_main(_impl)
 
 
+@tool(
+    dcc=['maya'],
+    description='创建 Maya 对象集（object set），可同时把指定对象加入。',
+    category='node',
+    examples=[
+        {'summary': '创建空 set', 'args': {'name': 'hero_props'}},
+        {
+            'summary': '创建 set 并加入两个对象',
+            'args': {'name': 'hero_props', 'members': ['pCube1', 'pSphere1']},
+        },
+    ],
+    notes=[
+        'set 是 Maya 组织对象的容器，可用于批量选择/赋材质/导出。',
+        '成员不存在时报错；同名 set 已存在时返回已存在 set 名。',
+    ],
+    returns_desc='dict {"name": set 名, "created": bool, "members": [成员列表]}',
+)
+def create_maya_set(name, members=None):
+    # type: (str, Optional[List[str]]) -> Dict[str, Any]
+    """创建对象集。
+
+    :param name: set 名
+    :param members: 初始成员对象列表
+    :returns: dict {"name": ..., "created": ..., "members": [...]}
+    """
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        member_list = _normalize_names(members)
+        missing = [m for m in member_list if not cmds.objExists(m)]
+        if missing:
+            raise ValueError('成员对象不存在: {}'.format(', '.join(missing)))
+        if cmds.objExists(name):
+            if cmds.nodeType(name) != 'objectSet':
+                raise ValueError(
+                    '同名节点已存在且不是 objectSet: {}'.format(name),
+                )
+            created = False
+        else:
+            cmds.sets(name=name, empty=True)
+            created = True
+        if member_list:
+            cmds.sets(member_list, edit=True, forceElement=name)
+        return {
+            'name': name,
+            'created': created,
+            'members': cmds.sets(name, query=True) or [],
+        }
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description='把对象加入/移出 Maya 对象集。',
+    category='node',
+    examples=[
+        {'summary': '加入', 'args': {'name': 'hero_props', 'objects': 'pCube1', 'remove': False}},
+        {'summary': '移出', 'args': {'name': 'hero_props', 'objects': 'pCube1', 'remove': True}},
+    ],
+    notes=['objects 支持 str/list；remove=True 时从 set 中移除。'],
+    returns_desc='dict {"name": set 名, "members": [当前成员列表]}',
+)
+def edit_maya_set(name, objects, remove=False):
+    # type: (str, Any, bool) -> Dict[str, Any]
+    """编辑对象集成员。
+
+    :param name: set 名
+    :param objects: 对象名（str/list）
+    :param remove: True 移出，False 加入
+    :returns: dict {"name": ..., "members": [...]}
+    """
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        if not cmds.objExists(name) or cmds.nodeType(name) != 'objectSet':
+            raise ValueError('objectSet 不存在: {}'.format(name))
+        target_list = _normalize_names(objects)
+        missing = [m for m in target_list if not cmds.objExists(m)]
+        if missing:
+            raise ValueError('对象不存在: {}'.format(', '.join(missing)))
+        if remove:
+            cmds.sets(target_list, remove=name)
+        else:
+            cmds.sets(target_list, edit=True, forceElement=name)
+        return {'name': name, 'members': cmds.sets(name, query=True) or []}
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description='列出场景中的 Maya 对象集，可含成员明细。',
+    category='node',
+    examples=[
+        {'summary': '列出全部 set', 'args': {}},
+        {'summary': '列出并带成员', 'args': {'with_members': True}},
+    ],
+    notes=['渲染层默认也是 objectSet，可按名字前缀自行过滤。'],
+    returns_desc='dict {"sets": [{"name": ..., "members": [...]}]}',
+)
+def list_maya_sets(with_members=False):
+    # type: (bool) -> Dict[str, Any]
+    """列出对象集。
+
+    :param with_members: True 时附带每个 set 的成员列表
+    :returns: dict {"sets": [...]}
+    """
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        set_names = cmds.ls(type='objectSet') or []
+        result = []
+        for sn in set_names:
+            entry = {'name': sn}
+            if with_members:
+                entry['members'] = cmds.sets(sn, query=True) or []
+            result.append(entry)
+        return {'sets': result}
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description='创建 Maya namespace（用于引用/资产分组隔离）。',
+    category='node',
+    examples=[
+        {'summary': '创建空 namespace', 'args': {'name': 'carA'}},
+        {'summary': '创建子 namespace', 'args': {'name': 'wheel', 'parent': 'carA'}},
+    ],
+    notes=['parent 为空时创建顶层 namespace。'],
+    returns_desc='dict {"name": 实际 namespace 名}',
+)
+def create_maya_namespace(name, parent=''):
+    # type: (str, str) -> Dict[str, Any]
+    """创建 namespace。
+
+    :param name: namespace 名
+    :param parent: 父 namespace，为空创建顶层
+    :returns: dict {"name": ...}
+    """
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        kwargs = {'namespace': name}
+        if parent:
+            kwargs['parent'] = parent
+        result = cmds.namespace(addNamespace=kwargs['namespace']) if not parent else None
+        if parent:
+            if not cmds.namespace(exists=parent):
+                raise ValueError('父 namespace 不存在: {}'.format(parent))
+            cmds.setCurrentNamespace(parent)
+            result = cmds.namespace(addNamespace=name)
+            cmds.setCurrentNamespace(':')
+        return {'name': result or name}
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description='列出场景中的 Maya namespace（含层级）。',
+    category='node',
+    examples=[{'summary': '列出全部 namespace', 'args': {}}],
+    notes=['返回的是完整层级路径（如 carA:wheel），内置 UI/shared 也会列出，可自行过滤。'],
+    returns_desc='dict {"namespaces": [名字列表]}',
+)
+def list_maya_namespaces():
+    # type: () -> Dict[str, Any]
+    """列出全部 namespace（含内置 root 摘要）。"""
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        ns_list = cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True) or []
+        # 去重并去掉内置 UI/objectSet 等
+        unique = []
+        for ns in ns_list:
+            short = ns.rsplit(':', 1)[-1] if ':' in ns else ns
+            if ns not in unique:
+                unique.append(ns)
+        return {'namespaces': unique}
+
+    return run_on_main(_impl)
+
+
+@tool(
+    dcc=['maya'],
+    description='删除空的 Maya namespace（removeNamespace，非空时报错提示先清空）。',
+    category='node',
+    examples=[{'summary': '删除 namespace', 'args': {'name': 'carA'}}],
+    notes=['只允许删除空 namespace，非空时提示先用 list/del 处理成员。'],
+    returns_desc='dict {"ok": True, "name": 名字}',
+)
+def delete_maya_namespace(name):
+    # type: (str) -> Dict[str, Any]
+    """删除空 namespace。
+
+    :param name: namespace 名
+    :returns: dict {"ok": True, "name": ...}
+    """
+    _ensure_in_maya()
+
+    def _impl():
+        import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+        if not cmds.namespace(exists=name):
+            raise ValueError('namespace 不存在: {}'.format(name))
+        if name in (':', 'UI', 'shared'):
+            raise ValueError('内置 namespace 不允许删除: {}'.format(name))
+        children = cmds.namespaceInfo(
+            name, listOnlyNamespaces=True,
+        ) or []
+        if children:
+            raise ValueError(
+                'namespace 非空（含子 namespace {} 个），先清理再删'.format(len(children)),
+            )
+        # 检查该 ns 下是否有节点
+        nodes = cmds.namespaceInfo(name, listNamespace=True) or []
+        if nodes:
+            raise ValueError(
+                'namespace 非空（含 {} 个节点），先清理再删'.format(len(nodes)),
+            )
+        cmds.namespace(removeNamespace=name)
+        return {'ok': True, 'name': name}
+
+    return run_on_main(_impl)
+
+
 __all__ = [
     'create_maya_node',
     'connect_maya_attr',
@@ -721,4 +955,10 @@ __all__ = [
     'delete_maya_nodes',
     'rename_maya_node',
     'get_maya_node_type',
+    'create_maya_set',
+    'edit_maya_set',
+    'list_maya_sets',
+    'create_maya_namespace',
+    'list_maya_namespaces',
+    'delete_maya_namespace',
 ]
