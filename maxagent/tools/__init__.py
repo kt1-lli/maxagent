@@ -61,6 +61,7 @@ _MAX_MODULES = [
     'maxagent.tools.max.scene_query',
     'maxagent.tools.max.scripting',
     'maxagent.tools.max.transform',
+    'maxagent.tools.max.bs_adn_tools',
     'maxagent.tools.max.viewport_capture',
 ]
 

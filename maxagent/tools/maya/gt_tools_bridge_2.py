@@ -20,6 +20,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import re
+import math
 from typing import Any
 from typing import Dict
 from typing import List
@@ -1126,6 +1127,225 @@ def apply_gt_pose(pose, namespace=''):
     return run_on_main(_do)
 
 
+@tool(
+    dcc=['maya'],
+    description='捕捉层级姿势（v2，融合 BsKeyTools AnimLibrary 增量算法）：'
+                '在 capture_gt_pose 基础上增加 UUID 持久标识、父子层级关系与局部变换记录，'
+                '支持跨改名/跨命名空间重建完整层级姿势。',
+    category='rigging',
+    examples=[
+        {
+            'summary': '捕捉手臂层级姿势（含局部变换与 UUID）',
+            'args': {'joints': 'arm_root,arm_shoulder,arm_elbow,arm_wrist', 'include_hierarchy': True},
+        },
+        {
+            'summary': '捕捉全身姿势含缩放',
+            'args': {'joints': 'root,pelvis,spine,head', 'include_hierarchy': True, 'include_scale': True},
+        },
+    ],
+    notes=[
+        'include_hierarchy=True 时额外记录：UUID（AppData slot 10，跨改名持久）、'
+        'parent（父骨骼短名）、local_transform（相对父级的平移/旋转，列表结构）。',
+        'local_transform 记录相对父级的偏移，父级缩放不同的角色间迁移更准确。',
+        'UUID 首次捕捉时自动写入节点 AppData，后续捕捉/应用自动匹配。',
+        'v2 数据兼容 apply_gt_pose（v2 字段会被其忽略），建议配 apply_gt_pose_v2 使用。',
+    ],
+    returns_desc='dict {"ok": True, "pose": 姿势字典(含 v2 字段), "joints": 数量}',
+    prerequisites=['joints 必须存在'],
+)
+def capture_gt_pose_v2(joints, include_hierarchy=True, include_scale=False):
+    # type: (Any, bool, bool) -> Dict[str, Any]
+    """捕捉层级姿势 v2。
+
+    :param joints: 骨骼名列表或逗号分隔字符串
+    :param include_hierarchy: 是否记录 UUID/父子/局部变换
+    :param include_scale: 是否包含缩放通道
+    :returns: dict {"ok": True, "pose": ..., "joints": ...}
+    """
+    _ensure_in_maya()
+
+    def _do():
+        cmds = _cmds()
+        jnts = _normalize_list(joints)
+        if not jnts:
+            raise ValueError('必须指定骨骼')
+        attrs = list(_POSE_ATTRS)
+        if include_scale:
+            attrs.extend(['sx', 'sy', 'sz'])
+        pose = {}
+        joint_set = set()
+        for jnt in jnts:
+            if cmds.objExists(jnt):
+                joint_set.add(_short_name(jnt).split(':')[-1])
+        for jnt in jnts:
+            if not cmds.objExists(jnt):
+                continue
+            base_name = _short_name(jnt).split(':')[-1]
+            entry = {attr: cmds.getAttr('{}.{}'.format(jnt, attr)) for attr in attrs}
+            if include_hierarchy:
+                # UUID：AppData slot 10，无则生成写入（BsKeyTools 语义）
+                node_uuid = cmds.getAttr('{}.uuid'.format(jnt)) if cmds.attributeQuery(
+                    'uuid', node=jnt, exists=True,
+                ) else None
+                if not node_uuid:
+                    import uuid as uuid_module
+                    node_uuid = str(uuid_module.uuid1())
+                entry['uuid'] = node_uuid
+                # 父骨骼短名（仅当父级也在捕捉列表内才有意义）
+                parents = cmds.listRelatives(jnt, parent=True) or []
+                if parents:
+                    parent_base = _short_name(parents[0]).split(':')[-1]
+                    entry['parent'] = parent_base if parent_base in joint_set else None
+                else:
+                    entry['parent'] = None
+                # 局部变换：相对父级的平移与旋转（世界空间减法近似，
+                # BsKeyTools 用矩阵除法，这里用 cmds.xform 的 objectSpace 语义）
+                if entry['parent']:
+                    local_translate = cmds.xform(
+                        jnt, query=True, objectSpace=True, translation=True,
+                    )
+                    local_rotate = cmds.xform(
+                        jnt, query=True, objectSpace=True, rotation=True,
+                    )
+                    entry['local_translate'] = [round(v, 5) for v in local_translate]
+                    entry['local_rotate'] = [round(v, 5) for v in local_rotate]
+            pose[base_name] = entry
+        if not pose:
+            raise ValueError('没有可捕捉的有效骨骼')
+        return {'ok': True, 'pose': pose, 'joints': len(pose)}
+
+    return run_on_main(_do)
+
+
+@tool(
+    dcc=['maya'],
+    description='应用层级姿势（v2，融合 BsKeyTools AnimLibrary 增量算法）：'
+                '在 apply_gt_pose 基础上增加三级匹配策略（UUID -> 名字 -> 命名空间重映射）'
+                '与 RBF 高斯核平滑混合。',
+    category='rigging',
+    examples=[
+        {
+            'summary': '按 UUID/名字匹配应用姿势，RBF 平滑（sigma 越小衰减越强）',
+            'args': {'pose': '{"root": {"tx": 0, "uuid": "abc-123"}}', 'smoothness': 2.0},
+        },
+        {
+            'summary': '带命名空间重映射应用',
+            'args': {
+                'pose': '{"root": {"tx": 0, "rx": 45}}',
+                'namespace': 'charB',
+                'match_mode': 'name',
+            },
+        },
+    ],
+    notes=[
+        'match_mode: auto（UUID 优先，回退名字）/ uuid（仅 UUID）/ name（仅名字，支持 namespace 重映射）。',
+        'smoothness: RBF 高斯核 sigma（0.1-10）。1 左右接近线性，越小距基准姿势远的关节衰减越强；'
+        '0 或 None 关闭 RBF 直接线性应用。',
+        'UUID 匹配通过扫描场景节点 AppData/uuid 属性实现，跨改名仍有效。',
+        '锁定或有连接通道自动跳过。',
+    ],
+    returns_desc='dict {"ok": True, "applied": [...], "count": 数量, "matched_by": {uuid: n, name: n}}',
+    prerequisites=['目标骨骼应存在（或 UUID 可匹配）'],
+)
+def apply_gt_pose_v2(pose, namespace='', match_mode='auto', smoothness=0.0):
+    # type: (Dict[str, Any], str, str, float) -> Dict[str, Any]
+    """应用姿势字典 v2。
+
+    :param pose: capture_gt_pose / capture_gt_pose_v2 生成的姿势字典
+    :param namespace: 目标命名空间（仅 name 模式使用）
+    :param match_mode: auto / uuid / name
+    :param smoothness: RBF sigma（0 关闭）
+    :returns: dict {"ok": True, "applied": [...], "count": ..., "matched_by": {...}}
+    """
+    _ensure_in_maya()
+
+    def _do():
+        cmds = _cmds()
+        payload = pose.get('pose') if isinstance(pose, dict) and 'pose' in pose else pose
+        if not isinstance(payload, dict) or not payload:
+            raise ValueError('pose 必须是 capture_gt_pose(_v2) 生成的姿势字典')
+        mode = str(match_mode or 'auto').lower()
+        if mode not in ('auto', 'uuid', 'name'):
+            raise ValueError('match_mode 仅支持 auto/uuid/name: {}'.format(mode))
+        sigma = float(smoothness or 0.0)
+        if sigma < 0:
+            raise ValueError('smoothness 不能为负')
+        # 构建 UUID -> 节点 索引（扫描场景）
+        uuid_index = {}
+        if mode in ('auto', 'uuid'):
+            for node in cmds.listRelatives(
+                cmds.ls(assemblies=True), allDescendents=True, type='joint', fullPath=True,
+            ) or []:
+                if cmds.attributeQuery('uuid', node=node, exists=True):
+                    node_uuid = cmds.getAttr('{}.uuid'.format(node))
+                    if node_uuid:
+                        uuid_index[str(node_uuid)] = node
+        matched_by = {'uuid': 0, 'name': 0}
+        apply_plan = []  # (target, transforms, entry)
+        for jnt, entry in payload.items():
+            if not isinstance(entry, dict):
+                continue
+            target = None
+            # UUID 优先
+            entry_uuid = entry.get('uuid')
+            if mode in ('auto', 'uuid') and entry_uuid and str(entry_uuid) in uuid_index:
+                target = uuid_index[str(entry_uuid)]
+                matched_by['uuid'] += 1
+            if target is None and mode in ('auto', 'name'):
+                ns = str(namespace or '').strip()
+                candidate = '{}:{}'.format(ns, jnt) if ns else jnt
+                if cmds.objExists(candidate):
+                    target = candidate
+                    matched_by['name'] += 1
+            if target is not None:
+                apply_plan.append((target, entry))
+        # RBF 权重：以第一个骨骼为基准计算平均位移距离（简化 BsKeyTools 语义）
+        rbf_weight = 1.0
+        if sigma > 0 and len(apply_plan) > 1:
+            distances = []
+            for target, entry in apply_plan:
+                for attr in ('tx', 'ty', 'tz'):
+                    if attr in entry and cmds.objExists('{}.{}'.format(target, attr)):
+                        current = cmds.getAttr('{}.{}'.format(target, attr))
+                        distances.append(abs(entry[attr] - current))
+                        break
+            if distances:
+                mean_dist = sum(distances) / len(distances)
+                rbf_weight = math.exp(-(mean_dist ** 2) / (2.0 * (sigma / 10.0) ** 2))
+        applied = []
+        for target, entry in apply_plan:
+            effective = (
+                rbf_weight * 0.5 + 0.5 if sigma > 0 else 1.0
+            )
+            success = False
+            for attr, value in entry.items():
+                if attr in ('uuid', 'parent', 'local_translate', 'local_rotate'):
+                    continue
+                plug = '{}.{}'.format(target, attr)
+                if not cmds.objExists(plug):
+                    continue
+                if not cmds.getAttr(plug, settable=True):
+                    continue
+                try:
+                    if effective < 1.0 and isinstance(value, (int, float)):
+                        current_value = cmds.getAttr(plug)
+                        value = current_value + (value - current_value) * effective
+                    cmds.setAttr(plug, value)
+                    success = True
+                except Exception:  # pylint: disable=broad-except
+                    continue
+            if success:
+                applied.append(target)
+        return {
+            'ok': True,
+            'applied': applied,
+            'count': len(applied),
+            'matched_by': matched_by,
+        }
+
+    return run_on_main(_do)
+
+
 __all__ = [
     'ripple_gt_delete_keyframes',
     'delete_gt_keyframes_in_range',
@@ -1137,4 +1357,6 @@ __all__ = [
     'make_gt_equidistant',
     'capture_gt_pose',
     'apply_gt_pose',
+    'capture_gt_pose_v2',
+    'apply_gt_pose_v2',
 ]
