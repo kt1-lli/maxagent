@@ -31,6 +31,7 @@ from ..config import (
     ModelEntry,
     Provider,
 )
+from .icon_loader import set_btn_icon
 
 
 def _btn_no_default(btn):
@@ -160,6 +161,8 @@ class SettingsModelTabV2Mixin(object):
         self.show_key_btn = QtWidgets.QPushButton('👁 显示')
         self.show_key_btn.setCheckable(True)
         _btn_no_default(self.show_key_btn)
+        # SVG 图标优先；失败时保留上面纯文本兜底
+        set_btn_icon(self.show_key_btn, 'eye', '显示')
         # 视觉反馈：checked 时橙红提示"敏感态"（与老 UI 保持一致的
         # 语义，方便 test 检测 :checked 样式）
         self.show_key_btn.setStyleSheet(

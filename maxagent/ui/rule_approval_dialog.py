@@ -20,6 +20,7 @@ from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import set_btn_icon
 from .emoji_compat import ee as _ee
 
 
@@ -212,12 +213,15 @@ class RuleApprovalDialog(QtWidgets.QDialog):
         btn_row.addWidget(reset_btn)
         btn_row.addStretch(1)
         self.reject_btn = QtWidgets.QPushButton(_btn_label('❌', '拒绝'))
+        set_btn_icon(self.reject_btn, 'fail', '拒绝')
         self.reject_btn.setObjectName('rejectBtn')
         self.reject_btn.clicked.connect(self._on_reject)
         btn_row.addWidget(self.reject_btn)
         self.approve_btn = QtWidgets.QPushButton(
             _btn_label('✅', '批准并保存'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.approve_btn, 'success', '批准并保存')
         self.approve_btn.setObjectName('approveBtn')
         self.approve_btn.clicked.connect(self._on_approve)
         btn_row.addWidget(self.approve_btn)

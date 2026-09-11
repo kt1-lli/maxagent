@@ -27,6 +27,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import set_btn_icon
 
 
 logger = get_logger(__name__)
@@ -120,6 +121,8 @@ class AvatarCropDialog(QtWidgets.QDialog):
         self._cancel_btn = QtWidgets.QPushButton(
             _btn_label('✖', '取消'),
         )
+        # SVG 图标优先；失败时保留上面 btn_label 的文本兜底
+        set_btn_icon(self._cancel_btn, 'close', '取消')
         self._cancel_btn.setToolTip('放弃裁剪，关闭对话框')
         self._cancel_btn.setAutoDefault(False)
         self._cancel_btn.clicked.connect(self.reject)
@@ -127,6 +130,8 @@ class AvatarCropDialog(QtWidgets.QDialog):
         self._ok_btn = QtWidgets.QPushButton(
             _btn_label('✔', '确定'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self._ok_btn, 'confirm', '确定')
         self._ok_btn.setToolTip('使用方框内的内容作为头像')
         # 这里仍然保留 default=True：当用户操作完成想"确认"时，
         # Enter 可以提交，是最常见的良性默认行为。

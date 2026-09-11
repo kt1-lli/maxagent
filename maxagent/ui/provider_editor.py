@@ -117,6 +117,7 @@ class ProviderEditorDialog(QtWidgets.QDialog):
         for builtin in BUILTIN_PROVIDERS:
             self.tpl_combo.addItem(builtin.get('name') or builtin['id'], builtin['id'])
         tpl_apply = QtWidgets.QPushButton(_btn_label('💾', '应用模板'))
+        set_btn_icon(tpl_apply, 'save', '应用模板')
         tpl_apply.setToolTip(
             '把模板的 url / params / headers / response 字段填入表单。'
             '\nid / name / api_key 不会被覆盖。',
@@ -253,6 +254,7 @@ class ProviderEditorDialog(QtWidgets.QDialog):
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
         ok_btn = QtWidgets.QPushButton(_btn_label('💾', '保存'))
+        set_btn_icon(ok_btn, 'save', '保存')
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self._on_ok)
         cancel_btn = QtWidgets.QPushButton('取消')

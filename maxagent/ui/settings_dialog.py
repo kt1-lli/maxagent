@@ -307,6 +307,7 @@ class SettingsDialog(
         btn_col = QtWidgets.QVBoxLayout()
         btn_col.setSpacing(4)
         self.web_provider_use_btn = QtWidgets.QPushButton(_btn_label('⭐', '设为默认'))
+        set_btn_icon(self.web_provider_use_btn, 'star', '设为默认')
         self.web_provider_use_btn.setToolTip(
             '把选中的 Provider 设为搜索默认（main UI 联网按钮也使用它）',
         )
@@ -316,6 +317,7 @@ class SettingsDialog(
         btn_col.addWidget(self.web_provider_use_btn)
 
         self.web_provider_edit_btn = QtWidgets.QPushButton(_btn_label('✏️', '编辑'))
+        set_btn_icon(self.web_provider_edit_btn, 'edit', '编辑')
         self.web_provider_edit_btn.clicked.connect(
             self._on_provider_edit_clicked,
         )
@@ -337,12 +339,15 @@ class SettingsDialog(
         btn_col.addWidget(self.web_provider_dup_btn)
 
         self.web_provider_del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        set_btn_icon(self.web_provider_del_btn, 'trash', '删除')
         self.web_provider_del_btn.clicked.connect(
             self._on_provider_del_clicked,
         )
         btn_col.addWidget(self.web_provider_del_btn)
 
         self.web_provider_test_btn = QtWidgets.QPushButton(_btn_label('🔌', '测试'))
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.web_provider_test_btn, 'plug', '测试')
         self.web_provider_test_btn.setToolTip(
             '用选中 Provider 发起一次 "{}" 搜索验证可用性'.format(
                 _current_dcc_name(),
@@ -508,6 +513,8 @@ class SettingsDialog(
             self.maya_dock_refresh_btn = QtWidgets.QPushButton(
                 _btn_label('🔄', '刷新列表'),
             )
+            # SVG 图标优先；失败时保留文本兜底
+            set_btn_icon(self.maya_dock_refresh_btn, 'refresh2', '刷新列表')
             self.maya_dock_refresh_btn.setToolTip(
                 '重新枚举当前 Maya 会话里可用的停靠目标。\n'
                 '新打开 Outliner / UV 编辑器等面板后点这里即可看到它们。',
@@ -611,6 +618,8 @@ class SettingsDialog(
         self.vision_whitelist_reset_btn = QtWidgets.QPushButton(
             _btn_label('🔄', '恢复默认'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.vision_whitelist_reset_btn, 'refresh2', '恢复默认')
         self.vision_whitelist_reset_btn.setToolTip(
             '清空当前编辑区，恢复为内置的默认视觉模型白名单。\n'
             '默认列表会随版本升级自动扩充新机型支持。',
@@ -692,6 +701,8 @@ class SettingsDialog(
         self.open_log_dir_btn = QtWidgets.QPushButton(
             _btn_label('📂', '打开日志目录'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.open_log_dir_btn, 'folder_open2', '打开日志目录')
         self.open_log_dir_btn.setToolTip(
             '在系统文件管理器中打开 maxagent 日志目录\n'
             '（包含 maxagent.log 主文件 + 滚动归档）',
@@ -855,6 +866,10 @@ class SettingsDialog(
         self.bridge_copy_cfg_btn = QtWidgets.QPushButton(
             _btn_label('📋', '复制 dcc-mcp / Cursor 配置示例'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(
+            self.bridge_copy_cfg_btn, 'clipboard', '复制 dcc-mcp / Cursor 配置示例',
+        )
         self.bridge_copy_cfg_btn.setToolTip(
             '把推荐的 IDE MCP 配置 JSON 复制到剪贴板，\n'
             '粘贴到 ~/.cursor/mcp.json 即可使用。',
@@ -916,12 +931,15 @@ class SettingsDialog(
         # 操作按钮
         btn_row = QtWidgets.QHBoxLayout()
         view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看详情'))
+        set_btn_icon(view_btn, 'eye', '查看详情')
         view_btn.clicked.connect(self._on_rules_view_detail)
         btn_row.addWidget(view_btn)
         toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        set_btn_icon(toggle_btn, 'refresh2', '启用/禁用')
         toggle_btn.clicked.connect(self._on_rules_toggle_enabled)
         btn_row.addWidget(toggle_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        set_btn_icon(del_btn, 'trash', '删除')
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_rules_delete)
         btn_row.addWidget(del_btn)
@@ -929,6 +947,7 @@ class SettingsDialog(
         # 注：规则的导入/导出已统一收敛到「我的资源 → 导入/导出」子 Tab，
         # 此处仅保留就地编辑能力。
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        set_btn_icon(refresh_btn, 'refresh2', '刷新')
         refresh_btn.clicked.connect(self._refresh_rules_list)
         btn_row.addWidget(refresh_btn)
         layout.addLayout(btn_row)
@@ -1287,6 +1306,8 @@ class SettingsDialog(
         self.shared_clone_btn = QtWidgets.QPushButton(
             _btn_label('📥', '克隆仓库'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.shared_clone_btn, 'import', '克隆仓库')
         self.shared_clone_btn.setToolTip('从远程 Git 仓库克隆共享资源到本地目录。')
         self.shared_clone_btn.clicked.connect(self._on_shared_clone)
         op_row.addWidget(self.shared_clone_btn)
@@ -1294,6 +1315,8 @@ class SettingsDialog(
         self.shared_open_dir_btn = QtWidgets.QPushButton(
             _btn_label('📂', '打开目录'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.shared_open_dir_btn, 'folder_open2', '打开目录')
         self.shared_open_dir_btn.clicked.connect(self._on_shared_open_dir)
         op_row.addWidget(self.shared_open_dir_btn)
 
@@ -1311,6 +1334,8 @@ class SettingsDialog(
         self.shared_refresh_btn = QtWidgets.QPushButton(
             _btn_label('🔄', '刷新统计'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self.shared_refresh_btn, 'refresh2', '刷新统计')
         self.shared_refresh_btn.clicked.connect(self._refresh_shared_page)
         op_row.addWidget(self.shared_refresh_btn)
         op_row.addStretch(1)
@@ -2376,6 +2401,7 @@ class SettingsDialog(
         try:
             self.show_key_btn.setChecked(False)
             self.show_key_btn.setText(_btn_label('👁', '显示'))
+            set_btn_icon(self.show_key_btn, 'eye', '显示')
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         finally:
             self.show_key_btn.blockSignals(False)
@@ -3678,10 +3704,12 @@ class SettingsDialog(
         if checked:
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Normal)
             self.show_key_btn.setText(_btn_label('🙈', '隐藏'))
+            set_btn_icon(self.show_key_btn, 'hide', '隐藏')
             logger.info('API Key 切换为明文显示')
         else:
             self.api_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
             self.show_key_btn.setText(_btn_label('👁', '显示'))
+            set_btn_icon(self.show_key_btn, 'eye', '显示')
             logger.info('API Key 切换为隐藏显示')
 
     def _apply(self):
@@ -4097,24 +4125,29 @@ class SettingsDialog(
         # 操作按钮（与「我的规则」「工具」子页布局对齐）
         btn_row = QtWidgets.QHBoxLayout()
         view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看详情'))
+        set_btn_icon(view_btn, 'eye', '查看详情')
         view_btn.clicked.connect(self._on_skill_view_detail)
         btn_row.addWidget(view_btn)
         toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        set_btn_icon(toggle_btn, 'refresh2', '启用/禁用')
         toggle_btn.setToolTip('切换当前选中技能的启用状态（与左侧勾选框等价）')
         toggle_btn.clicked.connect(self._on_skill_toggle_enabled)
         btn_row.addWidget(toggle_btn)
         status_btn = QtWidgets.QPushButton(_btn_label('🏷', '切换状态'))
+        set_btn_icon(status_btn, 'tag', '切换状态')
         # SVG 图标优先；加载失败时保留上面 btn_label 的文本兜底
         set_btn_icon(status_btn, 'tag', '切换状态')
         status_btn.setToolTip('切换技能生命周期：stable / beta / draft / deprecated')
         status_btn.clicked.connect(self._on_skill_cycle_status)
         btn_row.addWidget(status_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        set_btn_icon(del_btn, 'trash', '删除')
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_skill_delete)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        set_btn_icon(refresh_btn, 'refresh2', '刷新')
         refresh_btn.clicked.connect(self._refresh_skills_list)
         btn_row.addWidget(refresh_btn)
         layout.addLayout(btn_row)
@@ -4387,18 +4420,22 @@ class SettingsDialog(
 
         btn_row = QtWidgets.QHBoxLayout()
         view_btn = QtWidgets.QPushButton(_btn_label('👁', '查看源码'))
+        set_btn_icon(view_btn, 'eye', '查看源码')
         view_btn.clicked.connect(self._on_tool_view_source)
         btn_row.addWidget(view_btn)
         toggle_btn = QtWidgets.QPushButton(_btn_label('🔄', '启用/禁用'))
+        set_btn_icon(toggle_btn, 'refresh2', '启用/禁用')
         toggle_btn.setToolTip('切换当前选中工具的启用状态（与左侧勾选框等价）')
         toggle_btn.clicked.connect(self._on_tool_toggle_enabled)
         btn_row.addWidget(toggle_btn)
         del_btn = QtWidgets.QPushButton(_btn_label('🗑️', '删除'))
+        set_btn_icon(del_btn, 'trash', '删除')
         del_btn.setStyleSheet('color:#ff8888;')
         del_btn.clicked.connect(self._on_tool_delete)
         btn_row.addWidget(del_btn)
         btn_row.addStretch(1)
         refresh_btn = QtWidgets.QPushButton(_btn_label('🔄', '刷新'))
+        set_btn_icon(refresh_btn, 'refresh2', '刷新')
         refresh_btn.clicked.connect(self._refresh_tools_list)
         btn_row.addWidget(refresh_btn)
         layout.addLayout(btn_row)

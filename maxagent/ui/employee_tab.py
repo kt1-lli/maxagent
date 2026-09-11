@@ -45,6 +45,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import set_btn_icon
 from .emoji_compat import ee as _ee
 from ..dcc.runtime import current_dcc as _current_dcc
 from .employee import AVATAR_DISPLAY_SIZE
@@ -175,6 +176,8 @@ class EmployeeTab(QtWidgets.QWidget):
         self._upload_btn = QtWidgets.QPushButton(
             _btn_label('📷', '选择图片'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self._upload_btn, 'camera', '选择图片')
         self._upload_btn.setToolTip(
             '从本地选一张图片作为头像，会弹出裁剪对话框让你框出方形区域',
         )
@@ -184,6 +187,8 @@ class EmployeeTab(QtWidgets.QWidget):
         self._clear_img_btn = QtWidgets.QPushButton(
             _btn_label('🗑', '清除'),
         )
+        # SVG 图标优先；失败时保留文本兜底
+        set_btn_icon(self._clear_img_btn, 'trash', '清除')
         self._clear_img_btn.setToolTip(
             '清除当前已上传的头像图片，回到 emoji 头像',
         )
