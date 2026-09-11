@@ -72,12 +72,13 @@ _TARGET_TOOLS_SUBDIRS = {
 }
 
 # 各 target 包含的 DCC 专用 UI / 资源
+# ui/icons/ 为通用 SVG 图标资源（icon_loader 使用），所有 target 均保留
 _TARGET_DCC_DIRS = {
-    'max': {'dcc/max_adapter.py', 'ui/dock_widget.py'},
-    'maya': {'dcc/maya_adapter.py', 'ui/maya_startup.py'},
+    'max': {'dcc/max_adapter.py', 'ui/dock_widget.py', 'ui/icons/'},
+    'maya': {'dcc/maya_adapter.py', 'ui/maya_startup.py', 'ui/icons/'},
     'full': {
         'dcc/max_adapter.py', 'dcc/maya_adapter.py',
-        'ui/dock_widget.py', 'ui/maya_startup.py',
+        'ui/dock_widget.py', 'ui/maya_startup.py', 'ui/icons/',
     },
 }
 
@@ -171,6 +172,10 @@ def _copy_pkg_snapshot(dest_pkg_dir: Path, target: str) -> None:
         rel = str(f.relative_to(SOURCE_PKG_DIR).as_posix())
         # ui 下非目标 DCC 的 UI 文件过滤（仅保留 dock_widget / maya_startup）
         if rel.startswith('ui/') and rel not in allowed_dcc and rel != 'ui/__init__.py':
+            # 通用资源目录豁免：白名单里以 '/' 结尾的条目（如 ui/icons/）
+            # 按目录前缀匹配放行，三种 target 均保留
+            if any(rel.startswith(pfx) for pfx in allowed_dcc if pfx.endswith('/')):
+                continue
             # 保留通用 UI 文件，只剔除 DCC 专属的未在白名单里的
             if rel in ('ui/dock_widget.py', 'ui/maya_startup.py'):
                 # 已通过 allowed_dcc 判断，不必额外处理

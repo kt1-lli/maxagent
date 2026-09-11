@@ -41,6 +41,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import set_btn_icon
 from .emoji_compat import e as _e
 from .emoji_compat import ee as _ee
 from ._settings_help_mixin import _SettingsHelpMixin
@@ -518,6 +519,8 @@ class SettingsDialog(
             self.maya_dock_apply_btn = QtWidgets.QPushButton(
                 _btn_label('📌', '立即重新停靠'),
             )
+            # SVG 图标优先；加载失败时保留上面 btn_label 的文本兜底
+            set_btn_icon(self.maya_dock_apply_btn, 'pin', '立即重新停靠')
             self.maya_dock_apply_btn.setToolTip(
                 '按当前选择立刻把面板重新停靠一次（无需重启 Maya）。',
             )
@@ -1297,6 +1300,8 @@ class SettingsDialog(
         self.shared_pull_btn = QtWidgets.QPushButton(
             _btn_label('⬇️', '拉取最新'),
         )
+        # SVG 图标优先；加载失败时保留上面 btn_label 的文本兜底
+        set_btn_icon(self.shared_pull_btn, 'download', '拉取最新')
         self.shared_pull_btn.setToolTip(
             '先 fetch 检测更新，再安全拉取团队最新资产。'
         )
@@ -4099,6 +4104,8 @@ class SettingsDialog(
         toggle_btn.clicked.connect(self._on_skill_toggle_enabled)
         btn_row.addWidget(toggle_btn)
         status_btn = QtWidgets.QPushButton(_btn_label('🏷', '切换状态'))
+        # SVG 图标优先；加载失败时保留上面 btn_label 的文本兜底
+        set_btn_icon(status_btn, 'tag', '切换状态')
         status_btn.setToolTip('切换技能生命周期：stable / beta / draft / deprecated')
         status_btn.clicked.connect(self._on_skill_cycle_status)
         btn_row.addWidget(status_btn)
