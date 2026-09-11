@@ -49,6 +49,34 @@ from ..qt_compat import QtGui
 from ..qt_compat import IS_PYSIDE6
 from ..qt_compat import IS_PYSIDE2
 
+# 日志延迟导入：icon_loader 可能先于 logger 初始化被 import，
+# 不能在模块加载期触发日志系统初始化
+_logger = None  # type: Optional[object]
+
+
+def _get_logger():
+    # type: () -> object
+    """按需获取 maxagent.ui.icon_loader 的 logger（惰性单例）。"""
+    global _logger
+    if _logger is None:
+        try:
+            from ..logger import get_logger
+            _logger = get_logger(__name__)
+        except Exception:  # pylint: disable=broad-except
+            # 日志系统不可用时退化为空操作，绝不能影响图标加载主流程
+            class _NullLogger(object):
+                """静默空日志：吸收所有级别调用。"""
+
+                def _noop(self, *args, **kwargs):
+                    """吞掉任意日志调用参数。"""
+
+                debug = _noop
+                info = _noop
+                warning = _noop
+                error = _noop
+            _logger = _NullLogger()
+    return _logger
+
 
 # 图标资源目录：maxagent/ui/icons/
 # 用 __file__ 推导绝对路径，Max 启动 CWD 不定时依然可靠
@@ -91,16 +119,25 @@ def load_icon(name, color=None, size=16):
     if cache_key in _ICON_CACHE:
         return _ICON_CACHE[cache_key]
     if name in _MISSING_ICONS:
+        _get_logger().debug('icon [%s] 此前已失败，继续走文本兜底', name)
         return None
     path = os.path.join(_ICONS_DIR, name + '.svg')
     if not os.path.isfile(path):
+        _get_logger().warning(
+            'icon [%s] SVG 文件不存在: %s（走 emoji/文本兜底）', name, path,
+        )
         _MISSING_ICONS.add(name)
         return None
     icon = _render_svg_file(path, fill, size)
     if icon is None:
+        _get_logger().warning(
+            'icon [%s] SVG 渲染失败（QtSvg 模块缺失或 renderer 无效，走兜底）',
+            name,
+        )
         _MISSING_ICONS.add(name)
         return None
     _ICON_CACHE[cache_key] = icon
+    _get_logger().debug('icon [%s] SVG 加载成功 (fill=%s)', name, fill)
     return icon
 
 
@@ -122,12 +159,17 @@ def set_btn_icon(widget, name, text, color=None):
         return False
     icon = load_icon(name, color=color)
     if icon is None:
+        # 失败原因已由 load_icon 记录，这里保持按钮原样（文本兜底）
         return False
     try:
         widget.setIcon(icon)
         widget.setText(text)
+        _get_logger().debug('icon [%s] 已应用到按钮 "%s"', name, text)
         return True
-    except Exception:  # pylint: disable=broad-except
+    except Exception as exc:  # pylint: disable=broad-except
+        _get_logger().warning(
+            'icon [%s] setIcon/setText 失败 (%s)，保持文本兜底', name, exc,
+        )
         return False
 
 
@@ -146,6 +188,7 @@ def _render_svg_file(path, fill, size):
         elif IS_PYSIDE2:
             from PySide2.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
         else:
+            _get_logger().warning('无可用 Qt 绑定（IS_PYSIDE2/6 均为 False）')
             return None
 
         with open(path, 'r', encoding='utf-8') as f:
@@ -158,6 +201,7 @@ def _render_svg_file(path, fill, size):
 
         renderer = QSvgRenderer(QtCore.QByteArray(svg_text.encode('utf-8')))
         if not renderer.isValid():
+            _get_logger().warning('icon SVG 解析失败 (renderer invalid): %s', path)
             return None
 
         # 2x 尺寸渲染 + DevicePixelRatio，HiDPI 下依然清晰
@@ -170,11 +214,18 @@ def _render_svg_file(path, fill, size):
         finally:
             painter.end()
         if pixmap.isNull():
+            _get_logger().warning('icon SVG 渲染为空 pixmap: %s', path)
             return None
         pixmap.setDevicePixelRatio(scale)
         return QtGui.QIcon(pixmap)
-    except Exception:  # pylint: disable=broad-except
+    except ImportError as exc:
+        _get_logger().warning(
+            'QtSvg 模块不可用 (%s)，SVG 图标整体降级为文本兜底', exc,
+        )
+        return None
+    except Exception as exc:  # pylint: disable=broad-except
         # 图标是纯装饰，任何异常都不能影响 UI 构建
+        _get_logger().warning('icon SVG 渲染异常 (%s): %s', exc, path)
         return None
 
 
