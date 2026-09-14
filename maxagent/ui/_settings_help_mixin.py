@@ -229,18 +229,9 @@ class _SettingsHelpMixin(object):
             # ---- IDE 接口 / Bridge ----
         ]
 
-        # Bridge 仅 3ds Max 启用；Maya 侧显示占位说明
-        if dcc_name == 'Maya':
-            html_parts += [
-                '<h4>IDE 接口（Bridge）🔌</h4>'
-                '<p>IDE 接口（本地 TCP 端口 + dcc-mcp 联动）'
-                '<span class="warn">目前仅 3ds Max 侧提供</span>，'
-                'Maya 侧暂未开放。后续版本会补齐，'
-                '届时无需更新插件即可在设置中开启。</p>'
-                '<hr>'
-            ]
-        else:
-            html_parts += [
+        # Bridge 双端均已支持：Maya 侧启动链路同样按 bridge_* 配置启动，
+        # 与 3ds Max 共用同一份说明，仅 DCC 名称与脚本环境不同
+        html_parts += [
             '<h4>IDE 接口（Bridge）🔌</h4>'
             '<p>在 {dcc_name} 内开启一个本地 TCP 端口，让外部 IDE'
             '（Cursor / Claude Desktop / Cline 等）通过 '

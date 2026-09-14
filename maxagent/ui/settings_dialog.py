@@ -822,7 +822,8 @@ class SettingsDialog(
         self.bridge_enabled_chk = QtWidgets.QCheckBox('启用 IDE Bridge')
         self.bridge_enabled_chk.setToolTip(
             '勾选后立即开启本地 TCP 监听端口；取消勾选立即停止。\n'
-            '关闭时所有外部连接会被拒绝。',
+            '关闭时所有外部连接会被拒绝。\n'
+            '3ds Max 与 Maya 均支持：勾选后下次启动随宿主自动开启。',
         )
         self.bridge_enabled_chk.toggled.connect(
             self._on_bridge_enabled_toggled,

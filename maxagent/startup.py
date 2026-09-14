@@ -341,14 +341,22 @@ def show_panel(force=False):
     # 0. 配置门控：非 force 模式必须尊重 auto_show_on_startup
     #    这样无论调用方是 _auto_register、ms 启动器还是其他入口，
     #    只要不显式 force=True，关闭"自动显示"开关都能真正生效。
+    config = None
     if not force:
         try:
             cfg_mgr = ConfigManager()
+            config = cfg_mgr
             if not bool(cfg_mgr.config.auto_show_on_startup):
                 logger.info(
                     'auto_show_on_startup=False，本次启动跳过自动显示。'
                     '可执行 g_show_max_agent() 手动显示。',
                 )
+                # 面板显示被门控跳过，但 bridge 仍应按配置启动——
+                # bridge 与面板显示是两个独立能力，解耦处理
+                try:
+                    _maybe_start_bridge(cfg_mgr)
+                except Exception:  # pylint: disable=broad-except
+                    traceback.print_exc()
                 return None
         except Exception:  # pylint: disable=broad-except
             # 配置读不到不应阻塞显示，按默认开启处理

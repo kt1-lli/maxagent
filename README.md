@@ -32,7 +32,7 @@ MaxAgent 是运行在 3ds Max / Maya 内部的 AI Agent 插件。它通过 Funct
 - **助手形象**：给助手起名字、换头像，纯 UI 换皮，LLM 行为不变
 - **观察式学习**：录制用户手动操作并沉淀为 Skill 或规则
 - **团队共享资源目录**：把 Skill / 用户工具 / 规则 / 反思 / 知识源放到一个只读 Git 目录，团队其他成员重启 MaxAgent 即可自动挂载使用
-- **IDE Bridge**（仅 3ds Max）：HTTP 服务，可与外部 IDE Agent 联动
+- **IDE Bridge**：HTTP 服务，可与外部 IDE Agent 联动（3ds Max / Maya 双端支持，设置 → IDE 接口）
 - **主线程隔离**：工具在 DCC 主线程执行并自动 undo（Max 为 pymxs.undo，Maya 为每工具独立回滚），LLM 请求跑在子线程
 - **零外部依赖**：LLM 客户端、MCP、知识库均基于 Python stdlib
 
@@ -66,6 +66,17 @@ maxagent.reload_pkg()  # 开发态热重载
 ```
 
 MaxScript 全局函数：`g_show_max_agent()` / `g_toggle_max_agent()` / `g_reload_max_agent()`。
+
+**独立运行 / 测试时的 DCC 强制指定**
+
+在非 DCC 环境独立运行（`python -m maxagent.startup`）或跑测试时，自动探测可能拿不到宿主，可用环境变量强制指定：
+
+```bash
+set MAXAGENT_FORCE_DCC=3dsmax   # 或 maya
+python -m maxagent.startup
+```
+
+`maxagent/dcc/runtime.py` 的 `_detect_dcc()` 会优先读取该变量并锁定 `current_dcc()`，工具加载、领域知识、system prompt 均按指定宿主切换。
 
 **2. 打包**
 
@@ -126,7 +137,7 @@ Maya 侧同理：说"创建一个 polyCube，开 3 段细分"即可，助手会�
 | 脚本逃生舱 | `run_maxscript` + `run_python` | `run_mel` + `run_python` |
 | 领域速查 | `lookup_max_knowledge` | `lookup_maya_knowledge` |
 | Autodesk 官方文档 | `autodesk_max_docs`（官方 MCP） | `autodesk_maya_docs`（官方 MCP） |
-| IDE Bridge | 支持（设置 → IDE 接口） | 暂未提供 |
+| IDE Bridge | 支持（设置 → IDE 接口） | 支持（设置 → IDE 接口） |
 | 打包产物 | `.mzp` | `.zip` |
 
 两侧工具集分属 `maxagent/tools/max/` 与 `maxagent/tools/maya/`，共享层（LLM、知识库、Skills、记忆、UI）完全复用。详细差异表见 `docs/dual_dcc_diff.md`。

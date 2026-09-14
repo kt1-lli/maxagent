@@ -237,6 +237,7 @@ def _format_hits(hits, max_chars_per_hit=500):
 
 @tool(
     name='search_max_docs',
+    dcc=['3dsmax'],
     description=(
         '全文检索本地打包的 3ds Max Python Help 文档（BM25 引擎，离线）。\n'
         '何时调用（强烈推荐）：\n'

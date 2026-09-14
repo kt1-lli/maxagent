@@ -103,6 +103,8 @@ def _default_approval(proposal):
     wrap_undo=False,
     # 必须主线程：弹窗、registry 操作都需要
     run_on_main_thread=True,
+    # Max 专属：描述里的反射 API / search_max_docs / pymxs 约定均为 Max 侧
+    dcc=['3dsmax'],
     examples=[{"summary": "典型调用", "args": {"name": 'Box01', "description": 'value', "code": 'print("hello")', "rationale": ''}}],
 notes=['调用前请确认 name 对应的对象已存在于场景中。', '调用失败时应先检查对象/文件是否存在。'],
 returns_desc="dict {\"ok\": True, ...}"

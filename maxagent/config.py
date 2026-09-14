@@ -532,8 +532,12 @@ class AppConfig:
     wrap_undo: bool = True
     # 自动注入的场景上下文最大长度（字符）
     max_context_chars: int = 4000
-    # 启动 Max 时是否自动显示 MaxAgent 面板。False 时用户需手动调用
-    # ``maxagent.startup.show_panel()`` 或 MaxScript ``g_show_max_agent()``
+    # 启动 DCC（3ds Max / Maya）时是否自动显示 MaxAgent 面板。False 时
+    # Max 侧需手动调用 ``maxagent.startup.show_panel()`` 或 MAXScript
+    # ``g_show_max_agent()``；Maya 侧需手动调用
+    # ``maxagent.ui.maya_startup.g_show_max_agent()``。
+    # 注意：该开关只控制面板显示，bridge 是否自启由 bridge_enabled 决定，
+    # 两者互相独立。
     auto_show_on_startup: bool = True
     # 日志级别。三态：``OFF`` / ``INFO`` / ``DEBUG``。
     #   OFF   - 完全关闭日志（不写文件、不输出控制台）

@@ -36,6 +36,17 @@ def onMayaDroppedPythonFile(*args, **kwargs):
     return 'MaxAgent for Maya 已启动'
 
 
+def g_show_max_agent():
+    # type: () -> object
+    """手动显示 MaxAgent 面板（Maya 侧，绕过 auto_show 门控）。
+
+    与 3ds Max 侧 MAXScript 同名函数对齐：用户关闭"启动时自动显示"
+    后，可在 Maya 脚本编辑器里执行本函数手动唤出面板。
+    """
+    from maxagent.ui.dock_widget import get_or_create_dock
+    return get_or_create_dock(force=True)
+
+
 def _ensure_maxagent_on_path():
     # type: () -> None
     """确保 maxagent 包能被 import。
@@ -128,6 +139,7 @@ def _startup():
     # type: () -> None
     """导入并启动 MaxAgent UI。"""
     import maya.cmds as cmds  # type: ignore  # pylint: disable=import-error,import-outside-toplevel
+    from maxagent.config import ConfigManager  # pylint: disable=import-outside-toplevel
     from maxagent.dcc.runtime import current_dcc  # pylint: disable=import-outside-toplevel
     from maxagent.dcc.runtime import ensure_current_dcc  # pylint: disable=import-outside-toplevel
     from maxagent.tools import load_all_tools  # pylint: disable=import-outside-toplevel
@@ -142,7 +154,74 @@ def _startup():
     setup_logging()
 
     load_all_tools()
+    # 与 3ds Max 侧 show_panel 的门控对齐：auto_show_on_startup=False
+    # 时本次不自动弹出面板，用户可通过 g_show_max_agent() 手动显示。
+    # get_or_create_dock 内部已有同样的门控逻辑，force=False 即可复用。
     get_or_create_dock()
+    # 按配置启动 IDE bridge（默认关闭；用户在设置面板手动开启）。
+    # 与面板显示解耦：面板被门控跳过时 bridge 也应照常可用。
+    try:
+        _maybe_start_bridge(ConfigManager())
+    except Exception:  # pylint: disable=broad-except
+        import traceback  # pylint: disable=import-outside-toplevel
+        traceback.print_exc()
+
+
+def _maybe_start_bridge(config_manager):
+    # type: (ConfigManager) -> None
+    """根据 AppConfig.bridge_enabled 决定是否启动桥接服务。
+
+    与 maxagent/startup.py 中同名函数行为对齐：读同一组 bridge_* 配置，
+    启停同一全局实例；失败仅打印日志，不阻塞启动。
+    """
+    cfg = config_manager.config
+    if not bool(getattr(cfg, 'bridge_enabled', False)):
+        return
+    try:
+        from maxagent.logger import get_logger
+        logger = get_logger('maxagent.ui.maya_startup.bridge')
+    except Exception:  # pylint: disable=broad-except
+        logger = None
+    try:
+        from maxagent.bridge import start_global_server
+    except Exception as exc:  # pylint: disable=broad-except
+        if logger is not None:
+            logger.warning('import bridge module failed: %s', exc)
+        return
+    if logger is not None:
+        logger.info(
+            'auto-starting bridge from maya startup: %s:%d (dispatch=%s)',
+            getattr(cfg, 'bridge_host', '127.0.0.1'),
+            int(getattr(cfg, 'bridge_port', 7003) or 7003),
+            'on' if getattr(cfg, 'bridge_dispatch_enabled', True) else 'off',
+        )
+    try:
+        start_global_server(
+            host=getattr(cfg, 'bridge_host', '127.0.0.1'),
+            port=int(getattr(cfg, 'bridge_port', 7003) or 7003),
+            token=str(getattr(cfg, 'bridge_token', '') or ''),
+            config_manager=config_manager,
+            dispatch_enabled=bool(
+                getattr(cfg, 'bridge_dispatch_enabled', True),
+            ),
+            dispatch_max_rounds=int(
+                getattr(cfg, 'bridge_dispatch_max_rounds', 20) or 20,
+            ),
+            dispatch_timeout_sec=int(
+                getattr(cfg, 'bridge_dispatch_timeout_sec', 300) or 300,
+            ),
+        )
+    except OSError as exc:
+        # 端口冲突等：仅打日志，不弹框打断启动
+        if logger is not None:
+            logger.warning(
+                'bridge auto-start failed (port busy?): %s', exc,
+            )
+        print('[MaxAgent] bridge 启动失败（端口冲突？）: {}'.format(exc))
+    except Exception as exc:  # pylint: disable=broad-except
+        if logger is not None:
+            logger.exception('bridge auto-start failed: %s', exc)
+        print('[MaxAgent] bridge 启动失败: {}'.format(exc))
 
 
 # 如果直接 exec/script 执行本文件（非拖拽），也尝试启动

@@ -287,6 +287,8 @@ def validate_maxscript_syntax(code):
 
     return True, None
 
-# 保持旧测试兼容：此前部分测试直接 import CODING_RULES 常量。
-# 默认导出 3ds Max 规则（与重构前内容等价）。
+# 兼容旧测试的遗留导出：此前部分测试直接 import CODING_RULES 常量。
+# 注意：这是 3ds Max 规则的静态快照，新代码请改用
+# ``get_coding_rules(current_dcc())`` 按 DCC 取规则，
+# 不要直接引用本常量（Maya 侧规则与它不同）。
 CODING_RULES = get_coding_rules('3dsmax')
