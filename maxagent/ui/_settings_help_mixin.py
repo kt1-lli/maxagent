@@ -17,6 +17,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from ..qt_compat import QtWidgets
+from ..config import get_config_dir
 from .icon_loader import make_page_title as _make_title
 
 
@@ -65,8 +66,7 @@ class _SettingsHelpMixin(object):
         layout.addWidget(text, 1)
         return page
 
-    @staticmethod
-    def _help_html():
+    def _help_html(self):
         # 颜色规范（与界面整体暗色主题对齐，确保 ≥ AA 级对比度）：
         #   正文       #e8e8e8（浅灰，对比 #1e1e1e ≈ 12:1）
         #   小标题     #ffd166（暖黄，吸引眼球）
@@ -79,6 +79,11 @@ class _SettingsHelpMixin(object):
             '创建 5 个多边形立方体沿 X 排列'
             if dcc_name == 'Maya' else '创建 5 个 Box 沿 X 排列'
         )
+        # 用户配置目录：帮助文本里的路径提示展示真实位置
+        try:
+            config_dir = get_config_dir()
+        except Exception:  # pylint: disable=broad-except
+            config_dir = '%USERPROFILE%\\Documents\\3dsMax\\maxagent'
         return (
             '<style>'
             'body { color:#e8e8e8; }'
@@ -306,6 +311,34 @@ class _SettingsHelpMixin(object):
 
             '<hr>'
 
+            # ---- 助手形象 ----
+            '<h4>👤 助手形象</h4>'
+            '<p>给 MaxAgent 这个"岗位"选一位"上任的员工"——'
+            '<b>起名字 + 换头像</b>。这位助手担任 MaxAgent 岗位，'
+            '职责是协助你操作 {dcc_name}。</p>'
+
+            '<p><b>纯 UI 换皮</b>：名字与头像只影响对话气泡的显示效果，'
+            'LLM 对此<b>一无所知</b>——岗位职责、身份铁律、工具行为'
+            '完全不变。</p>'
+
+            '<p><b>头像两种模式</b>：'
+            '<br>· <b>Emoji</b>：固定为默认形象，'
+            '<span class="tip">内置 SVG 图标渲染，不依赖系统字体，'
+            '任何 Max 环境下显示一致</span>'
+            '<br>· <b>图片</b>：点击「选择图片」挑一张喜欢的头像，'
+            '自动缩放为 64×64 PNG 保存在 <code>{config_dir}/avatar.png</code>；'
+            '「清除」可移除自定义图片</p>'
+
+            '<p><b>实时预览</b>：修改名字或头像后，预览区即时显示'
+            '气泡头部效果。点「恢复默认」回到出厂名字与默认形象；'
+            '<span class="warn">保存后下一条新消息开始生效</span>，'
+            '已有气泡不受影响。</p>'
+
+            '<p class="warn"><b>⚠ 注意</b>：图片头像以 base64 内嵌渲染，'
+            '文件丢失或读取失败时自动回落默认形象，无需手动处理。</p>'
+
+            '<hr>'
+
             # ---- 我的资源：规则 / 技能 / 工具 / 导入导出 ----
             '<h4>我的资源 📦</h4>'
             '<p>这一个 Tab 集中管理你为 AI 准备的 <b>规则 / 技能 / 工具</b>，'
@@ -386,6 +419,8 @@ class _SettingsHelpMixin(object):
             '{dcc_mcp_name}', dcc_mcp_name
         ).replace(
             '{example_action}', example_action
+        ).replace(
+            '{config_dir}', config_dir
         )
 
     def _jump_to_help_tab(self):
