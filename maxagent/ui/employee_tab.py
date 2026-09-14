@@ -45,6 +45,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import emoji_pixmap
 from .icon_loader import set_btn_icon
 from .emoji_compat import ee as _ee
 from .icon_loader import make_page_title as _make_title
@@ -147,9 +148,22 @@ class EmployeeTab(QtWidgets.QWidget):
         emoji_row.addWidget(self._emoji_edit)
 
         # 快选 emoji 按钮组
+        # 注意：QPushButton 直接放 emoji 字符在 Max 的 Windows 环境
+        # 整排显示空白（默认字体链渲染不了彩色 emoji），因此这里用
+        # icon_loader.emoji_pixmap 走 QTextDocument 富文本管线（与
+        # 气泡头像同一条链）离屏渲染成图标；渲染失败再回落文字。
         emoji_row.addWidget(QtWidgets.QLabel('快选:'))
         for ch in SUGGESTED_EMOJIS:
-            btn = QtWidgets.QPushButton(_ee(ch))
+            btn = QtWidgets.QPushButton()
+            pixmap = emoji_pixmap(ch, 18)
+            if pixmap is not None:
+                btn.setIcon(QtGui.QIcon(pixmap))
+                btn.setIconSize(pixmap.size() / max(
+                    pixmap.devicePixelRatio(), 1.0,
+                ))
+            else:
+                # 兜底：离屏渲染失败时显示 BMP 兜底字符
+                btn.setText(_ee(ch))
             btn.setFixedSize(28, 28)
             btn.setToolTip(ch)
             btn.clicked.connect(

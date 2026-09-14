@@ -286,6 +286,92 @@ def rich_icon(name, color=None, size=13):
         return ''
 
 
+# emoji 离屏渲染缓存：键为 (字符, 尺寸)，值为 QPixmap
+_EMOJI_PIX_CACHE = {}  # type: dict
+
+
+def emoji_pixmap(emoji_char, size=18):
+    # type: (str, int) -> Optional[object]
+    """把 emoji 字符离屏渲染为透明底 QPixmap。
+
+    QPushButton 的默认字体链在 Max/Maya 的 Windows 环境下渲染不出
+    彩色 emoji（快选按钮整排空白），而气泡里的 emoji 显示正常——
+    那条路走的是 QTextDocument 富文本管线。这里用同样的管线把
+    emoji 离屏渲染成 QPixmap 交给 setIcon，所见即所得。
+
+    渲染结果若完全透明（当前字体缺该字形，典型表现为按钮空白），
+    返回 None 让调用方回落文字兜底。
+
+    :param emoji_char: 单个 emoji 字符
+    :param size: 逻辑尺寸（px）
+    :returns: QPixmap；失败或空白渲染返回 None
+    """
+    from ..qt_compat import QtCore
+    cache_key = (emoji_char, size)
+    if cache_key in _EMOJI_PIX_CACHE:
+        return _EMOJI_PIX_CACHE[cache_key]
+    try:
+        scale = 2.0
+        font = QtGui.QFont()
+        font.setPixelSize(int(size * scale))
+        # 复用 emoji_compat 的字体回退族链（含 Segoe UI Emoji 等
+        # 彩色 emoji 字体），与气泡头像渲染效果同源
+        try:
+            from .emoji_compat import _DEFAULT_FAMILIES
+            font.setFamilies(list(_DEFAULT_FAMILIES))
+        except Exception:  # pylint: disable=broad-except
+            # 老 Qt 没有 setFamilies 时保持默认字体链
+            pass
+        doc = QtGui.QTextDocument()
+        doc.setDefaultFont(font)
+        # emoji 字符不含 HTML 特殊字符，直接内嵌
+        doc.setHtml(emoji_char)
+        doc.setTextWidth(-1)
+        doc_size = doc.documentLayout().documentSize()
+        width = int(doc_size.width())
+        height = int(doc_size.height())
+        if width <= 0 or height <= 0:
+            return None
+        pixmap = QtGui.QPixmap(width, height)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        try:
+            # 文档内容居中绘制，避免不同字体基线偏差裁掉字形
+            painter.translate(
+                (width - doc_size.width()) / 2.0,
+                (height - doc_size.height()) / 2.0,
+            )
+            doc.drawContents(painter)
+        finally:
+            painter.end()
+        if pixmap.isNull():
+            return None
+        # 空白渲染检测：字体缺字形时整个位图全透明，判失败让
+        # 按钮回落文字兜底，而不是显示一个空白按钮
+        image = pixmap.toImage()
+        has_ink = False
+        for y in range(0, image.height(), 2):
+            for x in range(0, image.width(), 2):
+                if QtGui.QColor(image.pixel(x, y)).alpha() > 0:
+                    has_ink = True
+                    break
+            if has_ink:
+                break
+        if not has_ink:
+            _get_logger().debug(
+                'emoji_pixmap [%s] 渲染全透明（字体缺字形），判失败',
+                emoji_char,
+            )
+            return None
+        pixmap.setDevicePixelRatio(scale)
+        _EMOJI_PIX_CACHE[cache_key] = pixmap
+        return pixmap
+    except Exception as exc:  # pylint: disable=broad-except
+        # 图标是纯装饰，任何异常都不能影响 UI 构建
+        _get_logger().debug('emoji_pixmap [%s] 渲染异常 (%s)', emoji_char, exc)
+        return None
+
+
 def set_btn_icon(widget, name, text, color=None):
     # type: (object, str, str, Optional[str]) -> bool
     """给按钮设置 SVG 图标并把标签改为纯文本。
@@ -502,6 +588,7 @@ def _render_svg_file(path, fill, size):
 __all__ = [
     'DEFAULT_ICON_COLOR',
     'clear_cache',
+    'emoji_pixmap',
     'icon_pixmap',
     'icons_dir',
     'load_icon',
