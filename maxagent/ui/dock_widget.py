@@ -875,6 +875,8 @@ class MaxAgentDockWidget(
         # === 底部状态栏 ===
         self.status_label = QtWidgets.QLabel(_rich_icon('success', color='#8fce8f') + ' 准备就绪')
         self.status_label.setStyleSheet('color:#888;')
+        # 显式声明富文本：样式表 + AutoText 下 <img> 渲染不可靠
+        self.status_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         outer.addWidget(self.status_label)
 
         # 欢迎语 / 历史回放由 _bootstrap_session() 在 __init__ 末尾负责

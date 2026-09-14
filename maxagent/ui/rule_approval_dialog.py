@@ -208,7 +208,8 @@ class RuleApprovalDialog(QtWidgets.QDialog):
 
         # 底部按钮
         btn_row = QtWidgets.QHBoxLayout()
-        reset_btn = QtWidgets.QPushButton('↺ 重置')
+        reset_btn = QtWidgets.QPushButton('重置')
+        set_btn_icon(reset_btn, 'refresh', '重置')
         reset_btn.setToolTip('恢复到 AI 最初提交的内容')
         reset_btn.clicked.connect(self._on_reset)
         btn_row.addWidget(reset_btn)

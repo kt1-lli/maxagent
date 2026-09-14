@@ -31,6 +31,7 @@ from ..config import (
     ModelEntry,
     Provider,
 )
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 
 
@@ -98,7 +99,8 @@ class SettingsModelTabV2Mixin(object):
         self.add_provider_btn.clicked.connect(self._add_provider_blank_v2)
         left_btns.addWidget(self.add_provider_btn)
 
-        self.del_provider_btn = QtWidgets.QPushButton('✕ 删除')
+        self.del_provider_btn = QtWidgets.QPushButton('删除')
+        set_btn_icon(self.del_provider_btn, 'close', '删除')
         _btn_no_default(self.del_provider_btn)
         self.del_provider_btn.clicked.connect(self._del_provider_v2)
         left_btns.addWidget(self.del_provider_btn)
@@ -158,7 +160,7 @@ class SettingsModelTabV2Mixin(object):
             '本地模型可留空',
         )
         key_row.addWidget(self.provider_api_key_edit, 1)
-        self.show_key_btn = QtWidgets.QPushButton('👁 显示')
+        self.show_key_btn = QtWidgets.QPushButton('显示')
         self.show_key_btn.setCheckable(True)
         _btn_no_default(self.show_key_btn)
         # SVG 图标优先；失败时保留上面纯文本兜底
@@ -186,6 +188,8 @@ class SettingsModelTabV2Mixin(object):
         # 测试连接结果
         self.test_label = QtWidgets.QLabel('')
         self.test_label.setStyleSheet('color:#888;')
+        # 显式声明富文本：样式表 + AutoText 下 <img> 渲染不可靠
+        self.test_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.test_label.setWordWrap(True)
         self.test_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
@@ -212,17 +216,20 @@ class SettingsModelTabV2Mixin(object):
         model_v.addWidget(self.model_list, 1)
 
         model_btns = QtWidgets.QHBoxLayout()
-        self.add_model_btn = QtWidgets.QPushButton('+ 添加模型')
+        self.add_model_btn = QtWidgets.QPushButton('添加模型')
+        set_btn_icon(self.add_model_btn, 'confirm', '添加模型')
         _btn_no_default(self.add_model_btn)
         self.add_model_btn.clicked.connect(self._add_model_v2)
         model_btns.addWidget(self.add_model_btn)
 
-        self.del_model_btn = QtWidgets.QPushButton('✕ 删除')
+        self.del_model_btn = QtWidgets.QPushButton('删除')
+        set_btn_icon(self.del_model_btn, 'close', '删除')
         _btn_no_default(self.del_model_btn)
         self.del_model_btn.clicked.connect(self._del_model_v2)
         model_btns.addWidget(self.del_model_btn)
 
-        self.set_default_model_btn = QtWidgets.QPushButton('★ 设为默认')
+        self.set_default_model_btn = QtWidgets.QPushButton('设为默认')
+        set_btn_icon(self.set_default_model_btn, 'star', '设为默认')
         _btn_no_default(self.set_default_model_btn)
         self.set_default_model_btn.setToolTip(
             '把选中的模型设为该运营商的激活模型',
@@ -232,7 +239,8 @@ class SettingsModelTabV2Mixin(object):
         )
         model_btns.addWidget(self.set_default_model_btn)
 
-        self.fetch_models_btn = QtWidgets.QPushButton('↻ 从 API 拉取')
+        self.fetch_models_btn = QtWidgets.QPushButton('从 API 拉取')
+        set_btn_icon(self.fetch_models_btn, 'refresh2', '从 API 拉取')
         _btn_no_default(self.fetch_models_btn)
         self.fetch_models_btn.setToolTip(
             '从当前 Base URL 拉取模型清单，勾选后批量加入',
@@ -341,19 +349,22 @@ class SettingsModelTabV2Mixin(object):
         op_row.setSpacing(6)
         op_row.addStretch(1)
 
-        self.test_btn = QtWidgets.QPushButton('🔌 测试连接')
+        self.test_btn = QtWidgets.QPushButton('测试连接')
+        set_btn_icon(self.test_btn, 'plug', '测试连接')
         _btn_no_default(self.test_btn)
         self.test_btn.setToolTip('发一次最简 ping，验证 Base URL + Key 可达')
         self.test_btn.clicked.connect(self._test_connection_v2)
         op_row.addWidget(self.test_btn)
 
-        self.test_full_btn = QtWidgets.QPushButton('✅ 完整测试')
+        self.test_full_btn = QtWidgets.QPushButton('完整测试')
+        set_btn_icon(self.test_full_btn, 'success', '完整测试', color='#8fce8f')
         _btn_no_default(self.test_full_btn)
         self.test_full_btn.setToolTip('携带流式 + tools schema 的完整请求')
         self.test_full_btn.clicked.connect(self._test_connection_full_v2)
         op_row.addWidget(self.test_full_btn)
 
-        self.apply_btn = QtWidgets.QPushButton('💾 应用')
+        self.apply_btn = QtWidgets.QPushButton('应用')
+        set_btn_icon(self.apply_btn, 'save', '应用')
         self.apply_btn.setAutoDefault(True)
         self.apply_btn.setDefault(True)
         self.apply_btn.setToolTip('保存当前运营商修改')
@@ -738,7 +749,7 @@ class SettingsModelTabV2Mixin(object):
             if self.provider_list.item(i).data(QtCore.Qt.UserRole) == p.id:
                 self.provider_list.setCurrentRow(i)
                 break
-        self.test_label.setText('✅ 已保存')
+        self.test_label.setText(_rich_icon('success', color='#8fce8f') + ' 已保存')
         self.test_label.setStyleSheet('color:#4a9;')
 
     # ------------------------------------------------------------------ #
@@ -862,7 +873,8 @@ class SettingsModelTabV2Mixin(object):
         finally:
             if btn is not None:
                 btn.setEnabled(True)
-                btn.setText('↻ 拉取')
+                btn.setText('拉取')
+                set_btn_icon(btn, 'refresh2', '拉取')
 
         # 有缓存兜底时即使出错也继续展示缓存内容，不阻断用户
         if err and not models:
@@ -934,7 +946,7 @@ class SettingsModelTabV2Mixin(object):
             self._config.set_active_model_ref(p.id, p.models[0].id)
         self._config.save()
         self._reload_models_for_provider_v2(p)
-        self.test_label.setText('✅ 已加入 {} 个模型'.format(added))
+        self.test_label.setText(_rich_icon('success', color='#8fce8f') + ' 已加入 {} 个模型'.format(added))
         self.test_label.setStyleSheet('color:#4a9;')
 
     # ------------------------------------------------------------------ #
@@ -963,7 +975,9 @@ class SettingsModelTabV2Mixin(object):
             QtWidgets.QLineEdit.Normal if checked
             else QtWidgets.QLineEdit.Password,
         )
-        self.show_key_btn.setText('👁 隐藏' if checked else '👁 显示')
+        self.show_key_btn.setText('隐藏' if checked else '显示')
+        set_btn_icon(self.show_key_btn, 'hide' if checked else 'eye',
+                     '隐藏' if checked else '显示')
 
     def _on_share_to_provider_v2(self):
         p = self._current_provider_v2()
@@ -987,7 +1001,7 @@ class SettingsModelTabV2Mixin(object):
             m.overrides = {}
         self._config.save()
         self.test_label.setText(
-            '✅ 已把默认参数应用到 {} 个模型'.format(len(p.models)),
+            '已把默认参数应用到 {} 个模型'.format(len(p.models)),
         )
         self.test_label.setStyleSheet('color:#4a9;')
 
@@ -997,12 +1011,12 @@ class SettingsModelTabV2Mixin(object):
         try:
             self._test_connection()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 测试失败: {}'.format(exc))
+            self.test_label.setText(_rich_icon('fail', color='#e57373') + ' 测试失败: {}'.format(exc))
             self.test_label.setStyleSheet('color:#c33;')
 
     def _test_connection_full_v2(self):
         try:
             self._test_connection_full()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('❌ 完整测试失败: {}'.format(exc))
+            self.test_label.setText(_rich_icon('fail', color='#e57373') + ' 完整测试失败: {}'.format(exc))
             self.test_label.setStyleSheet('color:#c33;')

@@ -19,7 +19,7 @@ from __future__ import print_function
 from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
-from .icon_loader import rich_icon as _rich_icon
+from .icon_loader import make_page_title as _make_title
 from .icon_loader import set_btn_icon
 
 
@@ -35,7 +35,7 @@ class _SettingsPackMixin(object):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_rich_icon('box') + '  工具与技能')
+        title = _make_title('box', '工具与技能')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 

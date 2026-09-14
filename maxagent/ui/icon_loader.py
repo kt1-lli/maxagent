@@ -44,6 +44,7 @@ from __future__ import print_function
 
 import os
 import re
+import uuid
 from typing import Optional
 from typing import Tuple
 
@@ -84,8 +85,25 @@ def _get_logger():
 # 用 __file__ 推导绝对路径，Max 启动 CWD 不定时依然可靠
 _ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons')
 
-# 默认图标颜色：中性灰，Max 明暗主题下均有足够对比度
-DEFAULT_ICON_COLOR = '#808080'
+# 默认图标颜色：深色 UI 下的浅灰，保证在 Max/Maya 深色主题上可见
+DEFAULT_ICON_COLOR = '#e0e0e0'
+
+# 页面标题图标渲染失败时的 BMP 兜底字符（不依赖富文本）
+_TITLE_FALLBACK_GLYPHS = {
+    'robot': '?',
+    'globe': '@',
+    'palette': '*',
+    'person': '@',
+    'box': '#',
+    'toolbox': '#',
+    'plug': '=',
+    'journal-text': '=',
+    'question-circle': '?',
+    'tag': '#',
+    'star': '*',
+    'tool': '#',
+    'export': '>',
+}
 
 # 渲染成功的缓存：键为 (图标名, 颜色)，值为 QIcon
 _ICON_CACHE = {}  # type: dict
@@ -143,6 +161,69 @@ def load_icon(name, color=None, size=16):
     return icon
 
 
+def icon_pixmap(name, color=None, size=16):
+    # type: (str, Optional[str], int) -> Optional[object]
+    """按名称渲染 SVG 图标，返回 QPixmap（供 QLabel/paint 场景使用）。
+
+    :param name: 图标名，对应 ``icons/<name>.svg``
+    :param color: 图标颜色；不传用 :data:`DEFAULT_ICON_COLOR`
+    :param size: 逻辑尺寸（px），实际按 2x 渲染保证 HiDPI 清晰
+    :returns: QPixmap；失败返回 None
+    """
+    fill = color or DEFAULT_ICON_COLOR
+    cache_key = ('pixmap', name, fill, size)  # type: Tuple[str, str, str, int]
+    if cache_key in _ICON_CACHE:
+        return _ICON_CACHE[cache_key]
+    path = os.path.join(_ICONS_DIR, name + '.svg')
+    if not os.path.isfile(path):
+        _MISSING_ICONS.add(name)
+        return None
+    pixmap = _render_pixmap(path, fill, size)
+    if pixmap is None:
+        _MISSING_ICONS.add(name)
+        return None
+    _ICON_CACHE[cache_key] = pixmap
+    return pixmap
+
+
+def make_page_title(name, text, color=None, size=18):
+    # type: (str, str, Optional[str], int) -> object
+    """构建「图标 + 标题文字」的组合控件，用于页面大标题。
+
+    挂了样式表的 QLabel 会禁用富文本渲染，``<img>`` 直接不显示
+    （badcase：帮助页标题只剩"使用帮助"或整体空白），因此标题类
+    场景不走 ``rich_icon`` HTML 路线，改用 QPixmap + QLabel 组合，
+    任何 Qt 环境下行为一致。
+
+    :param name: 图标名
+    :param text: 标题文本
+    :param color: 图标颜色；不传用页面标题色 #4fc3f7
+    :param size: 图标逻辑尺寸（px）
+    :returns: 装好图和文字的 QWidget
+    """
+    from ..qt_compat import QtCore, QtWidgets
+    wrap = QtWidgets.QWidget()
+    row = QtWidgets.QHBoxLayout(wrap)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(7)
+    pixmap = icon_pixmap(name, color or '#4fc3f7', size)
+    icon_label = QtWidgets.QLabel()
+    if pixmap is not None:
+        icon_label.setPixmap(pixmap)
+        icon_label.setFixedSize(size + 4, size + 4)
+        icon_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    else:
+        # 兜底：图标渲染失败时显示 BMP 字符（不依赖富文本）
+        icon_label.setText(_TITLE_FALLBACK_GLYPHS.get(name, ''))
+    icon_label.setStyleSheet('font-size:14px;')
+    row.addWidget(icon_label)
+    text_label = QtWidgets.QLabel(text)
+    text_label.setStyleSheet('font-size:16px; font-weight:bold;')
+    row.addWidget(text_label)
+    row.addStretch(1)
+    return wrap
+
+
 # 富文本内嵌图标的 PNG 缓存：键为 (图标名, 颜色, 尺寸)，值为文件路径
 _RICH_PNG_CACHE = {}  # type: dict
 
@@ -189,7 +270,6 @@ def rich_icon(name, color=None, size=13):
         pixmap = _render_pixmap(path, fill, size)
         if pixmap is None:
             return ''
-        import uuid
         png_path = os.path.join(
             _rich_png_dir(),
             '{}_{}_{}.png'.format(name, fill.strip('#'), uuid.uuid4().hex[:8]),
@@ -279,6 +359,62 @@ def _apply_fill(svg_text, fill):
     )
 
 
+def _render_pixmap_via_reader(path, fill, size):
+    # type: (str, str, int) -> Optional[object]
+    """QtSvg 模块缺失时的兜底渲染：QImageReader + 源染色。
+
+    Qt 内置 qsvg 插件（用户探针实测可用）走 QImageReader 也能把
+    SVG 光栅化为 QImage，只是没有 QSvgRenderer 灵活。颜色处理：
+    先把 SVG 源文本按 _apply_fill 染色，写入临时 svgz 文件后再读，
+    保证颜色与主链路一致。
+
+    :param path: SVG 文件绝对路径
+    :param fill: 目标颜色
+    :param size: 逻辑尺寸（px）
+    :returns: QPixmap；失败返回 None
+    """
+    from ..qt_compat import QtCore
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            svg_text = _apply_fill(f.read(), fill)
+    except OSError as exc:
+        _get_logger().warning('icon SVG 读取失败 (%s): %s', exc, path)
+        return None
+
+    # QImageReader 需要文件路径（内存格式 svgz 依赖压缩头），
+    # 染色后的内容写到临时文件再读
+    tmp = os.path.join(
+        _rich_png_dir(), 'reader_tmp_{}.svg'.format(uuid.uuid4().hex[:8]),
+    )
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(svg_text)
+        reader = QtGui.QImageReader(tmp)
+        reader.setDecideFormatFromContent(True)
+        # 目标尺寸按 2x 设定，HiDPI 下依然清晰
+        scale = 2.0
+        reader.setSize(QtGui.QSize(int(size * scale), int(size * scale)))
+        image = reader.read()
+    except Exception as exc:  # pylint: disable=broad-except
+        _get_logger().warning('icon QImageReader 渲染异常 (%s): %s', exc, path)
+        return None
+    finally:
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+    if image is None or image.isNull():
+        _get_logger().warning('icon QImageReader 渲染为空: %s', path)
+        return None
+    pixmap = QtGui.QPixmap.fromImage(image)
+    if pixmap.isNull():
+        return None
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 def _render_pixmap(path, fill, size):
     # type: (str, str, int) -> Optional[object]
     """把 SVG 文件渲染为指定逻辑尺寸的透明底 QPixmap（2x 抗模糊）。
@@ -289,16 +425,31 @@ def _render_pixmap(path, fill, size):
     :returns: QPixmap；失败返回 None
     """
     from ..qt_compat import QtCore
-    if IS_PYSIDE6:
-        from PySide6.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
-    elif IS_PYSIDE2:
-        from PySide2.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
-    else:
-        _get_logger().warning('无可用 Qt 绑定（IS_PYSIDE2/6 均为 False）')
-        return None
+    try:
+        if IS_PYSIDE6:
+            from PySide6.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
+        elif IS_PYSIDE2:
+            from PySide2.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
+        else:
+            _get_logger().warning(
+                '无可用 Qt 绑定（IS_PYSIDE2/6 均为 False），'
+                'icon 降级 QImageReader 链',
+            )
+            return _render_pixmap_via_reader(path, fill, size)
+    except ImportError as exc:
+        # 部分 Max 版本的 PySide2 缺 QtSvg Python 模块（用户探针实测），
+        # 降级到 QImageReader 链而不是直接失败
+        _get_logger().warning(
+            'QtSvg 模块不可用 (%s)，icon 降级 QImageReader 链', exc,
+        )
+        return _render_pixmap_via_reader(path, fill, size)
 
-    with open(path, 'r', encoding='utf-8') as f:
-        svg_text = f.read()
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            svg_text = f.read()
+    except OSError as exc:
+        _get_logger().warning('icon SVG 读取失败 (%s): %s', exc, path)
+        return None
 
     # 把 fill 显式注入每个图形元素（Qt 渲染器不认根节点继承）
     svg_text = _apply_fill(svg_text, fill)
@@ -351,8 +502,10 @@ def _render_svg_file(path, fill, size):
 __all__ = [
     'DEFAULT_ICON_COLOR',
     'clear_cache',
+    'icon_pixmap',
     'icons_dir',
     'load_icon',
+    'make_page_title',
     'rich_icon',
     'set_btn_icon',
 ]

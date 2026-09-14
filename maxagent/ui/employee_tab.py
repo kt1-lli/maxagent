@@ -47,7 +47,7 @@ from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
 from .icon_loader import set_btn_icon
 from .emoji_compat import ee as _ee
-from .icon_loader import rich_icon as _rich_icon
+from .icon_loader import make_page_title as _make_title
 from ..dcc.runtime import current_dcc as _current_dcc
 from .employee import AVATAR_DISPLAY_SIZE
 from .employee import DEFAULT_EMOJI
@@ -105,7 +105,7 @@ class EmployeeTab(QtWidgets.QWidget):
         outer.setSpacing(12)
 
         # ---------- 标题 + 岗位说明 ---------- #
-        title = QtWidgets.QLabel(_rich_icon('person') + '  助手形象')
+        title = _make_title('person', '助手形象')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
@@ -202,7 +202,7 @@ class EmployeeTab(QtWidgets.QWidget):
         outer.addWidget(kind_box)
 
         # ---------- 实时预览 ---------- #
-        preview_label = QtWidgets.QLabel(_rich_icon('chat') + '  实时预览')
+        preview_label = _make_title('chat', '实时预览', size=14)
         preview_label.setStyleSheet('color:#888; margin-top:4px;')
         outer.addWidget(preview_label)
 

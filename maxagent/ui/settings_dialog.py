@@ -41,6 +41,8 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import load_icon
+from .icon_loader import make_page_title as _make_title
 from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 from ._settings_help_mixin import _SettingsHelpMixin
@@ -110,17 +112,49 @@ class SettingsDialog(
     # 注：原"我的规则"和"工具与技能"两项已合并为单个"我的资源"主 Tab，
     # 内部用横向子 Tab 切换 规则 / 技能 / 工具 / 导入导出 四个视图，
     # 既精简了左侧导航，又给每类资源都提供了"启用/禁用"开关。
+    # 导航项：(显示文本, 页面 key)；图标见 _NAV_ICON_BY_KEY
+    # 注意：QListWidgetItem 不渲染 HTML，此处必须是纯文本
     _NAV_ITEMS = [
-        (_rich_icon('robot') + '  模型', 'model'),
-        (_rich_icon('globe') + '  联网', 'network'),
-        (_rich_icon('palette') + '  应用', 'app'),
-        (_rich_icon('person') + '  助手形象', 'employee'),
-        (_rich_icon('box') + '  我的资源', 'resources'),
-        (_rich_icon('toolbox') + '  共享资源', 'shared'),
-        (_rich_icon('plug') + '  IDE 接口', 'bridge'),
-        (_rich_icon('journal-text') + '  日志', 'log'),
-        (_rich_icon('question-circle') + '  帮助', 'help'),
+        ('模型', 'model'),
+        ('联网', 'network'),
+        ('应用', 'app'),
+        ('助手形象', 'employee'),
+        ('我的资源', 'resources'),
+        ('共享资源', 'shared'),
+        ('IDE 接口', 'bridge'),
+        ('日志', 'log'),
+        ('帮助', 'help'),
     ]
+
+    # 页面 key -> 图标名（与 _NAV_ITEMS 顺序对应，供原生 QIcon 使用）
+    _NAV_ICON_BY_KEY = {
+        'model': 'robot',
+        'network': 'globe',
+        'app': 'palette',
+        'employee': 'person',
+        'resources': 'box',
+        'shared': 'toolbox',
+        'bridge': 'plug',
+        'log': 'journal-text',
+        'help': 'question-circle',
+    }
+
+    def _on_nav_sel_changed(self, row):
+        # type: (int) -> None
+        """导航选中态换色：选中项图标亮青蓝，其余恢复浅灰。"""
+        try:
+            for i in range(self.nav.count()):
+                item = self.nav.item(i)
+                key = self._NAV_ITEMS[i][1] if i < len(self._NAV_ITEMS) else ''
+                color = '#4fc3f7' if i == row else '#e0e0e0'
+                icon = load_icon(
+                    self._NAV_ICON_BY_KEY.get(key, ''), color=color,
+                )
+                if icon is not None:
+                    item.setIcon(icon)
+        except Exception:  # pylint: disable=broad-except
+            # 纯装饰行为，失败不影响导航切换
+            pass
 
     def __init__(self, config_manager, parent=None):
         # type: (ConfigManager, Optional[Any]) -> None
@@ -148,14 +182,21 @@ class SettingsDialog(
         outer.setSpacing(0)
 
         # ----------- 左侧：导航 ----------- #
+        # 注意：QListWidgetItem 不渲染 HTML 富文本，<img> 会被当成
+        # 纯文本原样显示（badcase：导航栏出现 "<img src=C:..."），
+        # 因此这里必须走 QIcon 原生图标接口。
         self.nav = QtWidgets.QListWidget()
         self.nav.setObjectName('SettingsNav')
         self.nav.setStyleSheet(_NAV_QSS)
         self.nav.setFixedWidth(160)
         self.nav.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for label, _key in self._NAV_ITEMS:
-            QtWidgets.QListWidgetItem(label, self.nav)
+            item = QtWidgets.QListWidgetItem(label.split('  ', 1)[-1], self.nav)
+            icon = load_icon(_NAV_ICON_BY_KEY.get(_key, ''), color='#e0e0e0')
+            if icon is not None:
+                item.setIcon(icon)
         self.nav.currentRowChanged.connect(self._on_nav_changed)
+        self.nav.currentRowChanged.connect(self._on_nav_sel_changed)
         outer.addWidget(self.nav, 0)
 
         # ----------- 右侧：Stacked Pages ----------- #
@@ -227,7 +268,7 @@ class SettingsDialog(
         outer = QtWidgets.QVBoxLayout(page)
         outer.setSpacing(10)
 
-        title = QtWidgets.QLabel(_rich_icon('globe') + '  联网搜索')
+        title = _make_title('globe', '联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
@@ -357,7 +398,8 @@ class SettingsDialog(
         )
         btn_col.addWidget(self.web_provider_test_btn)
 
-        self.web_provider_reset_btn = QtWidgets.QPushButton('↺ 恢复内置')
+        self.web_provider_reset_btn = QtWidgets.QPushButton('恢复内置')
+        set_btn_icon(self.web_provider_reset_btn, 'refresh', '恢复内置')
         self.web_provider_reset_btn.setToolTip(
             '把内置 Provider（DuckDuckGo / Bing / Google CSE 等）'
             '\n字段重置为出厂值，保留你已填的 API Key 和 extra 字段。',
@@ -373,6 +415,8 @@ class SettingsDialog(
 
         self.web_test_label = QtWidgets.QLabel('')
         self.web_test_label.setStyleSheet('color:#888;')
+        # 显式声明富文本：样式表 + AutoText 下 <img> 渲染不可靠
+        self.web_test_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.web_test_label.setWordWrap(True)
         outer.addWidget(self.web_test_label)
 
@@ -395,7 +439,7 @@ class SettingsDialog(
             QtWidgets.QFormLayout.ExpandingFieldsGrow,
         )
 
-        title = QtWidgets.QLabel(_rich_icon('palette') + '  应用全局设置')
+        title = _make_title('palette', '应用全局设置')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         form.addRow(title)
 
@@ -658,7 +702,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(12)
 
-        title = QtWidgets.QLabel(_rich_icon('journal-text') + '  日志')
+        title = _make_title('journal-text', '日志')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -741,7 +785,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_rich_icon('plug') + '  IDE 接口（Bridge）')
+        title = _make_title('plug', 'IDE 接口（Bridge）')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -915,6 +959,8 @@ class SettingsDialog(
         # 状态行：规则总数 + 当前注入字节数
         self._rules_status_label = QtWidgets.QLabel('')
         self._rules_status_label.setStyleSheet('color:#7ec0ff;')
+        # 显式声明富文本：样式表 + AutoText 下 <img> 渲染不可靠
+        self._rules_status_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         layout.addWidget(self._rules_status_label)
 
         # 规则列表
@@ -1192,7 +1238,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_rich_icon('toolbox') + '  共享资源目录')
+        title = _make_title('toolbox', '共享资源目录')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -3360,7 +3406,8 @@ class SettingsDialog(
             return
         finally:
             self.fetch_models_btn.setEnabled(True)
-            self.fetch_models_btn.setText('↻ 拉取')
+            self.fetch_models_btn.setText('拉取')
+            set_btn_icon(self.fetch_models_btn, 'refresh2', '拉取')
 
         if err and not models:
             QtWidgets.QMessageBox.warning(
@@ -4032,7 +4079,7 @@ class SettingsDialog(
         layout.setSpacing(8)
 
         # 顶部统一标题
-        title = QtWidgets.QLabel(_rich_icon('box') + '  我的资源')
+        title = _make_title('box', '我的资源')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -4058,22 +4105,21 @@ class SettingsDialog(
             self._on_resources_tab_changed,
         )
 
-        self.resources_tabs.addTab(
-            self._build_page_rules(),
-            _rich_icon('tag') + ' 规则',
-        )
-        self.resources_tabs.addTab(
-            self._build_subtab_skills(),
-            _rich_icon('star') + ' 技能',
-        )
-        self.resources_tabs.addTab(
-            self._build_subtab_tools(),
-            _rich_icon('tool') + ' 工具',
-        )
-        self.resources_tabs.addTab(
-            self._build_page_pack(),
-            _rich_icon('export') + ' 导入/导出',
-        )
+        # 注意：QTabWidget 的 tab 文本不渲染 HTML，<img> 会被当成
+        # 纯文本原样显示，必须用 setTabIcon 原生图标接口
+        tabs_spec = [
+            (self._build_page_rules(), '规则', 'tag'),
+            (self._build_subtab_skills(), '技能', 'star'),
+            (self._build_subtab_tools(), '工具', 'tool'),
+            (self._build_page_pack(), '导入/导出', 'export'),
+        ]
+        for widget, tab_text, icon_name in tabs_spec:
+            self.resources_tabs.addTab(widget, tab_text)
+            icon = load_icon(icon_name, color='#e0e0e0')
+            if icon is not None:
+                self.resources_tabs.setTabIcon(
+                    self.resources_tabs.indexOf(widget), icon,
+                )
 
         layout.addWidget(self.resources_tabs, 1)
         return page

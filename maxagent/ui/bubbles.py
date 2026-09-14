@@ -607,6 +607,8 @@ class UserBubble(QtWidgets.QWidget):
                 _rich_icon('person'),
             )
         )
+        # 显式声明富文本：样式表 + AutoText 组合下 <img> 渲染不可靠
+        head.setTextFormat(QtCore.Qt.TextFormat.RichText)
         head.setStyleSheet('background:transparent; color:#bbd9f5;')
         bubble.add_widget(head)
 
@@ -1044,6 +1046,8 @@ class TodoListBubble(QtWidgets.QWidget):
             'background:transparent; color:#7cc0ff; '
             'font-size:9pt; font-weight:bold;'
         )
+        # 显式声明富文本：样式表 + AutoText 下 <img> 渲染不可靠
+        self._header.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._header.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._header.mousePressEvent = self._on_header_click  # type: ignore
         vbox.addWidget(self._header)
@@ -1082,9 +1086,10 @@ class TodoListBubble(QtWidgets.QWidget):
         )
         arrow = '▶' if self._collapsed else '▼'
         self._header.setText(
-            '{arrow} 📋 任务清单 · {done}/{total} 完成'
+            '{arrow} {} 任务清单 · {done}/{total} 完成'
             '{ip}'.format(
-                arrow=arrow,
+                arrow,
+                _rich_icon('clipboard', color='#7cc0ff'),
                 done=done,
                 total=total,
                 ip=('（进行中 {}）'.format(in_prog)) if in_prog else '',

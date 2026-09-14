@@ -171,7 +171,8 @@ class LearnApprovalDialog(QtWidgets.QDialog):
             '<b>源代码（可编辑，请审查）：</b>'
         ))
         code_head.addStretch(1)
-        reset_btn = QtWidgets.QPushButton('↺ 重置')
+        reset_btn = QtWidgets.QPushButton('重置')
+        set_btn_icon(reset_btn, 'refresh', '重置')
         reset_btn.setToolTip('恢复到 AI 最初提交的代码')
         reset_btn.clicked.connect(self._on_reset_code)
         code_head.addWidget(reset_btn)
