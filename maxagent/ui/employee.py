@@ -33,7 +33,6 @@ from typing import Optional
 from ..config import get_config_dir
 from .emoji_compat import ee as _ee
 
-
 # 头像图片固定文件名，多次上传覆盖写
 AVATAR_FILENAME = 'avatar.png'
 
@@ -44,6 +43,10 @@ AVATAR_STORE_SIZE = 64
 # 默认值
 DEFAULT_NAME = '助手'
 DEFAULT_EMOJI = '🤖'
+
+# 默认头像的 SVG 图标（icons/ 目录内，无字体依赖）与配色
+DEFAULT_AVATAR_ICON = 'robot'
+DEFAULT_AVATAR_ICON_COLOR = '#9fd89f'
 
 
 def get_avatar_image_full_path():
@@ -167,7 +170,13 @@ class Employee(object):
                     )
             # 图片丢失或读取失败：自动回落到 emoji（不弹错，体验顺滑）
         # emoji 模式（默认 + image 模式但文件丢失的兜底）
-        avatar = _ee(self.avatar_emoji or DEFAULT_EMOJI)
+        # 默认头像优先走内置 SVG 图标：emoji_pixmap 在部分 Max 环境
+        # 字体缺 🤖 字形时渲染空白，最终显示成 BMP 兜底符（badcase：
+        # 用户截图"Emoji ◆"），SVG 管线无字体依赖且已全 UI 验证可靠。
+        avatar = _default_avatar_html(title_color, font_size_pt)
+        if not avatar:
+            # SVG 渲染失败才回落 emoji/BMP 文本
+            avatar = _ee(self.avatar_emoji or DEFAULT_EMOJI)
         return (
             '<span style="color:{color};font-size:{sz}pt;">'
             '{avatar} {name}</span>'
@@ -177,6 +186,20 @@ class Employee(object):
             avatar=avatar,
             name=safe_name,
         )
+
+
+def _default_avatar_html(title_color, font_size_pt):
+    # type: (str, int) -> str
+    """渲染默认头像为内嵌 SVG 图标 HTML；失败返回空串。
+
+    :param title_color: 名字颜色（图标不染色，纯装饰占位）
+    :param font_size_pt: 字号（仅用于日志定位，不参与渲染）
+    :returns: ``<img>`` 片段；SVG 管线不可用时返回空串
+    """
+    from .icon_loader import avatar_icon_html
+    return avatar_icon_html(
+        DEFAULT_AVATAR_ICON, DEFAULT_AVATAR_ICON_COLOR, AVATAR_DISPLAY_SIZE,
+    )
 
 
 def _html_escape(text):

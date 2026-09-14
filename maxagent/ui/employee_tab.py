@@ -46,11 +46,14 @@ from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
+from .icon_loader import avatar_icon_html
 from .icon_loader import emoji_pixmap
 from .icon_loader import set_btn_icon
 from .icon_loader import make_page_title as _make_title
 from ..dcc.runtime import current_dcc as _current_dcc
 from .employee import AVATAR_DISPLAY_SIZE
+from .employee import DEFAULT_AVATAR_ICON
+from .employee import DEFAULT_AVATAR_ICON_COLOR
 from .employee import DEFAULT_EMOJI
 from .employee import DEFAULT_NAME
 from .employee import Employee
@@ -135,25 +138,35 @@ class EmployeeTab(QtWidgets.QWidget):
         kind_box = QtWidgets.QGroupBox('头像')
         kind_layout = QtWidgets.QVBoxLayout(kind_box)
 
-        # Emoji 行：头像固定为默认 emoji，不再提供快选
-        # （badcase：QPushButton 直接放 emoji 字符在 Max 的 Windows
-        # 环境渲染不了彩色字形整排空白；既然只有默认头像，直接用
-        # icon_loader.emoji_pixmap 渲染一个只读 QLabel 展示即可）
+        # Emoji 行：头像固定为默认形象，走内置 SVG 图标渲染
+        # （badcase：emoji_pixmap 在部分 Max 环境字体缺 🤖 字形时
+        # 渲染空白回落 ◆；SVG 管线与气泡头像同源，无字体依赖）
         emoji_row = QtWidgets.QHBoxLayout()
         self._kind_emoji_radio = QtWidgets.QRadioButton('Emoji')
         self._kind_emoji_radio.toggled.connect(self._on_kind_changed)
         emoji_row.addWidget(self._kind_emoji_radio)
         emoji_preview = QtWidgets.QLabel()
-        pixmap = emoji_pixmap(DEFAULT_EMOJI, 18)
-        if pixmap is not None:
-            emoji_preview.setPixmap(pixmap)
-            emoji_preview.setFixedSize(
-                int(pixmap.width() / max(pixmap.devicePixelRatio(), 1.0)),
-                int(pixmap.height() / max(pixmap.devicePixelRatio(), 1.0)),
-            )
+        emoji_preview.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        emoji_preview.setStyleSheet('background:transparent;')
+        avatar_html = avatar_icon_html(
+            DEFAULT_AVATAR_ICON,
+            DEFAULT_AVATAR_ICON_COLOR,
+            AVATAR_DISPLAY_SIZE,
+        )
+        if avatar_html:
+            emoji_preview.setText(avatar_html)
+            emoji_preview.setFixedSize(AVATAR_DISPLAY_SIZE, AVATAR_DISPLAY_SIZE)
         else:
-            # 兜底：离屏渲染失败时显示 BMP 兜底字符
-            emoji_preview.setText(_ee(DEFAULT_EMOJI))
+            # 兜底：SVG 渲染失败时仍走 emoji 离屏渲染链
+            pixmap = emoji_pixmap(DEFAULT_EMOJI, 18)
+            if pixmap is not None:
+                emoji_preview.setPixmap(pixmap)
+                emoji_preview.setFixedSize(
+                    int(pixmap.width() / max(pixmap.devicePixelRatio(), 1.0)),
+                    int(pixmap.height() / max(pixmap.devicePixelRatio(), 1.0)),
+                )
+            else:
+                emoji_preview.setText(_ee(DEFAULT_EMOJI))
         emoji_preview.setToolTip('Emoji 头像固定为默认形象 ' + DEFAULT_EMOJI)
         emoji_row.addWidget(emoji_preview)
         emoji_row.addStretch(1)

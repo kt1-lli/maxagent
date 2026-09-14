@@ -335,6 +335,55 @@ def rich_icon(name, color=None, size=13):
         return ''
 
 
+def avatar_icon_html(name, color, size):
+    # type: (str, str, int) -> str
+    """把 SVG 图标渲染成 data URI 内嵌 ``<img>``，专供头像场景。
+
+    与 :func:`rich_icon` 的区别：产物直接编码 base64 内嵌（不落盘
+    临时 PNG）。原因：Qt6 的 QLabel 默认不读 ``file:///`` 资源，
+    落盘路径在 PySide6 下头像会空白；``data:`` URI 由 QTextDocument
+    直接解析，PySide2/6 双版本一致（与图片头像的 data URI 链同源）。
+
+    :param name: 图标名（对应 icons/<name>.svg）
+    :param color: 图标颜色
+    :param size: 显示尺寸（px），实际按 2x 渲染保证高分屏清晰
+    :returns: ``<img>`` HTML 片段；失败返回空串（调用方走文本兜底）
+    """
+    from ..qt_compat import QtCore
+    cache_key = ('avatar_html', name, color, size)
+    if cache_key in _ICON_CACHE:
+        return _ICON_CACHE[cache_key]
+    try:
+        path = os.path.join(_ICONS_DIR, name + '.svg')
+        if not os.path.isfile(path):
+            _get_logger().warning(
+                'avatar_icon [%s] SVG 不存在，返回空串', name,
+            )
+            return ''
+        pixmap = _render_pixmap(path, color, size)
+        if pixmap is None or pixmap.isNull():
+            return ''
+        buf = QtCore.QBuffer()
+        buf.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        if not pixmap.save(buf, 'PNG'):
+            return ''
+        raw = bytes(buf.data())
+        data_uri = 'data:image/png;base64,{}'.format(
+            __import__('base64').b64encode(raw).decode('ascii'),
+        )
+        html = '<img src="{}" width="{}" height="{}" '.format(
+            data_uri, size, size,
+        ) + 'style="vertical-align:middle;">'
+        _ICON_CACHE[cache_key] = html
+        return html
+    except Exception as exc:  # pylint: disable=broad-except
+        # 头像是纯装饰，任何异常都不能影响气泡渲染
+        _get_logger().warning(
+            'avatar_icon [%s] 生成失败 (%s)，返回空串', name, exc,
+        )
+        return ''
+
+
 # emoji 离屏渲染缓存：键为 (字符, 尺寸)，值为 QPixmap
 _EMOJI_PIX_CACHE = {}  # type: dict
 
