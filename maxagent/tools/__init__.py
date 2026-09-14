@@ -68,6 +68,7 @@ _MAX_MODULES = [
 # Maya 专用工具模块
 _MAYA_MODULES = [
     'maxagent.tools.maya.animation',
+    'maxagent.tools.maya.autodesk_docs',
     'maxagent.tools.maya.deformer',
     'maxagent.tools.maya.geometry',
     'maxagent.tools.maya.gt_tools_bridge',

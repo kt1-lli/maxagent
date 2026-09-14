@@ -6,13 +6,13 @@
 ====
 - 对接 Autodesk 官方 Knowledge MCP 端点：
   ``https://developer.api.autodesk.com/knowledge/public/v1/mcp``
-- 只做与 3ds Max 相关的知识/文档检索。将本模块暴露的工具注入到 LLM
-  的 function-calling 工具集，让模型在需要"权威、准确、最新"的 3ds Max
-  文档时优先调用这里而不是通用联网搜索。
+- 只做与 3ds Max / Maya 相关的知识/文档检索。将本模块暴露的工具注入到
+  LLM 的 function-calling 工具集，让模型在需要"权威、准确、最新"的
+  DCC 文档时优先调用这里而不是通用联网搜索。
 
 为什么用 urllib 手写而不是引第三方 mcp SDK？
 ============================================
-项目全局约束：3ds Max 内嵌 Python 不允许 pip 装包，所以运行时严禁
+项目全局约束：DCC 内嵌 Python 不允许 pip 装包，所以运行时严禁
 出现任何非标准库依赖。MCP 的 Streamable HTTP 传输本质上就是
 JSON-RPC over HTTP + SSE，完全可以用 ``urllib`` + 一点 SSE 解析
 覆盖到 ``initialize / tools/list / tools/call`` 这三个我们真正会用
@@ -30,14 +30,14 @@ JSON-RPC over HTTP + SSE，完全可以用 ``urllib`` + 一点 SSE 解析
 4. 首次 ``initialize`` 响应可能带 ``Mcp-Session-Id`` header；后续所有
    请求必须回传这个 header。
 
-3ds Max 作用域约束
-==================
+产品作用域约束
+==============
 Autodesk Knowledge MCP 的知识面横跨 Maya / 3ds Max / Revit / AutoCAD 等
-多条产品线。为了确保 LLM 拿到的答案落在 3ds Max 上下文，本模块在
+多条产品线。为了确保 LLM 拿到的答案落在当前 DCC 上下文，本模块在
 调用 tools/call 时会：
-- 把用户的自然语言 query 前缀强制拼上 "3ds Max"
-- 若服务端工具支持 ``product`` / ``filter`` / ``scope`` 之类结构化
-  参数，也一并注入 "3dsMax" 值（服务端未识别时会被忽略，不影响主流程）
+- 把用户的自然语言 query 前缀强制拼上产品名（"3ds Max" / "Maya"）
+- 按 ``PRODUCT_SCOPES`` 注入官方目录里的 ``product_code``
+  （3ds Max → "3DSMAX"，Maya → "MAYA"，均实测自 get_available_products）
 """
 
 from __future__ import absolute_import
@@ -58,30 +58,41 @@ logger = get_logger(__name__)
 # Autodesk 官方 Knowledge MCP 端点
 DEFAULT_MCP_URL = 'https://developer.api.autodesk.com/knowledge/public/v1/mcp'
 
-# 默认作用域：所有查询都拼上这个前缀，保证结果聚焦 3ds Max
-PRODUCT_SCOPE = '3ds Max'
-PRODUCT_SCOPE_ID = '3dsMax'
+# 产品作用域表：dcc key → 官方产品名 / product_code。
+# product_code 取自 get_available_products 实测（2026-09）：
+#   3ds Max → 3DSMAX（release 2021~2027）
+#   Maya    → MAYA（release 2022~2027）
+PRODUCT_SCOPES = {
+    '3dsmax': {'name': '3ds Max', 'code': '3DSMAX'},
+    'maya': {'name': 'Maya', 'code': 'MAYA'},
+}
+
+# 默认作用域（向后兼容）：3ds Max。新代码请用 PRODUCT_SCOPES + search_dcc_knowledge
+PRODUCT_SCOPE = PRODUCT_SCOPES['3dsmax']['name']
+PRODUCT_SCOPE_ID = PRODUCT_SCOPES['3dsmax']['code']
 
 # 默认 locale：Autodesk 帮助中心使用的语言代码（ENU/CHS/JPN/DEU/FRA/...）
 # 端点要求必须传 locale，否则会拒绝或返回空。ENU 覆盖面最广。
 DEFAULT_LOCALE = 'ENU'
 
-# Autodesk 常见 locale 码 → BCP-47 兜底映射（有的字段要 "en-US" 而不是 "ENU"）
+# Autodesk 常见 locale 码 → 端点要求的 BCP-47（下划线格式）映射。
+# 注意：search_help_content 的 locale 枚举是 "en_US"/"zh_CN" 这类下划线格式，
+# 连字符格式会被 schema 校验拒绝（实测 2026-09）。
 _LOCALE_BCP47 = {
-    'ENU': 'en-US',
-    'CHS': 'zh-CN',
-    'CHT': 'zh-TW',
-    'JPN': 'ja-JP',
-    'KOR': 'ko-KR',
-    'DEU': 'de-DE',
-    'FRA': 'fr-FR',
-    'ESP': 'es-ES',
-    'ITA': 'it-IT',
-    'PTB': 'pt-BR',
-    'RUS': 'ru-RU',
-    'PLK': 'pl-PL',
-    'CSY': 'cs-CZ',
-    'HUN': 'hu-HU',
+    'ENU': 'en_US',
+    'CHS': 'zh_CN',
+    'CHT': 'zh_TW',
+    'JPN': 'ja_JP',
+    'KOR': 'ko_KR',
+    'DEU': 'de_DE',
+    'FRA': 'fr_FR',
+    'ESP': 'es_ES',
+    'ITA': 'it_IT',
+    'PTB': 'pt_BR',
+    'RUS': 'ru_RU',
+    'PLK': 'pl_PL',
+    'CSY': 'cs_CZ',
+    'HUN': 'hu_HU',
 }
 
 # 单次 HTTP 请求超时（秒）
@@ -335,16 +346,24 @@ def pick_search_tool(client):
     return next(iter(tools.values()))
 
 
-def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE, limit=None):
-    # type: (Optional[Dict[str, Any]], str, str, Optional[int]) -> Dict[str, Any]
-    """按远端工具的 inputSchema 尽量把 query + 3ds Max 作用域 + locale + limit 塞进合适字段。
+def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE, limit=None,
+                                     dcc='3dsmax'):
+    # type: (Optional[Dict[str, Any]], str, str, Optional[int], str) -> Dict[str, Any]
+    """按远端工具的 inputSchema 尽量把 query + 产品作用域 + locale + limit 塞进合适字段。
 
     - ``schema`` 一般形如 ``{"type": "object", "properties": {...}, "required": [...]}``
     - 常见 query 字段名：query / q / question / text / prompt
-    - 常见 scope 字段名：product / products / filter / scope / domain
+    - 常见 scope 字段名：product / products / filter / scope / domain / product_code / product_name
     - 常见 locale 字段名：locale / language / lang / hl
     - 常见 limit 字段名：limit / top_k / topK / max_results / maxResults / count / size / n
+
+    :param dcc: DCC key（'3dsmax' / 'maya'），决定 query 前缀与 product_code。
+        未知 key 时退化为 3ds Max（与历史行为一致）。
     """
+    scope = PRODUCT_SCOPES.get(dcc) or PRODUCT_SCOPES['3dsmax']
+    product_name = scope['name']
+    product_code = scope['code']
+
     args = {}   # type: Dict[str, Any]
     props = {}  # type: Dict[str, Any]
     required = []  # type: List[str]
@@ -360,26 +379,34 @@ def _augment_arguments_for_max_scope(schema, query, locale=DEFAULT_LOCALE, limit
     if query_field is None:
         # 服务端未声明 schema 时，兜底用最常见字段名
         query_field = 'query'
-    args[query_field] = '{}: {}'.format(PRODUCT_SCOPE, query.strip())
+    args[query_field] = '{}: {}'.format(product_name, query.strip())
+
+    # 官方 search_help_content 用 product_code / product_name 两个独立字段
+    code_field = _find_field(props, ('product_code', 'productCode', 'code'))
+    if code_field is not None:
+        args[code_field] = product_code
+    name_field = _find_field(props, ('product_name', 'productName'))
+    if name_field is not None:
+        args[name_field] = product_name
 
     product_field = _find_field(props, ('product', 'products', 'productLine', 'application'))
     if product_field is not None:
         # 有的服务端要 array，有的要 string。按 schema 类型自适应
         prop_def = props.get(product_field) or {}
         if _prop_wants_array(prop_def):
-            args[product_field] = [PRODUCT_SCOPE_ID]
+            args[product_field] = [product_code]
         else:
-            args[product_field] = PRODUCT_SCOPE_ID
+            args[product_field] = product_code
 
     filter_field = _find_field(props, ('filter', 'filters', 'scope', 'domain'))
     if filter_field is not None and filter_field not in args:
         prop_def = props.get(filter_field) or {}
         if _prop_wants_array(prop_def):
-            args[filter_field] = [PRODUCT_SCOPE_ID]
+            args[filter_field] = [product_code]
         elif (prop_def.get('type') or '').lower() == 'object':
-            args[filter_field] = {'product': PRODUCT_SCOPE_ID}
+            args[filter_field] = {'product': product_code}
         else:
-            args[filter_field] = PRODUCT_SCOPE_ID
+            args[filter_field] = product_code
 
     # locale 注入：远端强制要求；schema 未声明时也无脑传 "locale" 兜底，
     # 服务端不认识会忽略。若声明了 language/lang/hl 则同时填入。
@@ -500,16 +527,19 @@ def _extract_text_from_result(result):
     return '\n\n'.join(p for p in parts if p)
 
 
-def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOCALE, limit=None):
-    # type: (str, float, str, Optional[int]) -> Dict[str, Any]
-    """在 Autodesk 官方知识库检索 3ds Max 相关内容。
+def search_dcc_knowledge(query, dcc='3dsmax', timeout=DEFAULT_HTTP_TIMEOUT,
+                         locale=DEFAULT_LOCALE, limit=None):
+    # type: (str, str, float, str, Optional[int]) -> Dict[str, Any]
+    """在 Autodesk 官方知识库检索指定 DCC 产品相关内容（通用入口）。
 
     :param query: 用户自然语言查询
+    :param dcc: DCC key（'3dsmax' / 'maya'），决定 query 前缀与 product_code
     :param timeout: 单次 HTTP 超时
     :param locale: Autodesk locale 码（ENU/CHS/JPN/DEU/FRA/...），默认 ENU
     :param limit: 期望返回的结果条数（服务端返回体上限 ~16KB，条数越少单条越完整）
     :returns: ``{"ok": bool, "tool": str, "text": str, "raw": Any, "error": str?}``
     """
+    scope = PRODUCT_SCOPES.get(dcc) or PRODUCT_SCOPES['3dsmax']
     q = (query or '').strip()
     if not q:
         return {'ok': False, 'error': 'query 不能为空'}
@@ -522,23 +552,48 @@ def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOC
         return {'ok': False, 'error': 'Autodesk MCP 未暴露任何可用工具'}
     tool_name = tool.get('name')
     args = _augment_arguments_for_max_scope(
-        tool.get('inputSchema'), q, locale=locale, limit=limit,
+        tool.get('inputSchema'), q, locale=locale, limit=limit, dcc=dcc,
     )
     try:
         result = client.call_tool(tool_name, args)
     except MCPError as exc:
         return {'ok': False, 'tool': tool_name, 'error': str(exc)}
+    # isError=True 的语义失败（如参数校验失败）也按失败返回，附上原文
+    is_error = bool(result.get('isError')) if isinstance(result, dict) else False
     text = _extract_text_from_result(result)
+    if is_error:
+        return {
+            'ok': False,
+            'tool': tool_name,
+            'query': q,
+            'scope': scope['name'],
+            'error': text,
+        }
     return {
         'ok': True,
         'tool': tool_name,
         'query': q,
-        'scope': PRODUCT_SCOPE,
+        'scope': scope['name'],
         'locale': locale,
         'limit': limit,
         'text': text,
         'raw': result,
     }
+
+
+def search_max_knowledge(query, timeout=DEFAULT_HTTP_TIMEOUT, locale=DEFAULT_LOCALE, limit=None):
+    # type: (str, float, str, Optional[int]) -> Dict[str, Any]
+    """在 Autodesk 官方知识库检索 3ds Max 相关内容（兼容旧接口）。
+
+    :param query: 用户自然语言查询
+    :param timeout: 单次 HTTP 超时
+    :param locale: Autodesk locale 码（ENU/CHS/JPN/DEU/FRA/...），默认 ENU
+    :param limit: 期望返回的结果条数（服务端返回体上限 ~16KB，条数越少单条越完整）
+    :returns: ``{"ok": bool, "tool": str, "text": str, "raw": Any, "error": str?}``
+    """
+    return search_dcc_knowledge(
+        query, dcc='3dsmax', timeout=timeout, locale=locale, limit=limit,
+    )
 
 
 # ---------- 内部辅助 ----------
@@ -579,10 +634,12 @@ def _iter_sse_events(text):
 __all__ = [
     'DEFAULT_MCP_URL',
     'PRODUCT_SCOPE',
+    'PRODUCT_SCOPES',
     'DEFAULT_LOCALE',
     'MCPError',
     'get_client',
     'reset_client',
     'pick_search_tool',
+    'search_dcc_knowledge',
     'search_max_knowledge',
 ]

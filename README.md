@@ -18,11 +18,11 @@ MaxAgent 是运行在 3ds Max / Maya 内部的 AI Agent 插件。它通过 Funct
 
 **核心特性**
 
-- **近 100 个内置工具**：覆盖场景查询、几何创建、变换、修改器、材质、灯光相机、渲染、场景 IO、知识库、Skills、学习、反思、记忆等
+- **内置工具**：3ds Max 侧 95 个、Maya 侧 183 个（按宿主加载），覆盖场景查询、几何创建、变换、修改器、材质、灯光相机、渲染、场景 IO、知识库、Skills、学习、反思、记忆等
 - **双 DCC 支持**：3ds Max（pymxs）与 Maya（cmds / MEL）按宿主自动切换工具集、领域速查与停靠方式，Agent 层完全共享
 - **Function Calling 驱动**：LLM 自主选择工具，schema 由参数注解自动推导
 - **本地 + 云端模型**：支持 Ollama / LM Studio / OpenAI / DeepSeek / 任意 OpenAI 兼容协议
-- **Autodesk 官方 MCP 接入**（仅 3ds Max）：`autodesk_max_docs` 直连 Autodesk Knowledge，答案带官方出处
+- **Autodesk 官方 MCP 接入**：`autodesk_max_docs` / `autodesk_maya_docs` 直连 Autodesk Knowledge，按宿主限定产品作用域，答案带官方出处
 - **本地 BM25 知识库**：
   - A 类：打包 Max-Python-Help 官方文档（占位文件已含，可替换）
   - C 类：Skills 语义召回，关键词 + BM25 双路匹配
@@ -125,7 +125,7 @@ Maya 侧同理：说"创建一个 polyCube，开 3 段细分"即可，助手会�
 | API 底座 | `pymxs.runtime` | `maya.cmds` / MEL |
 | 脚本逃生舱 | `run_maxscript` + `run_python` | `run_mel` + `run_python` |
 | 领域速查 | `lookup_max_knowledge` | `lookup_maya_knowledge` |
-| Autodesk 官方文档 | `autodesk_max_docs`（官方 MCP） | 暂未接入 |
+| Autodesk 官方文档 | `autodesk_max_docs`（官方 MCP） | `autodesk_maya_docs`（官方 MCP） |
 | IDE Bridge | 支持（设置 → IDE 接口） | 暂未提供 |
 | 打包产物 | `.mzp` | `.zip` |
 
@@ -133,7 +133,7 @@ Maya 侧同理：说"创建一个 polyCube，开 3 段细分"即可，助手会�
 
 ---
 
-**工具全景**（3ds Max 侧，Maya 侧按宿主自动加载对应实现）
+**工具全景**（3ds Max 侧，Maya 侧按宿主自动加载对应实现；"Autodesk 官方"行为双端各 1 个工具）
 
 | 类别 | 数量 | 代表工具 |
 | --- | --- | --- |
@@ -152,7 +152,7 @@ Maya 侧同理：说"创建一个 polyCube，开 3 段细分"即可，助手会�
 | 反思 | 3 | `reflect_on_outcome`、`list_reflections` 等 |
 | 记忆 | 4 | `memory_read`、`memory_search`、`memory_write`、`event_search` |
 | 联网 | 2 | `web_search`、`web_fetch` |
-| Autodesk 官方 | 1 | `autodesk_max_docs` |
+| Autodesk 官方 | 按宿主 1 | `autodesk_max_docs` / `autodesk_maya_docs` |
 | 创意高级 | 4 | `generate_material_variants`、`smart_replace_modifier` 等 |
 | 场景感知 | 4 | `capture_viewport`、`check_mesh_quality`、`diff_scene_snapshots` 等 |
 | Todo | 3 | `todo_write`、`todo_update_status`、`todo_read` |
@@ -339,7 +339,7 @@ set MAXAGENT_SHARED_DIR=C:\\TeamAssets\\shared-maxagent-assets
 - Maya 面板不出现：确认 `maya_entry.py` 拖入后 Script Editor 无报错；重启 Maya 会自动恢复 workspaceControl
 - 工具调用失败：看面板红色 ✗ 后的具体错误，多数是模型给错参数
 - 模型不调用工具：检查 Profile 的 `supports_tools`，且模型要支持 tools
-- Autodesk MCP 无响应（仅 3ds Max）：需要外网可达 `developer.api.autodesk.com`
+- Autodesk MCP 无响应：需要外网可达 `developer.api.autodesk.com`
 - 知识库查不到：确认已导入文档或替换 `max_python_help.md` 后重启 DCC
 - 开发时改了代码不生效：`maxagent.reload_pkg()`（Max）或重开 Maya 面板
 

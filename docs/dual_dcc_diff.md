@@ -60,3 +60,4 @@
 - Max 工具没有像 Maya `_common.py` 那样的公共校验/回滚层，属于历史结构。等 Max 侧引入 `tools/max/_common.py` 前不做统一。
 - Max 侧 `.mzp` 安装脚本 `mzp_install.ms` 强依赖 Max 的 MacroScript 体系；Maya 侧走 `userSetup` 或拖拽脚本，没有等价物。
 - Bridge（HTTP 端口）目前只有 Max 侧启用（`startup.py::_start_bridge`），Maya 侧尚未提供。
+- Autodesk 官方 MCP 文档工具已双端对齐：`tools/max/autodesk_docs.py` 与 `tools/maya/autodesk_docs.py` 共用 `maxagent/autodesk_mcp.py`，产品作用域集中在 `PRODUCT_SCOPES`（product_code 实测自官方 `get_available_products`）。接入新产品线时只改该表，不要在工具文件里散落 product_code。
