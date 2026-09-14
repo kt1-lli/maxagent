@@ -98,16 +98,19 @@ ICON_SEMANTIC_COLORS = {
     'confirm': '#8fce8f',
     'checkbox_on': '#8fce8f',
     'checkbox_off': '#888888',
-    # 危险 / 失败类：红
+    # 危险 / 失败 / 停止类：红
     'fail': '#e57373',
     'close': '#e57373',
     'delete': '#e57373',
     'trash': '#e57373',
-    # 连接 / 测试 / 保存 / 发送类：蓝
+    'stop': '#e57373',
+    # 连接 / 测试 / 保存 / 发送 / 会话类：蓝
     'plug': '#6fb1ff',
     'save': '#6fb1ff',
     'edit': '#6fb1ff',
     'send': '#6fb1ff',
+    'chat': '#6fb1ff',
+    'globe': '#6fb1ff',
     # 刷新 / 重置 / 拉取类：青
     'refresh': '#5bc8d5',
     'refresh2': '#5bc8d5',
@@ -119,6 +122,11 @@ ICON_SEMANTIC_COLORS = {
     'pin': '#e0c26a',
     'tool': '#e0c26a',
     'gear': '#e0c26a',
+    # 状态标记 / 切换类：橙
+    'tag': '#f0a35e',
+    # 查看 / 信息类：紫
+    'eye': '#b39ddb',
+    'hide': '#b39ddb',
 }
 
 # 页面标题图标渲染失败时的 BMP 兜底字符（不依赖富文本）
