@@ -15,7 +15,7 @@
     │                                           │
     │  名字: [助手        ]                     │
     │                                           │
-    │  头像: ● Emoji   [🤖]  快选: [🐱][🦊]...│
+    │  头像: ● Emoji（默认 [🤖]）              │
     │       ○ 图片                              │
     │       ┌──────┐                            │
     │       │ 64x64│  [选择图片] [清除]         │
@@ -45,16 +45,15 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .emoji_compat import ee as _ee
 from .icon_loader import emoji_pixmap
 from .icon_loader import set_btn_icon
-from .emoji_compat import ee as _ee
 from .icon_loader import make_page_title as _make_title
 from ..dcc.runtime import current_dcc as _current_dcc
 from .employee import AVATAR_DISPLAY_SIZE
 from .employee import DEFAULT_EMOJI
 from .employee import DEFAULT_NAME
 from .employee import Employee
-from .employee import SUGGESTED_EMOJIS
 from .employee import get_avatar_image_full_path
 from .employee import remove_avatar_image
 from .employee import save_avatar_image
@@ -136,40 +135,27 @@ class EmployeeTab(QtWidgets.QWidget):
         kind_box = QtWidgets.QGroupBox('头像')
         kind_layout = QtWidgets.QVBoxLayout(kind_box)
 
-        # Emoji 行
+        # Emoji 行：头像固定为默认 emoji，不再提供快选
+        # （badcase：QPushButton 直接放 emoji 字符在 Max 的 Windows
+        # 环境渲染不了彩色字形整排空白；既然只有默认头像，直接用
+        # icon_loader.emoji_pixmap 渲染一个只读 QLabel 展示即可）
         emoji_row = QtWidgets.QHBoxLayout()
         self._kind_emoji_radio = QtWidgets.QRadioButton('Emoji')
         self._kind_emoji_radio.toggled.connect(self._on_kind_changed)
         emoji_row.addWidget(self._kind_emoji_radio)
-        self._emoji_edit = QtWidgets.QLineEdit()
-        self._emoji_edit.setMaxLength(4)
-        self._emoji_edit.setFixedWidth(60)
-        self._emoji_edit.textChanged.connect(self._on_emoji_changed)
-        emoji_row.addWidget(self._emoji_edit)
-
-        # 快选 emoji 按钮组
-        # 注意：QPushButton 直接放 emoji 字符在 Max 的 Windows 环境
-        # 整排显示空白（默认字体链渲染不了彩色 emoji），因此这里用
-        # icon_loader.emoji_pixmap 走 QTextDocument 富文本管线（与
-        # 气泡头像同一条链）离屏渲染成图标；渲染失败再回落文字。
-        emoji_row.addWidget(QtWidgets.QLabel('快选:'))
-        for ch in SUGGESTED_EMOJIS:
-            btn = QtWidgets.QPushButton()
-            pixmap = emoji_pixmap(ch, 18)
-            if pixmap is not None:
-                btn.setIcon(QtGui.QIcon(pixmap))
-                btn.setIconSize(pixmap.size() / max(
-                    pixmap.devicePixelRatio(), 1.0,
-                ))
-            else:
-                # 兜底：离屏渲染失败时显示 BMP 兜底字符
-                btn.setText(_ee(ch))
-            btn.setFixedSize(28, 28)
-            btn.setToolTip(ch)
-            btn.clicked.connect(
-                lambda _checked=False, c=ch: self._pick_suggested_emoji(c),
+        emoji_preview = QtWidgets.QLabel()
+        pixmap = emoji_pixmap(DEFAULT_EMOJI, 18)
+        if pixmap is not None:
+            emoji_preview.setPixmap(pixmap)
+            emoji_preview.setFixedSize(
+                int(pixmap.width() / max(pixmap.devicePixelRatio(), 1.0)),
+                int(pixmap.height() / max(pixmap.devicePixelRatio(), 1.0)),
             )
-            emoji_row.addWidget(btn)
+        else:
+            # 兜底：离屏渲染失败时显示 BMP 兜底字符
+            emoji_preview.setText(_ee(DEFAULT_EMOJI))
+        emoji_preview.setToolTip('Emoji 头像固定为默认形象 ' + DEFAULT_EMOJI)
+        emoji_row.addWidget(emoji_preview)
         emoji_row.addStretch(1)
         kind_layout.addLayout(emoji_row)
 
@@ -265,19 +251,16 @@ class EmployeeTab(QtWidgets.QWidget):
     def _load_draft_into_ui(self):
         """把 ``self._draft`` 同步到 UI 控件，避免循环触发信号。"""
         self._name_edit.blockSignals(True)
-        self._emoji_edit.blockSignals(True)
         self._kind_emoji_radio.blockSignals(True)
         self._kind_image_radio.blockSignals(True)
 
         self._name_edit.setText(self._draft.name)
-        self._emoji_edit.setText(self._draft.avatar_emoji)
         if self._draft.avatar_kind == 'image':
             self._kind_image_radio.setChecked(True)
         else:
             self._kind_emoji_radio.setChecked(True)
 
         self._name_edit.blockSignals(False)
-        self._emoji_edit.blockSignals(False)
         self._kind_emoji_radio.blockSignals(False)
         self._kind_image_radio.blockSignals(False)
 
@@ -361,21 +344,12 @@ class EmployeeTab(QtWidgets.QWidget):
         self._draft.name = text.strip() or DEFAULT_NAME
         self._refresh_preview()
 
-    def _on_emoji_changed(self, text):
-        ch = (text or '').strip()
-        self._draft.avatar_emoji = ch or DEFAULT_EMOJI
-        self._refresh_preview()
-
     def _on_kind_changed(self, _checked):
         if self._kind_image_radio.isChecked():
             self._draft.avatar_kind = 'image'
         else:
             self._draft.avatar_kind = 'emoji'
         self._refresh_preview()
-
-    def _pick_suggested_emoji(self, ch):
-        self._emoji_edit.setText(ch)
-        self._kind_emoji_radio.setChecked(True)
 
     def _on_pick_image(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -480,6 +454,10 @@ class EmployeeTab(QtWidgets.QWidget):
         # image 模式但实际无图：自动降级到 emoji，避免气泡空头像
         if self._draft.avatar_kind == 'image' and not self._draft.avatar_image:
             self._draft.avatar_kind = 'emoji'
+
+        # Emoji 模式固定默认头像（快选已移除，旧配置里的自定义值一并清理）
+        if self._draft.avatar_kind == 'emoji':
+            self._draft.avatar_emoji = DEFAULT_EMOJI
 
         # 持久化到配置
         self._draft.save(self._config)

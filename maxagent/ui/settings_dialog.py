@@ -41,6 +41,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import ICON_SEMANTIC_COLORS
 from .icon_loader import load_icon
 from .icon_loader import make_page_title as _make_title
 from .icon_loader import rich_icon as _rich_icon
@@ -141,15 +142,19 @@ class SettingsDialog(
 
     def _on_nav_sel_changed(self, row):
         # type: (int) -> None
-        """导航选中态换色：选中项图标亮青蓝，其余恢复浅灰。"""
+        """导航选中态换色：选中项图标亮青蓝，其余恢复各自语义色。"""
         try:
             for i in range(self.nav.count()):
                 item = self.nav.item(i)
                 key = self._NAV_ITEMS[i][1] if i < len(self._NAV_ITEMS) else ''
-                color = '#4fc3f7' if i == row else '#e0e0e0'
-                icon = load_icon(
-                    self._NAV_ICON_BY_KEY.get(key, ''), color=color,
-                )
+                name = self._NAV_ICON_BY_KEY.get(key, '')
+                if i == row:
+                    # 选中高亮色
+                    color = '#4fc3f7'
+                else:
+                    # 未选中恢复语义色；表外图标回落浅灰
+                    color = ICON_SEMANTIC_COLORS.get(name, '#e0e0e0')
+                icon = load_icon(name, color=color)
                 if icon is not None:
                     item.setIcon(icon)
         except Exception:  # pylint: disable=broad-except
@@ -192,7 +197,8 @@ class SettingsDialog(
         self.nav.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for label, _key in self._NAV_ITEMS:
             item = QtWidgets.QListWidgetItem(label.split('  ', 1)[-1], self.nav)
-            icon = load_icon(self._NAV_ICON_BY_KEY.get(_key, ''), color='#e0e0e0')
+            # 不传颜色 → load_icon 走语义色表，导航图标各有主题色
+            icon = load_icon(self._NAV_ICON_BY_KEY.get(_key, ''))
             if icon is not None:
                 item.setIcon(icon)
         self.nav.currentRowChanged.connect(self._on_nav_changed)

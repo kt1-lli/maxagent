@@ -45,12 +45,6 @@ AVATAR_STORE_SIZE = 64
 DEFAULT_NAME = '助手'
 DEFAULT_EMOJI = '🤖'
 
-# 推荐 emoji 快选（员工 Tab 用）
-SUGGESTED_EMOJIS = [
-    '🤖', '🐱', '🦊', '🐧', '🦄',
-    '🔮', '🎨', '🌟', '⚡',
-]
-
 
 def get_avatar_image_full_path():
     # type: () -> str

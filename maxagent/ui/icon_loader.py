@@ -127,6 +127,14 @@ ICON_SEMANTIC_COLORS = {
     # 查看 / 信息类：紫
     'eye': '#b39ddb',
     'hide': '#b39ddb',
+    # 设置导航专属图标
+    'robot': '#b39ddb',
+    'palette': '#f48fb1',
+    'person': '#f0a35e',
+    'box': '#a1887f',
+    'toolbox': '#90a4ae',
+    'journal-text': '#5bc8d5',
+    'question-circle': '#e0c26a',
 }
 
 # 页面标题图标渲染失败时的 BMP 兜底字符（不依赖富文本）
