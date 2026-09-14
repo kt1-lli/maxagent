@@ -41,6 +41,7 @@ from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
 from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
+from .icon_loader import set_btn_icon
 
 
 logger = get_logger(__name__)

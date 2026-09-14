@@ -29,6 +29,7 @@ from ..qt_compat import QtWidgets
 from ..web_providers import BUILTIN_PROVIDERS
 from ..web_providers import validate_id
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import set_btn_icon
 
 
 logger = get_logger(__name__)
