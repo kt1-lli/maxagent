@@ -19,7 +19,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from ..logger import get_logger
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from ..attachments import model_supports_vision
 
 
@@ -108,8 +108,8 @@ class _VisionWebMixin(object):
         """
         try:
             self.status_label.setText(
-                (_ee('🌐') + ' 本轮联网：开启') if checked
-                else (_ee('🌐') + ' 本轮联网：关闭'),
+                (_rich_icon('globe') + ' 本轮联网：开启') if checked
+                else (_rich_icon('globe', color='#666666') + ' 本轮联网：关闭'),
             )
         except Exception:  # pylint: disable=broad-except
             pass

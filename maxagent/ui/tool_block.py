@@ -20,7 +20,7 @@ from typing import Optional
 from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
 from .bubbles import ChatLabel
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from .markdown_render import html_escape
 
 
@@ -117,7 +117,8 @@ class ToolCallBlock(QtWidgets.QWidget):
         - self._head_btn：纯文本的 ▶ / ▼，QToolButton 直接显示符号
         - self._head_label：富文本的图标 + 工具名 + 状态对勾
         """
-        icon = _ee('⚠️') if self._dangerous else _ee('🔧')
+        icon = (_rich_icon('fail', color='#b8923a') if self._dangerous
+                else _rich_icon('tool'))
         if running:
             sym = '⋯'
             color = '#888'

@@ -14,7 +14,7 @@ from __future__ import print_function
 
 from ..logger import get_logger
 from ..qt_compat import QtCore, QtWidgets
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 
 logger = get_logger(__name__)
 
@@ -78,7 +78,7 @@ class _WorkerSignalsMixin(object):
 
     def _on_finished(self):
         self._renderer.end_turn()
-        self.status_label.setText(_ee('✅') + ' 完成')
+        self.status_label.setText(_rich_icon('success', color='#8fce8f') + ' 完成')
         self._set_running(False)
         # 停止节流 timer，避免 finished 后再触发一次冗余保存
         timer = getattr(self, '_turn_save_timer', None)
@@ -118,7 +118,7 @@ class _WorkerSignalsMixin(object):
 
     def _on_failed(self, err):
         self._renderer.add_error(err)
-        self.status_label.setText(_ee('❌') + ' 失败')
+        self.status_label.setText(_rich_icon('fail', color='#e57373') + ' 失败')
         self._set_running(False)
         # 停止节流 timer，避免 failed 后再触发一次冗余保存
         timer = getattr(self, '_turn_save_timer', None)

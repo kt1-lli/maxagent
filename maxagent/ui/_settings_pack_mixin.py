@@ -19,7 +19,8 @@ from __future__ import print_function
 from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
+from .icon_loader import set_btn_icon
 
 
 logger = get_logger(__name__)
@@ -34,7 +35,7 @@ class _SettingsPackMixin(object):
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_ee('📦') + '  工具与技能')
+        title = QtWidgets.QLabel(_rich_icon('box') + '  工具与技能')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -66,11 +67,13 @@ class _SettingsPackMixin(object):
         # 操作按钮（每栏的全选已收敛到栏顶复选框，这里仅保留刷新与导入导出）
         op_row = QtWidgets.QHBoxLayout()
         op_row.setSpacing(8)
-        refresh_btn = QtWidgets.QPushButton(_ee('🔄') + ' 刷新')
+        refresh_btn = QtWidgets.QPushButton('刷新')
+        set_btn_icon(refresh_btn, 'refresh2', '刷新')
         refresh_btn.clicked.connect(self._reload_pack_lists)
         op_row.addWidget(refresh_btn)
         op_row.addStretch(1)
-        export_btn = QtWidgets.QPushButton(_ee('📤') + ' 导出选中…')
+        export_btn = QtWidgets.QPushButton('导出选中…')
+        set_btn_icon(export_btn, 'export', '导出选中…')
         export_btn.setStyleSheet(
             'QPushButton { background:#2d7d46; color:white;'
             ' border:1px solid #3a9c5a; padding:6px 12px; border-radius:3px; }'
@@ -78,7 +81,8 @@ class _SettingsPackMixin(object):
         )
         export_btn.clicked.connect(self._on_pack_export)
         op_row.addWidget(export_btn)
-        import_btn = QtWidgets.QPushButton(_ee('📥') + ' 导入资源包…')
+        import_btn = QtWidgets.QPushButton('导入资源包…')
+        set_btn_icon(import_btn, 'import', '导入资源包…')
         import_btn.clicked.connect(self._on_pack_import)
         op_row.addWidget(import_btn)
         layout.addLayout(op_row)

@@ -20,7 +20,7 @@ from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from ..logger import get_logger
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from .markdown_render import extract_code_blocks
 from .markdown_render import html_escape
 from .markdown_render import render_markdown
@@ -604,7 +604,7 @@ class UserBubble(QtWidgets.QWidget):
         self._bubble = bubble
         head = QtWidgets.QLabel(
             '<span style="color:#bbd9f5;font-size:9pt;">{} 你</span>'.format(
-                _ee('👤'),
+                _rich_icon('person'),
             )
         )
         head.setStyleSheet('background:transparent; color:#bbd9f5;')
@@ -829,7 +829,9 @@ class ErrorBubble(QtWidgets.QWidget):
         bubble = BubbleFrame(align='left', bg='#4a2a2a', fg='#ffaaaa')
         self._bubble = bubble
         head = QtWidgets.QLabel(
-            '<b style="color:#ffaaaa;">{} 错误</b>'.format(_ee('⚠'))
+            '<b style="color:#ffaaaa;">{} 错误</b>'.format(
+                _rich_icon('fail', color='#ffaaaa'),
+            )
         )
         head.setStyleSheet('background:transparent;')
         bubble.add_widget(head)

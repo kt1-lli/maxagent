@@ -26,6 +26,7 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import btn_label as _btn_label
 from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 
 
@@ -130,7 +131,7 @@ class LearnApprovalDialog(QtWidgets.QDialog):
             ('<b style="color:#ffaa66;">{} AI 想要学习一个新工具</b><br>'
              '<span style="color:#aaa;">'
              '请仔细阅读下面的代码。批准后，这个工具会被永久保存到你的电脑，'
-             '下次启动也会自动加载。</span>').format(_ee('⚠'))
+             '下次启动也会自动加载。</span>').format(_rich_icon('fail', color='#b8923a'))
         )
         head.setWordWrap(True)
         head.setStyleSheet('background:transparent;')

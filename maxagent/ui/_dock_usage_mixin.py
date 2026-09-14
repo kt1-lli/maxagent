@@ -15,7 +15,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from ..logger import get_logger
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 
 
 logger = get_logger(__name__)
@@ -152,7 +152,7 @@ class _UsageBudgetMixin(object):
     def _on_history_trimmed(self, removed, current_tokens, budget_tokens):
         """worker 通知"已自动裁剪 N 条早期消息"。"""
         self._renderer.add_status(
-                _ee('🧹') + ' 历史已自动裁剪 {} 条早期消息以适配 token 预算 '
+                _rich_icon('trash', color='#888888') + ' 历史已自动裁剪 {} 条早期消息以适配 token 预算 '
             '({}/{})'.format(removed, current_tokens, budget_tokens),
         )
         self._refresh_context_label()

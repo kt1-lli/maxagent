@@ -41,9 +41,8 @@ from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
-from .emoji_compat import e as _e
-from .emoji_compat import ee as _ee
 from ._settings_help_mixin import _SettingsHelpMixin
 from ._settings_model_tab_v2_mixin import SettingsModelTabV2Mixin
 from ._settings_pack_mixin import _SettingsPackMixin
@@ -112,15 +111,15 @@ class SettingsDialog(
     # 内部用横向子 Tab 切换 规则 / 技能 / 工具 / 导入导出 四个视图，
     # 既精简了左侧导航，又给每类资源都提供了"启用/禁用"开关。
     _NAV_ITEMS = [
-        (_ee('🤖') + '  模型', 'model'),
-        (_ee('🌐') + '  联网', 'network'),
-        (_ee('🎨') + '  应用', 'app'),
-        (_ee('👤') + '  助手形象', 'employee'),
-        (_ee('📦') + '  我的资源', 'resources'),
-        (_ee('🧰') + '  共享资源', 'shared'),
-        (_ee('🔌') + '  IDE 接口', 'bridge'),
-        (_ee('📜') + '  日志', 'log'),
-        (_ee('❓') + '  帮助', 'help'),
+        (_rich_icon('robot') + '  模型', 'model'),
+        (_rich_icon('globe') + '  联网', 'network'),
+        (_rich_icon('palette') + '  应用', 'app'),
+        (_rich_icon('person') + '  助手形象', 'employee'),
+        (_rich_icon('box') + '  我的资源', 'resources'),
+        (_rich_icon('toolbox') + '  共享资源', 'shared'),
+        (_rich_icon('plug') + '  IDE 接口', 'bridge'),
+        (_rich_icon('journal-text') + '  日志', 'log'),
+        (_rich_icon('question-circle') + '  帮助', 'help'),
     ]
 
     def __init__(self, config_manager, parent=None):
@@ -228,7 +227,7 @@ class SettingsDialog(
         outer = QtWidgets.QVBoxLayout(page)
         outer.setSpacing(10)
 
-        title = QtWidgets.QLabel(_ee('🌐') + '  联网搜索')
+        title = QtWidgets.QLabel(_rich_icon('globe') + '  联网搜索')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         outer.addWidget(title)
 
@@ -253,9 +252,9 @@ class SettingsDialog(
             self.web_mode_combo.addItem(label)
         self.web_mode_combo.setToolTip(
             ('关闭：永远不联网，主 UI 按钮置灰\n'
-             '自动：在主 UI 通过 {} 按钮按需开关本轮对话\n'
+             '自动：在主 UI 通过联网按钮按需开关本轮对话\n'
              '强制：每轮对话都允许 LLM 联网，主 UI 按钮强制亮起'
-             ).format(_ee('🌐')),
+             ),
         )
         self.web_mode_combo.currentIndexChanged.connect(
             self._on_web_settings_changed,
@@ -396,7 +395,7 @@ class SettingsDialog(
             QtWidgets.QFormLayout.ExpandingFieldsGrow,
         )
 
-        title = QtWidgets.QLabel(_ee('🎨') + '  应用全局设置')
+        title = QtWidgets.QLabel(_rich_icon('palette') + '  应用全局设置')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         form.addRow(title)
 
@@ -659,7 +658,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(12)
 
-        title = QtWidgets.QLabel(_ee('📜') + '  日志')
+        title = QtWidgets.QLabel(_rich_icon('journal-text') + '  日志')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -742,7 +741,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_ee('🔌') + '  IDE 接口（Bridge）')
+        title = QtWidgets.QLabel(_rich_icon('plug') + '  IDE 接口（Bridge）')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -1193,7 +1192,7 @@ class SettingsDialog(
         layout = QtWidgets.QVBoxLayout(page)
         layout.setSpacing(10)
 
-        title = QtWidgets.QLabel(_ee('🧰') + '  共享资源目录')
+        title = QtWidgets.QLabel(_rich_icon('toolbox') + '  共享资源目录')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -2527,7 +2526,7 @@ class SettingsDialog(
         # 状态栏提示——绿色让用户确认动作生效
         self.test_label.setText(
             '{} 已重置为 OpenAI 兼容默认模板，请填写名称 / 模型后点「应用」'.format(
-                _ee('✅'),
+                _rich_icon('success', color='#8fce8f'),
             ),
         )
         self.test_label.setStyleSheet('color:#8fce8f;')
@@ -2782,7 +2781,7 @@ class SettingsDialog(
         if prov is None:
             return
         self.web_test_label.setText('{} 正在用 {} 搜索...'.format(
-            _ee('⏳'), prov.get('name') or pid,
+            _rich_icon('hourglass-split', color='#888888'), prov.get('name') or pid,
         ))
         self.web_test_label.setStyleSheet('color:#888;')
         QtWidgets.QApplication.processEvents()
@@ -2802,17 +2801,17 @@ class SettingsDialog(
                 provider=prov,
             )
         except SearchError as exc:
-            self.web_test_label.setText('{} 搜索失败: {}'.format(_ee('❌'), exc))
+            self.web_test_label.setText('{} 搜索失败: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.web_test_label.setStyleSheet('color:#e57373;')
             return
         except Exception as exc:  # pylint: disable=broad-except
-            self.web_test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
+            self.web_test_label.setText('{} 异常: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.web_test_label.setStyleSheet('color:#e57373;')
             return
         if not results:
             self.web_test_label.setText(
                 '{} 没返回结果（可能被反爬、网络受限或字段映射不对）'.format(
-                    _ee('⚠'),
+                    _rich_icon('fail', color='#b8923a'),
                 ),
             )
             self.web_test_label.setStyleSheet('color:#b8923a;')
@@ -2820,7 +2819,7 @@ class SettingsDialog(
         first = results[0]
         self.web_test_label.setText(
             '{} {} 命中 {} 条；首条: {}'.format(
-                _ee('✅'),
+                _rich_icon('success', color='#8fce8f'),
                 prov.get('id') or pid, len(results),
                 first.title[:60] or first.url[:60],
             ),
@@ -3732,7 +3731,7 @@ class SettingsDialog(
         self._config.upsert_profile(prof)
         self._config.save()
         self._dirty = False
-        self.test_label.setText('{} 已保存'.format(_ee('✅')))
+        self.test_label.setText('{} 已保存'.format(_rich_icon('success', color='#8fce8f')))
         self.test_label.setStyleSheet('color:#8fce8f;')
         self._reload_profiles()
 
@@ -3798,7 +3797,7 @@ class SettingsDialog(
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
+            self.test_label.setText('{} 表单错误: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
         content, is_vision = self._build_test_user_message(
@@ -3834,13 +3833,13 @@ class SettingsDialog(
             if reply:
                 self.test_label.setText(
                     '{} 连接成功{}，模型回复: "{}"'.format(
-                        _ee('✅'), tag, reply[:40],
+                        _rich_icon('success', color='#8fce8f'), tag, reply[:40],
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
                 self.test_label.setText(
-                    '{} 连接成功{}（响应为空）'.format(_ee('✅'), tag),
+                    '{} 连接成功{}（响应为空）'.format(_rich_icon('success', color='#8fce8f'), tag),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
         except LLMError as exc:
@@ -3859,13 +3858,13 @@ class SettingsDialog(
                     '请到"视觉模型白名单"中移除相关关键词。'
                 ).format(prof.model or '')
             self.test_label.setText(
-                '{} 连接失败: {}{}'.format(_ee('❌'), err_text, hint),
+                '{} 连接失败: {}{}'.format(_rich_icon('fail', color='#e57373'), err_text, hint),
             )
             self.test_label.setStyleSheet('color:#e57373;')
             self.test_label.setToolTip(err_text + hint)
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception('测试连接异常')
-            self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
+            self.test_label.setText('{} 异常: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             self.test_label.setToolTip(str(exc))
 
@@ -3873,7 +3872,7 @@ class SettingsDialog(
         try:
             prof = self._read_form()
         except Exception as exc:  # pylint: disable=broad-except
-            self.test_label.setText('{} 表单错误: {}'.format(_ee('❌'), exc))
+            self.test_label.setText('{} 表单错误: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             return
 
@@ -3900,7 +3899,7 @@ class SettingsDialog(
                 from ..tools import build_openai_tools_schema
                 tools_schema = build_openai_tools_schema()
             except Exception as exc:  # pylint: disable=broad-except
-                self.test_label.setText('{} 加载工具 schema 失败: {}'.format(_ee('❌'), exc))
+                self.test_label.setText('{} 加载工具 schema 失败: {}'.format(_rich_icon('fail', color='#e57373'), exc))
                 self.test_label.setStyleSheet('color:#e57373;')
                 return
 
@@ -3944,14 +3943,14 @@ class SettingsDialog(
             if content:
                 self.test_label.setText(
                     '{} 完整测试通过{}，模型回复: "{}"'.format(
-                        _ee('✅'), tag, content[:40],
+                        _rich_icon('success', color='#8fce8f'), tag, content[:40],
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
             else:
                 self.test_label.setText(
                     '{} 完整测试通过{}（响应为空，但握手成功）'.format(
-                        _ee('✅'), tag,
+                        _rich_icon('success', color='#8fce8f'), tag,
                     ),
                 )
                 self.test_label.setStyleSheet('color:#8fce8f;')
@@ -3961,13 +3960,13 @@ class SettingsDialog(
             err_text = str(exc)
             logger.warning('完整测试失败: %s', err_text)
             self.test_label.setText(
-                '{} 完整测试失败: {}'.format(_ee('❌'), err_text),
+                '{} 完整测试失败: {}'.format(_rich_icon('fail', color='#e57373'), err_text),
             )
             self.test_label.setStyleSheet('color:#e57373;')
             self.test_label.setToolTip(err_text)
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception('完整测试异常')
-            self.test_label.setText('{} 异常: {}'.format(_ee('❌'), exc))
+            self.test_label.setText('{} 异常: {}'.format(_rich_icon('fail', color='#e57373'), exc))
             self.test_label.setStyleSheet('color:#e57373;')
             self.test_label.setToolTip(str(exc))
 
@@ -4033,7 +4032,7 @@ class SettingsDialog(
         layout.setSpacing(8)
 
         # 顶部统一标题
-        title = QtWidgets.QLabel(_ee('📦') + '  我的资源')
+        title = QtWidgets.QLabel(_rich_icon('box') + '  我的资源')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 
@@ -4061,19 +4060,19 @@ class SettingsDialog(
 
         self.resources_tabs.addTab(
             self._build_page_rules(),
-            _ee('📋') + ' 规则',
+            _rich_icon('tag') + ' 规则',
         )
         self.resources_tabs.addTab(
             self._build_subtab_skills(),
-            _ee('🎓') + ' 技能',
+            _rich_icon('star') + ' 技能',
         )
         self.resources_tabs.addTab(
             self._build_subtab_tools(),
-            _ee('🧰') + ' 工具',
+            _rich_icon('tool') + ' 工具',
         )
         self.resources_tabs.addTab(
             self._build_page_pack(),
-            _ee('📤') + ' 导入/导出',
+            _rich_icon('export') + ' 导入/导出',
         )
 
         layout.addWidget(self.resources_tabs, 1)

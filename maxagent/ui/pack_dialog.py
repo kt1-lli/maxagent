@@ -20,7 +20,7 @@ from typing import Optional
 from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
-from .emoji_compat import ee as _ee
+from .icon_loader import set_btn_icon
 
 
 logger = get_logger(__name__)
@@ -106,8 +106,9 @@ class PackImportDialog(QtWidgets.QDialog):
         self.cancel_btn.setMinimumWidth(96)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
-        self.import_btn = QtWidgets.QPushButton(_ee('✅') + ' 开始导入')
+        self.import_btn = QtWidgets.QPushButton('开始导入')
         self.import_btn.setMinimumWidth(120)
+        set_btn_icon(self.import_btn, 'success', '开始导入', color='#ffffff')
         self.import_btn.setStyleSheet(
             'QPushButton { background:#2d7d46; color:white;'
             ' border:1px solid #3a9c5a; padding:6px 12px; border-radius:3px; }'

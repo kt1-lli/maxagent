@@ -69,8 +69,7 @@ from .bubbles import UserBubble as _UserBubble
 from .bubbles import WelcomeBlock as _WelcomeBlock
 from .emoji_compat import apply_font_fallback as _apply_font_fallback
 from .emoji_compat import btn_label as _btn_label
-from .emoji_compat import e as _e
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 from .tool_block import ToolCallBlock as _ToolCallBlock
 
@@ -764,7 +763,7 @@ class MaxAgentDockWidget(
         self.input_edit = _SmartInput(self)
         self.input_edit.setMinimumHeight(self._MIN_INPUT_HEIGHT)
         self.input_edit.setPlaceholderText(
-            _ee('✏️') + ' 在这里输入指令...\n'
+            '在这里输入指令...\n'
             'Enter 发送 / Shift+Enter 换行 / Ctrl+Enter 发送 / Ctrl+V 粘贴图片',
         )
         self.input_edit.send_requested.connect(self._on_send)
@@ -791,7 +790,8 @@ class MaxAgentDockWidget(
         action_row.setSpacing(6)
 
         # 📎 添加图片按钮：打开文件对话框选图
-        self.attach_btn = QtWidgets.QPushButton(_ee('📎'))
+        self.attach_btn = QtWidgets.QPushButton()
+        set_btn_icon(self.attach_btn, 'paperclip', '')
         self.attach_btn.setFixedWidth(40)
         self.attach_btn.setToolTip(
             '添加图片（也可 Ctrl+V 粘贴 / 拖入图片文件）',
@@ -800,7 +800,8 @@ class MaxAgentDockWidget(
         action_row.addWidget(self.attach_btn, 0)
 
         # ✂️ 截图按钮：进程内 Qt 全屏框选
-        self.snip_btn = QtWidgets.QPushButton(_ee('✂️'))
+        self.snip_btn = QtWidgets.QPushButton()
+        set_btn_icon(self.snip_btn, 'scissors', '')
         self.snip_btn.setFixedWidth(40)
         self.snip_btn.setToolTip('截图（全屏框选）')
         self.snip_btn.clicked.connect(self._on_snip)
@@ -811,7 +812,8 @@ class MaxAgentDockWidget(
         #   off    -> 按钮置灰不可点，hover 提示"全局已禁用"
         #   auto   -> 按钮可点，亮起=本轮联网/熄灭=本轮关闭
         #   force  -> 按钮强制亮起且不可点，hover 提示"全局已强制开启"
-        self.web_btn = QtWidgets.QPushButton(_ee('🌐'))
+        self.web_btn = QtWidgets.QPushButton()
+        set_btn_icon(self.web_btn, 'globe', '')
         self.web_btn.setCheckable(True)
         self.web_btn.setFixedWidth(40)
         self.web_btn.setSizePolicy(
@@ -871,7 +873,7 @@ class MaxAgentDockWidget(
         outer.addWidget(self.splitter, 1)
 
         # === 底部状态栏 ===
-        self.status_label = QtWidgets.QLabel(_ee('🟢') + ' 准备就绪')
+        self.status_label = QtWidgets.QLabel(_rich_icon('success', color='#8fce8f') + ' 准备就绪')
         self.status_label.setStyleSheet('color:#888;')
         outer.addWidget(self.status_label)
 
@@ -1117,7 +1119,7 @@ class MaxAgentDockWidget(
             '只保留最近 2 轮。\n\n'
             '节省 token、加速后续对话\n'
             '{} 早期细节将不可恢复\n\n'
-            '是否继续？'.format(_ee('⚠️')),
+            '是否继续？'.format('⚠'),
             QtWidgets.QMessageBox.StandardButton.Yes
             | QtWidgets.QMessageBox.StandardButton.No,
         )
@@ -1125,7 +1127,7 @@ class MaxAgentDockWidget(
             return
 
         self._set_running(True)
-        self.status_label.setText(_ee('📝') + ' 正在生成历史摘要...')
+        self.status_label.setText(_rich_icon('hourglass-split', color='#888888') + ' 正在生成历史摘要...')
         self._renderer.add_status('正在压缩对话历史，请稍候...')
         # 同步在后台线程跑摘要请求，避免冻结 UI
         from ..qt_compat import QtCore as _QtCore
@@ -1156,7 +1158,7 @@ class MaxAgentDockWidget(
 
         def _on_done():
             self._set_running(False)
-            self.status_label.setText(_ee('🟢') + ' 准备就绪')
+            self.status_label.setText(_rich_icon('success', color='#8fce8f') + ' 准备就绪')
             if worker_holder['err']:
                 self._renderer.add_error(
                     '压缩失败: {}'.format(worker_holder['err']),

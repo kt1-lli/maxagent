@@ -20,8 +20,9 @@ PySide2 (Max 2022~2024) 上 emoji 存在字体回退缺陷（见
   直连，规避插件路径的不确定性；
 - 绑定选择严格跟随 :mod:`maxagent.qt_compat` 已解析的结果
   （IS_PYSIDE6 / IS_PYSIDE2），绝不引入第二套 Qt 绑定；
-- Bootstrap Icons 使用 ``fill="currentColor"``，渲染前把
-  currentColor 替换为目标颜色，即可适配明暗主题；
+- Bootstrap Icons 使用 ``fill="currentColor"``，Qt 渲染器对根节点
+  继承支持不可靠，故渲染前把 fill 显式注入每个图形元素（见
+  :func:`_apply_fill`），既适配明暗主题，也规避颜色丢失；
 - 以 2x 尺寸渲染并设置 DevicePixelRatio，保证高分屏下清晰；
 - 任何失败（文件缺失 / 模块缺失 / 渲染失败）一律返回 None，
   由调用方走 ``btn_label`` 文本兜底，图标属于纯装饰不影响功能；
@@ -42,6 +43,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import os
+import re
 from typing import Optional
 from typing import Tuple
 
@@ -141,6 +143,69 @@ def load_icon(name, color=None, size=16):
     return icon
 
 
+# 富文本内嵌图标的 PNG 缓存：键为 (图标名, 颜色, 尺寸)，值为文件路径
+_RICH_PNG_CACHE = {}  # type: dict
+
+# 富文本 <img> 缓存目录（进程临时目录下，随进程生命周期清理）
+_RICH_PNG_DIR = None  # type: Optional[str]
+
+
+def _rich_png_dir():
+    # type: () -> str
+    """返回富文本图标 PNG 缓存目录（惰性创建）。"""
+    global _RICH_PNG_DIR
+    if _RICH_PNG_DIR is None:
+        import tempfile
+        _RICH_PNG_DIR = os.path.join(
+            tempfile.gettempdir(), 'maxagent_icon_cache',
+        )
+        if not os.path.isdir(_RICH_PNG_DIR):
+            os.makedirs(_RICH_PNG_DIR, exist_ok=True)
+    return _RICH_PNG_DIR
+
+
+def rich_icon(name, color=None, size=13):
+    # type: (str, Optional[str], int) -> Optional[str]
+    """把 SVG 图标渲染成着色 PNG，返回富文本 ``<img>`` 片段。
+
+    QLabel / 富文本场景无法直接用 QIcon，这里把图标落盘为 PNG
+    后内嵌 ``<img src=...>``，颜色、尺寸完全可控；QLabel 对
+    ``<img>`` 的支持在 PySide2/6 均稳定，无字体回退问题。
+
+    :param name: 图标名（对应 icons/<name>.svg）
+    :param color: 图标颜色；不传用 :data:`DEFAULT_ICON_COLOR`
+    :param size: 内嵌显示尺寸（px）
+    :returns: ``<img>`` HTML 片段；失败返回空串（调用方拼接文本即可）
+    """
+    fill = color or DEFAULT_ICON_COLOR
+    cache_key = (name, fill, size)
+    if cache_key in _RICH_PNG_CACHE:
+        return _RICH_PNG_CACHE[cache_key]
+    try:
+        path = os.path.join(_ICONS_DIR, name + '.svg')
+        if not os.path.isfile(path):
+            _get_logger().warning('rich_icon [%s] SVG 不存在，返回空串', name)
+            return ''
+        pixmap = _render_pixmap(path, fill, size)
+        if pixmap is None:
+            return ''
+        import uuid
+        png_path = os.path.join(
+            _rich_png_dir(),
+            '{}_{}_{}.png'.format(name, fill.strip('#'), uuid.uuid4().hex[:8]),
+        )
+        pixmap.save(png_path, 'PNG')
+        html = '<img src="{}" width="{}" height="{}">'.format(
+            png_path.replace('\\', '/'), size, size,
+        )
+        _RICH_PNG_CACHE[cache_key] = html
+        return html
+    except Exception as exc:  # pylint: disable=broad-except
+        # 图标是纯装饰，任何异常都不能影响 UI 构建
+        _get_logger().warning('rich_icon [%s] 生成失败 (%s)，返回空串', name, exc)
+        return ''
+
+
 def set_btn_icon(widget, name, text, color=None):
     # type: (object, str, str, Optional[str]) -> bool
     """给按钮设置 SVG 图标并把标签改为纯文本。
@@ -173,50 +238,104 @@ def set_btn_icon(widget, name, text, color=None):
         return False
 
 
+def _apply_fill(svg_text, fill):
+    # type: (str, str) -> str
+    """把目标颜色显式注入 SVG 的每个图形元素。
+
+    Qt (SVG Tiny 1.2) 渲染器对根节点 ``fill="currentColor"`` 的
+    继承支持不可靠，path 上拿不到颜色会退化成默认黑色。
+    因此不能只做字符串替换，必须：
+
+    1. 全局替换 ``currentColor``（覆盖根节点与 style 写法）；
+    2. 元素上已写 fill 的（如手工图标写死 ``fill="#000"``），替换其值；
+    3. 元素没写 fill 的，逐个注入 ``fill="目标色"``，
+       不依赖根节点继承，保证任意素材都渲染出预期颜色。
+
+    :param svg_text: SVG 文件原始文本
+    :param fill: 目标颜色（CSS 颜色串）
+    :returns: 注入颜色后的 SVG 文本
+    """
+    # 步骤 1：currentColor 全局替换（属性值与 CSS 均覆盖）
+    svg_text = svg_text.replace('currentColor', fill)
+
+    # 步骤 2：替换元素上已有的 fill 值（不匹配 fill-rule/fill-opacity）
+    has_fill_re = re.compile(
+        r'(<(?:path|circle|rect|polygon|ellipse|line|polyline)\b'
+        r'[^>]*?\sfill=")[^"]*(")',
+    )
+    svg_text = has_fill_re.sub(
+        lambda m: m.group(1) + fill + m.group(2), svg_text,
+    )
+
+    # 步骤 3：给没有 fill 的图形元素注入 fill
+    # 负向前瞻 (?![^>]*\bfill=) 避免对已有 fill 的元素重复注入
+    no_fill_re = re.compile(
+        r'(<(?:path|circle|rect|polygon|ellipse|line|polyline)\b'
+        r'(?![^>]*\sfill=")[^>]*?)(/?>)',
+    )
+    return no_fill_re.sub(
+        lambda m: m.group(1) + ' fill="{}"'.format(fill) + m.group(2),
+        svg_text,
+    )
+
+
+def _render_pixmap(path, fill, size):
+    # type: (str, str, int) -> Optional[object]
+    """把 SVG 文件渲染为指定逻辑尺寸的透明底 QPixmap（2x 抗模糊）。
+
+    :param path: SVG 文件绝对路径
+    :param fill: 目标颜色
+    :param size: 逻辑尺寸（px）
+    :returns: QPixmap；失败返回 None
+    """
+    from ..qt_compat import QtCore
+    if IS_PYSIDE6:
+        from PySide6.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
+    elif IS_PYSIDE2:
+        from PySide2.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
+    else:
+        _get_logger().warning('无可用 Qt 绑定（IS_PYSIDE2/6 均为 False）')
+        return None
+
+    with open(path, 'r', encoding='utf-8') as f:
+        svg_text = f.read()
+
+    # 把 fill 显式注入每个图形元素（Qt 渲染器不认根节点继承）
+    svg_text = _apply_fill(svg_text, fill)
+
+    renderer = QSvgRenderer(QtCore.QByteArray(svg_text.encode('utf-8')))
+    if not renderer.isValid():
+        _get_logger().warning('icon SVG 解析失败 (renderer invalid): %s', path)
+        return None
+
+    # 2x 尺寸渲染 + DevicePixelRatio，HiDPI 下依然清晰
+    scale = 2.0
+    pixmap = QtGui.QPixmap(int(size * scale), int(size * scale))
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    try:
+        renderer.render(painter)
+    finally:
+        painter.end()
+    if pixmap.isNull():
+        _get_logger().warning('icon SVG 渲染为空 pixmap: %s', path)
+        return None
+    pixmap.setDevicePixelRatio(scale)
+    return pixmap
+
+
 def _render_svg_file(path, fill, size):
     # type: (str, str, int) -> Optional[object]
-    """读取并渲染单个 SVG 文件，失败返回 None。
+    """读取并渲染单个 SVG 文件为 QIcon，失败返回 None。
 
     绑定跟随 qt_compat 的解析结果：PySide6 环境只 import
     PySide6.QtSvg，PySide2 环境只 import PySide2.QtSvg，
     避免双绑定同时加载导致 Max 崩溃。
     """
     try:
-        from ..qt_compat import QtCore
-        if IS_PYSIDE6:
-            from PySide6.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
-        elif IS_PYSIDE2:
-            from PySide2.QtSvg import QSvgRenderer  # type: ignore  # pylint: disable=import-error,no-name-in-module
-        else:
-            _get_logger().warning('无可用 Qt 绑定（IS_PYSIDE2/6 均为 False）')
+        pixmap = _render_pixmap(path, fill, size)
+        if pixmap is None:
             return None
-
-        with open(path, 'r', encoding='utf-8') as f:
-            svg_text = f.read()
-
-        # Bootstrap Icons 用 fill="currentColor"，替换为目标颜色；
-        # 同时兜底替换写死的黑色，保证颜色参数对任意素材生效
-        svg_text = svg_text.replace('currentColor', fill)
-        svg_text = svg_text.replace('fill="#000000"', 'fill="{}"'.format(fill))
-
-        renderer = QSvgRenderer(QtCore.QByteArray(svg_text.encode('utf-8')))
-        if not renderer.isValid():
-            _get_logger().warning('icon SVG 解析失败 (renderer invalid): %s', path)
-            return None
-
-        # 2x 尺寸渲染 + DevicePixelRatio，HiDPI 下依然清晰
-        scale = 2.0
-        pixmap = QtGui.QPixmap(int(size * scale), int(size * scale))
-        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
-        painter = QtGui.QPainter(pixmap)
-        try:
-            renderer.render(painter)
-        finally:
-            painter.end()
-        if pixmap.isNull():
-            _get_logger().warning('icon SVG 渲染为空 pixmap: %s', path)
-            return None
-        pixmap.setDevicePixelRatio(scale)
         return QtGui.QIcon(pixmap)
     except ImportError as exc:
         _get_logger().warning(
@@ -234,5 +353,6 @@ __all__ = [
     'clear_cache',
     'icons_dir',
     'load_icon',
+    'rich_icon',
     'set_btn_icon',
 ]

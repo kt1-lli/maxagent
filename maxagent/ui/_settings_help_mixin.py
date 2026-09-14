@@ -17,7 +17,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from ..qt_compat import QtWidgets
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 
 
 def _current_dcc_name():
@@ -42,7 +42,7 @@ class _SettingsHelpMixin(object):
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
 
-        title = QtWidgets.QLabel(_ee('❓') + '  使用帮助')
+        title = QtWidgets.QLabel(_rich_icon('question-circle') + '  使用帮助')
         title.setStyleSheet('font-size:16px; font-weight:bold;')
         layout.addWidget(title)
 

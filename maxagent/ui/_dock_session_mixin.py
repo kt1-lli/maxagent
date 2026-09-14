@@ -17,7 +17,7 @@ import json
 from ..logger import get_logger
 from ..qt_compat import QtWidgets
 from .bubbles import AssistantBubble as _AssistantBubble
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 
 logger = get_logger(__name__)
 
@@ -125,7 +125,7 @@ class _SessionMixin(object):
             safe_name = escape_name(emp.name)
             self._renderer.add_welcome(
                 '{} 你好，我是 <b style="color:#a8e6a8;">{}</b>。'
-                '点击下方任一示例快速开始：'.format(_ee('👋'), safe_name)
+                '点击下方任一示例快速开始：'.format('', safe_name)
             )
         else:
             self._replay_messages(conv)

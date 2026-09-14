@@ -20,6 +20,7 @@ from ..qt_compat import QtCore
 from ..qt_compat import QtGui
 from ..qt_compat import QtWidgets
 from .emoji_compat import btn_label as _btn_label
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 from .emoji_compat import ee as _ee
 
@@ -135,7 +136,7 @@ class RuleApprovalDialog(QtWidgets.QDialog):
                 '<span style="color:#aaa;">'
                 '同 ID 规则将被覆盖，原内容会丢失。'
                 '</span>'
-            ).format(_ee('⚠'))
+            ).format(_rich_icon('fail', color='#b8923a'))
         else:
             head_text = (
                 '<b style="color:#aaffaa;">{} AI 想要沉淀一条新规则</b><br>'
@@ -143,7 +144,7 @@ class RuleApprovalDialog(QtWidgets.QDialog):
                 '批准后会保存到本地，并在后续每轮对话注入到 system prompt。'
                 '可在设置面板 → 我的规则中查看 / 删除。'
                 '</span>'
-            ).format(_ee('💡'))
+            ).format(_rich_icon('lightbulb', color='#b8923a'))
         head = QtWidgets.QLabel(head_text)
         head.setWordWrap(True)
         head.setStyleSheet('background:transparent;')

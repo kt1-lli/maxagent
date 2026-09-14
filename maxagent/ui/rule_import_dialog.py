@@ -40,7 +40,7 @@ from ..logger import get_logger
 from ..qt_compat import QtCore
 from ..qt_compat import QtWidgets
 from .emoji_compat import btn_label as _btn_label
-from .emoji_compat import ee as _ee
+from .icon_loader import rich_icon as _rich_icon
 from .icon_loader import set_btn_icon
 
 
@@ -64,7 +64,7 @@ class RuleImportDialog(QtWidgets.QDialog):
         self._diffs = []  # type: List[Dict[str, Any]]
         self._import_result = None  # type: Optional[Dict[str, Any]]
 
-        self.setWindowTitle(_ee('📥') + '  导入规则文件')
+        self.setWindowTitle('导入规则文件')
         self.resize(720, 480)
         self._build_ui()
         self._load_file()
@@ -113,7 +113,7 @@ class RuleImportDialog(QtWidgets.QDialog):
 
         # 覆盖选项
         self._overwrite_check = QtWidgets.QCheckBox(
-            _ee('⚠️') + ' 允许覆盖同 ID 已存在的规则（请确认你了解后果）',
+            _rich_icon('fail', color='#ffd166') + ' 允许覆盖同 ID 已存在的规则（请确认你了解后果）',
         )
         self._overwrite_check.setStyleSheet('color:#ffd166;')
         layout.addWidget(self._overwrite_check)
