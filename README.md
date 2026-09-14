@@ -1,8 +1,9 @@
-# MaxAgent · 3ds Max 内嵌 AI 助手
+# MaxAgent · 3ds Max / Maya 内嵌 AI 助手
 
-> 用自然语言操作 3ds Max。建模、加修改器、调材质灯光、批量处理、写脚本、查官方手册、管理个人知识库。
+> 用自然语言操作 3ds Max 或 Maya。建模、加修改器、调材质灯光、批量处理、写脚本、查官方手册、管理个人知识库。
 
 ![max](https://img.shields.io/badge/3ds_Max-2022~2027-orange)
+![maya](https://img.shields.io/badge/Maya-2024~2027-green)
 ![python](https://img.shields.io/badge/Python-3.7~3.13-blue)
 ![qt](https://img.shields.io/badge/Qt-PySide2_|_PySide6-green)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -11,16 +12,17 @@
 
 **一句话定位**
 
-MaxAgent 是运行在 3ds Max 内部的 AI Agent 插件。它通过 Function Calling 让大模型直接调用 Max 原生 API，同时提供 Autodesk 官方文档检索、本地 BM25 知识库、Skills 扩展、Todo + Verify 自愈、项目记忆等能力，让 AI 不仅能"操作 Max"，还能"学会你的流程"。
+MaxAgent 是运行在 3ds Max / Maya 内部的 AI Agent 插件。它通过 Function Calling 让大模型直接调用 DCC 原生 API，同时提供 Autodesk 官方文档检索、本地 BM25 知识库、Skills 扩展、Todo + Verify 自愈、项目记忆等能力，让 AI 不仅能"操作 DCC"，还能"学会你的流程"。同一套面板与交互，按宿主自动切换工具集与领域知识。
 
 ---
 
 **核心特性**
 
 - **近 100 个内置工具**：覆盖场景查询、几何创建、变换、修改器、材质、灯光相机、渲染、场景 IO、知识库、Skills、学习、反思、记忆等
+- **双 DCC 支持**：3ds Max（pymxs）与 Maya（cmds / MEL）按宿主自动切换工具集、领域速查与停靠方式，Agent 层完全共享
 - **Function Calling 驱动**：LLM 自主选择工具，schema 由参数注解自动推导
 - **本地 + 云端模型**：支持 Ollama / LM Studio / OpenAI / DeepSeek / 任意 OpenAI 兼容协议
-- **Autodesk 官方 MCP 接入**：`autodesk_max_docs` 直连 Autodesk Knowledge，答案带官方出处
+- **Autodesk 官方 MCP 接入**（仅 3ds Max）：`autodesk_max_docs` 直连 Autodesk Knowledge，答案带官方出处
 - **本地 BM25 知识库**：
   - A 类：打包 Max-Python-Help 官方文档（占位文件已含，可替换）
   - C 类：Skills 语义召回，关键词 + BM25 双路匹配
@@ -30,8 +32,8 @@ MaxAgent 是运行在 3ds Max 内部的 AI Agent 插件。它通过 Function Cal
 - **助手形象**：给助手起名字、换头像，纯 UI 换皮，LLM 行为不变
 - **观察式学习**：录制用户手动操作并沉淀为 Skill 或规则
 - **团队共享资源目录**：把 Skill / 用户工具 / 规则 / 反思 / 知识源放到一个只读 Git 目录，团队其他成员重启 MaxAgent 即可自动挂载使用
-- **IDE Bridge**：HTTP 服务，可与外部 IDE Agent 联动
-- **主线程隔离**：工具在 Max 主线程执行并自动 undo，LLM 请求跑在子线程
+- **IDE Bridge**（仅 3ds Max）：HTTP 服务，可与外部 IDE Agent 联动
+- **主线程隔离**：工具在 DCC 主线程执行并自动 undo（Max 为 pymxs.undo，Maya 为每工具独立回滚），LLM 请求跑在子线程
 - **零外部依赖**：LLM 客户端、MCP、知识库均基于 Python stdlib
 
 ---
@@ -40,9 +42,11 @@ MaxAgent 是运行在 3ds Max 内部的 AI Agent 插件。它通过 Function Cal
 
 **1. 启动**
 
-克隆仓库到任意目录，把 `install.ms` 拖进 3ds Max 视口即可。
+**3ds Max**：克隆仓库到任意目录，把 `install.ms` 拖进 3ds Max 视口即可。
 
 启动器会把仓库目录注入 `sys.path` 并弹出面板，无需 pip install，也无需拷贝到 Max 启动目录。再次启动 Max 时重新拖入即可，`sys.path` 注入是幂等的。
+
+**Maya**：把仓库根目录的 `maya_entry.py` 拖进 Maya 视口（或打开 Maya 的 Script Editor 执行 `import maya_entry; maya_entry.launch()`）。Maya 会通过原生 workspaceControl 停靠面板，重启后自动恢复停靠状态。
 
 注册到工具栏 / 快捷键：
 
@@ -63,14 +67,15 @@ maxagent.reload_pkg()  # 开发态热重载
 
 MaxScript 全局函数：`g_show_max_agent()` / `g_toggle_max_agent()` / `g_reload_max_agent()`。
 
-**2. 打包 mzp**
+**2. 打包**
 
 ```bash
 python release/build.py --dry-run
-python release/build.py --verbose   # 产出到 release/dist/maxagent-<version>.mzp
+python release/build.py --target max --verbose    # 产出到 release/dist/maxagent-<version>.mzp
+python release/build.py --target maya --verbose   # 产出到 release/dist/maxagent-<version>.zip
 ```
 
-把 `.mzp` 拖入 Max 视口即可安装。
+`--target max` 生成 3ds Max 安装包（`.mzp`，拖入视口安装）；`--target maya` 生成 Maya 安装包（`.zip`，解压后把 `maya_entry.py` 拖入视口或放入 userSetup）；`--target full` 同时包含两侧源码（开发用）。
 
 **3. 配置 LLM**
 
@@ -105,9 +110,30 @@ python release/build.py --verbose   # 产出到 release/dist/maxagent-<version>.
    已导入，之后可直接用自然语言查询其中的规范。
 ```
 
+Maya 侧同理：说"创建一个 polyCube，开 3 段细分"即可，助手会调用 Maya 工具集（`create_cube` 等 cmds 封装），坐标系 / 单位 / 历史节点习惯由内置 Maya 世界观速查兜底，不会把 Max 习惯带进 Maya。
+
 ---
 
-**工具全景**
+**3ds Max 与 Maya 的差异**
+
+同一套面板、设置与 Agent 引擎，宿主不同时自动切换以下内容：
+
+| 维度 | 3ds Max | Maya |
+| --- | --- | --- |
+| 启动入口 | `install.ms` 拖入视口 / MacroScript | `maya_entry.py` 拖入视口 / Script Editor |
+| 面板停靠 | `QDockWidget` | Maya 原生 `workspaceControl` |
+| API 底座 | `pymxs.runtime` | `maya.cmds` / MEL |
+| 脚本逃生舱 | `run_maxscript` + `run_python` | `run_mel` + `run_python` |
+| 领域速查 | `lookup_max_knowledge` | `lookup_maya_knowledge` |
+| Autodesk 官方文档 | `autodesk_max_docs`（官方 MCP） | 暂未接入 |
+| IDE Bridge | 支持（设置 → IDE 接口） | 暂未提供 |
+| 打包产物 | `.mzp` | `.zip` |
+
+两侧工具集分属 `maxagent/tools/max/` 与 `maxagent/tools/maya/`，共享层（LLM、知识库、Skills、记忆、UI）完全复用。详细差异表见 `docs/dual_dcc_diff.md`。
+
+---
+
+**工具全景**（3ds Max 侧，Maya 侧按宿主自动加载对应实现）
 
 | 类别 | 数量 | 代表工具 |
 | --- | --- | --- |
@@ -147,13 +173,17 @@ for t in list_tools():
 
 **知识库系统**
 
-MaxAgent 内置基于 BM25 的本地检索引擎，零外部依赖，分三场景工作。
+MaxAgent 内置基于 BM25 的本地检索引擎，零外部依赖，分场景工作。
 
 **A 类 · 官方 Max-Python-Help**
 
 打包时自带 `maxagent/knowledge/data/max_python_help.md` 占位文档。替换为真实的 `Max-Python-Help_2023.md` 后，下次启动 Max 会自动重建索引。
 
-启用后，LLM 可通过 `search_max_docs(query)` 查询官方 API 手册，回答"如何设置材质颜色"这类问题时不再靠幻觉。
+启用后，LLM 可通过 `search_max_docs(query)` 查询官方 API 手册（3ds Max / Maya 均可调用），回答"如何设置材质颜色"这类问题时不再靠幻觉。
+
+**B 类 · DCC 领域速查（按宿主切换）**
+
+内置"世界观 + 话题速查"两层知识，随宿主自动切换：Max 侧覆盖 pymxs 节点 / 修改器 / 材质习惯，Maya 侧覆盖 Y-up 坐标系、transform + shape 层级、construction history 等 cmds 习惯，避免把 Max 习惯带进 Maya（反之亦然）。LLM 通过 `lookup_max_knowledge` / `lookup_maya_knowledge` 按需查询，高频常识则直接注入 system prompt。
 
 **C 类 · Skills 语义召回**
 
@@ -181,7 +211,7 @@ Skills 不再只靠关键词匹配。保存 Skill 时会自动建立 BM25 索引
 
 **观察式学习**
 
-`macro_recorder` 录制用户在 Max 中的手动操作，结合 `reflection_tools` 沉淀为可复用 Skill 或规则。
+`macro_recorder` 录制用户在 DCC 中的手动操作，结合 `reflection_tools` 沉淀为可复用 Skill 或规则。
 
 ---
 
@@ -270,7 +300,9 @@ def my_cool_op(target: str, count: int = 1) -> dict:
     return {'ok': True}
 ```
 
-工具默认在 Max 主线程执行并包裹 `pymxs.undo`。纯查询工具加 `wrap_undo=False`。
+工具默认在 DCC 主线程执行（Max 包裹 `pymxs.undo`）。纯查询工具加 `wrap_undo=False`。用 `dcc=['maya']` 或 `dcc=['3dsmax']` 可把工具限定到特定宿主，不写则双端可见。
+
+Maya 侧工具请从 `maxagent/tools/maya/_common.py` 复用 `_ensure_in_maya` / `_normalize_names` / `_rollback_on_error` 等校验与回滚助手，不要在业务文件里复制。
 
 ---
 
@@ -303,19 +335,20 @@ set MAXAGENT_SHARED_DIR=C:\\TeamAssets\\shared-maxagent-assets
 **故障排查**
 
 - LLM 连不上 / 401 / 超时：检查 Base URL 与 API Key，本地服务需先启动
-- Max 启动白屏 / 卡住：把 `startup` 目录的 `maxagent_startup.py` 改名为 `.bak`
+- 3ds Max 启动白屏 / 卡住：把 `startup` 目录的 `maxagent_startup.py` 改名为 `.bak`
+- Maya 面板不出现：确认 `maya_entry.py` 拖入后 Script Editor 无报错；重启 Maya 会自动恢复 workspaceControl
 - 工具调用失败：看面板红色 ✗ 后的具体错误，多数是模型给错参数
 - 模型不调用工具：检查 Profile 的 `supports_tools`，且模型要支持 tools
-- Autodesk MCP 无响应：需要外网可达 `developer.api.autodesk.com`
-- 知识库查不到：确认已导入文档或替换 `max_python_help.md` 后重启 Max
-- 开发时改了代码不生效：`maxagent.reload_pkg()` 或 `g_reload_max_agent()`
+- Autodesk MCP 无响应（仅 3ds Max）：需要外网可达 `developer.api.autodesk.com`
+- 知识库查不到：确认已导入文档或替换 `max_python_help.md` 后重启 DCC
+- 开发时改了代码不生效：`maxagent.reload_pkg()`（Max）或重开 Maya 面板
 
 ---
 
 **License**
 
-MIT License. 使用 `run_maxscript` / `run_python` 逃生舱时请保留默认的二次确认。
+MIT License. 使用 `run_maxscript`（Max）/ `run_mel`、`run_python`（Maya）逃生舱时请保留默认的二次确认。
 
 ---
 
-**MaxAgent v1.0.1** — Made for 3ds Max users.
+**MaxAgent v1.0.1** — Made for 3ds Max & Maya users.

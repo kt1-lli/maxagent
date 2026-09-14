@@ -84,7 +84,7 @@ class _SettingsHelpMixin(object):
             config_dir = get_config_dir()
         except Exception:  # pylint: disable=broad-except
             config_dir = '%USERPROFILE%\\Documents\\3dsMax\\maxagent'
-        return (
+        html_parts = [
             '<style>'
             'body { color:#e8e8e8; }'
             'h3 { color:#ffd166; margin:6px 0 4px 0; }'
@@ -106,6 +106,9 @@ class _SettingsHelpMixin(object):
             '<h3>MaxAgent 设置帮助</h3>'
 
             '<h4>模型 Tab</h4>'
+            '<p><span class="tip">当前宿主：<b>{dcc_name}</b>。'
+            'MaxAgent 会按宿主自动切换工具集与领域知识；'
+            '模型配置、对话与资源管理在各 DCC 下完全一致。</span></p>'
             '<p>管理多套大模型连接（Ollama / LM Studio / OpenAI / '
             'DeepSeek 等），右键 Profile 可<b>重命名 / 复制 / 设为默认</b>。</p>'
 
@@ -224,6 +227,20 @@ class _SettingsHelpMixin(object):
             '<hr>'
 
             # ---- IDE 接口 / Bridge ----
+        ]
+
+        # Bridge 仅 3ds Max 启用；Maya 侧显示占位说明
+        if dcc_name == 'Maya':
+            html_parts += [
+                '<h4>IDE 接口（Bridge）🔌</h4>'
+                '<p>IDE 接口（本地 TCP 端口 + dcc-mcp 联动）'
+                '<span class="warn">目前仅 3ds Max 侧提供</span>，'
+                'Maya 侧暂未开放。后续版本会补齐，'
+                '届时无需更新插件即可在设置中开启。</p>'
+                '<hr>'
+            ]
+        else:
+            html_parts += [
             '<h4>IDE 接口（Bridge）🔌</h4>'
             '<p>在 {dcc_name} 内开启一个本地 TCP 端口，让外部 IDE'
             '（Cursor / Claude Desktop / Cline 等）通过 '
@@ -270,7 +287,9 @@ class _SettingsHelpMixin(object):
             '<code>maxagent/docs/IDE_MCP_USAGE.md</code></p>'
 
             '<hr>'
+            ]
 
+        html_parts += [
             # ---- 共享资源目录 ----
             '<h4>共享资源目录 🧰</h4>'
             '<p>把团队共享的 <b>技能 / 用户工具 / 规则 / 反思 / 知识源</b> 放到一个'
@@ -307,7 +326,7 @@ class _SettingsHelpMixin(object):
             '先在本机本地资源中验证通过。'
             '<br>· 如果共享目录存在未提交改动，「拉取最新」会被阻止，需先在 Git 客户端处理。'
             '<br>· 如果把共享目录设为自己的本地 <code>config_dir</code>，'
-'所有写操作都会被拒绝，请确保该目录是独立的共享资源目录而不是个人配置目录。</p>'
+            '所有写操作都会被拒绝，请确保该目录是独立的共享资源目录而不是个人配置目录。</p>'
 
             '<hr>'
 
@@ -413,7 +432,8 @@ class _SettingsHelpMixin(object):
             'Calling / 自定义 Header）→ 全部回到默认值'
             '<br>注：仅修改表单显示，需点击「应用」才会写盘——避免误把'
             '名称为空的 Profile 强行落盘破坏配置。</p>'
-        ).replace(
+        ]
+        return ''.join(html_parts).replace(
             '{dcc_name}', dcc_name
         ).replace(
             '{dcc_mcp_name}', dcc_mcp_name
