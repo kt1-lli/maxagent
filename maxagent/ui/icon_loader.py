@@ -88,6 +88,39 @@ _ICONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons')
 # 默认图标颜色：深色 UI 下的浅灰，保证在 Max/Maya 深色主题上可见
 DEFAULT_ICON_COLOR = '#e0e0e0'
 
+# 图标语义色映射表（图标名 -> CSS 颜色）。
+# 按钮类图标原先靠 emoji 自带颜色（🔌💾🔄 等），换成线性 SVG 后
+# 若全部落在默认灰，视觉上等于"没有颜色"；这里按语义给常用图标
+# 自动配色，调用点不传 color 时优先查表。
+ICON_SEMANTIC_COLORS = {
+    # 操作结果 / 确认类：绿
+    'success': '#8fce8f',
+    'confirm': '#8fce8f',
+    'checkbox_on': '#8fce8f',
+    'checkbox_off': '#888888',
+    # 危险 / 失败类：红
+    'fail': '#e57373',
+    'close': '#e57373',
+    'delete': '#e57373',
+    'trash': '#e57373',
+    # 连接 / 测试 / 保存 / 发送类：蓝
+    'plug': '#6fb1ff',
+    'save': '#6fb1ff',
+    'edit': '#6fb1ff',
+    'send': '#6fb1ff',
+    # 刷新 / 重置 / 拉取类：青
+    'refresh': '#5bc8d5',
+    'refresh2': '#5bc8d5',
+    'download': '#5bc8d5',
+    'export': '#5bc8d5',
+    'import': '#5bc8d5',
+    # 收藏 / 星标 / 设置类：黄
+    'star': '#e0c26a',
+    'pin': '#e0c26a',
+    'tool': '#e0c26a',
+    'gear': '#e0c26a',
+}
+
 # 页面标题图标渲染失败时的 BMP 兜底字符（不依赖富文本）
 _TITLE_FALLBACK_GLYPHS = {
     'robot': '?',
@@ -383,12 +416,14 @@ def set_btn_icon(widget, name, text, color=None):
     :param widget: QPushButton 等 AbstractButton 控件
     :param name: 图标名（对应 icons/<name>.svg）
     :param text: 成功后按钮显示的纯文本
-    :param color: 可选图标颜色
+    :param color: 可选图标颜色；不传则按图标名查
+        :data:`ICON_SEMANTIC_COLORS` 语义色表，仍未命中用默认灰
     :returns: 是否成功应用了 SVG 图标
     """
     if widget is None:
         return False
-    icon = load_icon(name, color=color)
+    # 颜色优先级：显式传入 > 语义色表 > 默认灰
+    icon = load_icon(name, color=color or ICON_SEMANTIC_COLORS.get(name))
     if icon is None:
         # 失败原因已由 load_icon 记录，这里保持按钮原样（文本兜底）
         return False
