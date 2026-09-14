@@ -192,7 +192,7 @@ class SettingsDialog(
         self.nav.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         for label, _key in self._NAV_ITEMS:
             item = QtWidgets.QListWidgetItem(label.split('  ', 1)[-1], self.nav)
-            icon = load_icon(_NAV_ICON_BY_KEY.get(_key, ''), color='#e0e0e0')
+            icon = load_icon(self._NAV_ICON_BY_KEY.get(_key, ''), color='#e0e0e0')
             if icon is not None:
                 item.setIcon(icon)
         self.nav.currentRowChanged.connect(self._on_nav_changed)
